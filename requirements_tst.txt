@@ -1,2 +1,4 @@
 numpy
 torch
+scipy          # signal resampling, spatial transforms (motion matching)
+pybullet       # physics simulation (prosthetic_sim.py)
