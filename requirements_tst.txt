@@ -2,3 +2,5 @@ numpy
 torch
 scipy          # signal resampling, spatial transforms (motion matching)
 pybullet       # physics simulation (prosthetic_sim.py)
+matplotlib     # visualization / GIF animation (visualize_sim.py)
+pillow         # GIF writer backend for matplotlib
