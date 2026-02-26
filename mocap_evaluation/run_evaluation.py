@@ -370,20 +370,17 @@ def evaluate(
             model, scaler, x_win, feature_cols, device
         )
 
-        # rigtest.py records knee angle as the absolute included angle between
-        # shin and thigh segments: diff = 180 - (shin_angle - thigh_angle),
-        # so straight leg ≈ 180°, 60° flexion ≈ 120°.
-        # The CMU mocap database uses the biomechanical flexion convention:
-        # 0° = straight, positive = flexion.  Convert before matching/simulation.
-        knee_label_flex = (180.0 - knee_label).astype(np.float32)
-        pred_knee_flex  = (180.0 - pred_knee).astype(np.float32)
+        # Standardized convention: 180° = straight (rigtest enclosed angle).
+        # BVH-derived database angles are normalized to the same convention.
+        knee_label_inc = knee_label.astype(np.float32)
+        pred_knee_inc = pred_knee.astype(np.float32)
 
-        # Motion matching (uses flexion convention)
-        _, dtw_dist, segment = find_best_match(knee_label_flex, thigh_sig, mocap_db)
+        # Motion matching (included-angle convention)
+        _, dtw_dist, segment = find_best_match(knee_label_inc, thigh_sig, mocap_db)
 
-        # Simulation (uses flexion convention)
+        # Simulation consumes the same included-angle convention.
         metrics = simulate_prosthetic_walking(
-            segment, pred_knee_flex,
+            segment, pred_knee_inc,
             use_physics=use_physics,
             use_gui=use_gui,
             backend=sim_backend,
@@ -465,8 +462,8 @@ def evaluate_from_curves(
     This path is designed for early feasibility testing before recorded data is
     available from ``rigtest.py``.
     """
-    knee_label_flex = (180.0 - knee_label_included).astype(np.float32)
-    pred_knee_flex = (180.0 - predicted_knee_included).astype(np.float32)
+    knee_label_inc = knee_label_included.astype(np.float32)
+    pred_knee_inc = predicted_knee_included.astype(np.float32)
 
     if aggregate_datasets:
         bandai_path = Path(bandai_dir) if bandai_dir else Path(mocap_dir) / "bandai"
@@ -482,7 +479,7 @@ def evaluate_from_curves(
         mocap_db = load_or_generate_mocap_database(bvh_dir=mocap_dir)
 
     matches = find_top_k_matches(
-        imu_knee=knee_label_flex,
+        imu_knee=knee_label_inc,
         imu_thigh=thigh_angle.astype(np.float32),
         mocap_db=mocap_db,
         k=top_k,
@@ -492,14 +489,14 @@ def evaluate_from_curves(
     for rank, (start, dist, segment) in enumerate(matches, start=1):
         gt_metrics = simulate_prosthetic_walking(
             segment,
-            knee_label_flex,
+            knee_label_inc,
             use_physics=use_physics,
             use_gui=use_gui,
             backend=sim_backend,
         )
         pred_metrics = simulate_prosthetic_walking(
             segment,
-            pred_knee_flex,
+            pred_knee_inc,
             use_physics=use_physics,
             use_gui=use_gui,
             backend=sim_backend,

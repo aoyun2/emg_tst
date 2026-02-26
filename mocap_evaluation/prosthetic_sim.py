@@ -5,10 +5,11 @@ Supports:
 - PyBullet physics backend (fallback)
 - Deterministic kinematic evaluator (dependency fallback)
 
-All input angles are expected in flexion convention (degrees):
-- knee: 0 = straight, positive = flexion
-- hip: positive = flexion
-- ankle: positive = dorsiflexion
+Public APIs accept included-angle convention (degrees):
+- 180 = straight / neutral
+- smaller values = increased flexion magnitude
+
+Internally we convert to flexion convention for the physics backends.
 """
 from __future__ import annotations
 
@@ -42,6 +43,11 @@ FALL_HEIGHT_THRESHOLD = 0.55
 
 def _rad(deg: float) -> float:
     return math.radians(float(deg))
+
+
+def _included_to_flexion(angles_deg: np.ndarray) -> np.ndarray:
+    """Convert included-angle convention (180=straight) to flexion degrees."""
+    return 180.0 - np.asarray(angles_deg, dtype=np.float64)
 
 
 def _safe_mean(x: np.ndarray) -> float:
@@ -130,8 +136,8 @@ class EvalMetrics:
 
 
 def run_kinematic_evaluation(mocap_segment: dict, predicted_knee: np.ndarray) -> dict:
-    ref = np.asarray(mocap_segment["knee_right"], dtype=np.float64)
-    pred = np.asarray(predicted_knee, dtype=np.float64)
+    ref = _included_to_flexion(np.asarray(mocap_segment["knee_right"], dtype=np.float64))
+    pred = _included_to_flexion(np.asarray(predicted_knee, dtype=np.float64))
     T = min(len(ref), len(pred))
     if T <= 0:
         return {
@@ -149,7 +155,7 @@ def run_kinematic_evaluation(mocap_segment: dict, predicted_knee: np.ndarray) ->
 
     ref = ref[:T]
     pred = pred[:T]
-    hip = np.asarray(mocap_segment.get("hip_right", np.zeros(T)), dtype=np.float64)[:T]
+    hip = _included_to_flexion(np.asarray(mocap_segment.get("hip_right", np.full(T, 180.0)), dtype=np.float64)[:T])
 
     dev = np.zeros(T, dtype=np.float64)
     L1 = L2 = 0.45
@@ -253,13 +259,13 @@ class _MuJoCoRunner:
             out["mode"] = "mujoco_physics_empty"
             return out
 
-        pred = np.asarray(predicted_knee, dtype=np.float64)[:T]
-        ref = np.asarray(mocap_segment["knee_right"], dtype=np.float64)[:T]
-        hip_r = np.asarray(mocap_segment.get("hip_right", np.zeros(T)), dtype=np.float64)[:T]
-        hip_l = np.asarray(mocap_segment.get("hip_left", np.zeros(T)), dtype=np.float64)[:T]
-        knee_l = np.asarray(mocap_segment.get("knee_left", np.zeros(T)), dtype=np.float64)[:T]
-        ankle_r = np.asarray(mocap_segment.get("ankle_right", np.zeros(T)), dtype=np.float64)[:T]
-        ankle_l = np.asarray(mocap_segment.get("ankle_left", np.zeros(T)), dtype=np.float64)[:T]
+        pred = _included_to_flexion(np.asarray(predicted_knee, dtype=np.float64)[:T])
+        ref = _included_to_flexion(np.asarray(mocap_segment["knee_right"], dtype=np.float64)[:T])
+        hip_r = _included_to_flexion(np.asarray(mocap_segment.get("hip_right", np.full(T, 180.0)), dtype=np.float64)[:T])
+        hip_l = _included_to_flexion(np.asarray(mocap_segment.get("hip_left", np.full(T, 180.0)), dtype=np.float64)[:T])
+        knee_l = _included_to_flexion(np.asarray(mocap_segment.get("knee_left", np.full(T, 180.0)), dtype=np.float64)[:T])
+        ankle_r = _included_to_flexion(np.asarray(mocap_segment.get("ankle_right", np.full(T, 180.0)), dtype=np.float64)[:T])
+        ankle_l = _included_to_flexion(np.asarray(mocap_segment.get("ankle_left", np.full(T, 180.0)), dtype=np.float64)[:T])
 
         ridx = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "right_foot_geom")
         lidx = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "left_foot_geom")
@@ -367,13 +373,13 @@ class _PyBulletRunner:
         al = self._find_joint(joints, "leftankle")
 
         T = int(min(len(predicted_knee), len(mocap_segment["knee_right"])))
-        pred = np.asarray(predicted_knee, dtype=np.float64)[:T]
-        ref = np.asarray(mocap_segment["knee_right"], dtype=np.float64)[:T]
-        hip_r = np.asarray(mocap_segment.get("hip_right", np.zeros(T)), dtype=np.float64)[:T]
-        hip_l = np.asarray(mocap_segment.get("hip_left", np.zeros(T)), dtype=np.float64)[:T]
-        knee_l = np.asarray(mocap_segment.get("knee_left", np.zeros(T)), dtype=np.float64)[:T]
-        ankle_r = np.asarray(mocap_segment.get("ankle_right", np.zeros(T)), dtype=np.float64)[:T]
-        ankle_l = np.asarray(mocap_segment.get("ankle_left", np.zeros(T)), dtype=np.float64)[:T]
+        pred = _included_to_flexion(np.asarray(predicted_knee, dtype=np.float64)[:T])
+        ref = _included_to_flexion(np.asarray(mocap_segment["knee_right"], dtype=np.float64)[:T])
+        hip_r = _included_to_flexion(np.asarray(mocap_segment.get("hip_right", np.full(T, 180.0)), dtype=np.float64)[:T])
+        hip_l = _included_to_flexion(np.asarray(mocap_segment.get("hip_left", np.full(T, 180.0)), dtype=np.float64)[:T])
+        knee_l = _included_to_flexion(np.asarray(mocap_segment.get("knee_left", np.full(T, 180.0)), dtype=np.float64)[:T])
+        ankle_r = _included_to_flexion(np.asarray(mocap_segment.get("ankle_right", np.full(T, 180.0)), dtype=np.float64)[:T])
+        ankle_l = _included_to_flexion(np.asarray(mocap_segment.get("ankle_left", np.full(T, 180.0)), dtype=np.float64)[:T])
 
         metrics = EvalMetrics.empty()
         for t in range(T):

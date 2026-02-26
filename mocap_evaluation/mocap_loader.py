@@ -11,12 +11,12 @@ Optional additional source:
     python -m mocap_evaluation.cmu_downloader
 
 Returned database dict (all angles in **degrees**, all arrays at TARGET_FPS):
-    knee_right   : (N,)   right knee flexion (+= flexion)
-    knee_left    : (N,)   left  knee flexion
-    hip_right    : (N,)   right hip flexion/extension from vertical (+= flex)
-    hip_left     : (N,)   left  hip flexion/extension
-    ankle_right  : (N,)   right ankle dorsiflexion (+= dorsiflexion)
-    ankle_left   : (N,)   left  ankle dorsiflexion
+    knee_right   : (N,)   right knee included angle (180 = straight)
+    knee_left    : (N,)   left  knee included angle (180 = straight)
+    hip_right    : (N,)   right hip included angle (180 = neutral/straight)
+    hip_left     : (N,)   left  hip included angle (180 = neutral/straight)
+    ankle_right  : (N,)   right ankle included angle (180 = neutral/straight)
+    ankle_left   : (N,)   left  ankle included angle (180 = neutral/straight)
     pelvis_tilt  : (N,)   anterior pelvic tilt (+= anterior)
     trunk_lean   : (N,)   trunk forward lean (+= forward)
     root_pos     : (N, 3) pelvis position in metres
@@ -170,11 +170,18 @@ def _extract_angles_from_bvh(parser: BVHParser) -> Optional[dict]:
     if "knee_right" not in angles or "knee_left" not in angles:
         return None
 
-    # Ensure positive = flexion (CMU cgspeed stores flexion as negative Xrotation;
-    # Bandai Namco uses the same ZXY convention so the same fix applies).
+    # Ensure positive = flexion first (CMU cgspeed stores flexion as negative
+    # Xrotation; Bandai Namco uses the same ZXY convention so the same fix
+    # applies), then convert to included-angle convention:
+    #   180° = straight, decreasing with flexion magnitude.
     for k in ("knee_right", "knee_left", "hip_right", "hip_left"):
         if k in angles and float(angles[k].mean()) < -5.0:
             angles[k] = -angles[k]
+
+    for k in ("knee_right", "knee_left", "hip_right", "hip_left",
+              "ankle_right", "ankle_left", "pelvis_tilt", "trunk_lean"):
+        if k in angles:
+            angles[k] = np.clip(180.0 - np.abs(angles[k]), 0.0, 180.0).astype(np.float32)
 
     # Fill missing signals with zeros
     N = len(angles["knee_right"])
