@@ -11,8 +11,8 @@ Usage
         --out         eval_results.json \\
         --n-samples   20
 
-    # Quick smoke test (no data needed — uses synthetic everything):
-    python -m mocap_evaluation.run_evaluation --smoke-test
+    # Quick test sample run (no checkpoint needed):
+    python -m mocap_evaluation.run_evaluation --test-sample
 
 Pipeline per test window
 ------------------------
@@ -50,6 +50,7 @@ from mocap_evaluation.motion_matching import find_best_match, find_top_k_matches
 from mocap_evaluation.prosthetic_sim import simulate_prosthetic_walking
 from mocap_evaluation.mock_data import generate_mock_curves, save_mock_curves
 from mocap_evaluation.sample_data import extract_real_sample_curves, save_sample_curves
+from mocap_evaluation.external_sample_data import extract_external_sample_curves
 
 
 # ── Checkpoint loader ─────────────────────────────────────────────────────────
@@ -147,154 +148,73 @@ def predict_knee_sequence(
     return out[0, :, 0].cpu().numpy()
 
 
-# ── Smoke test ────────────────────────────────────────────────────────────────
+# ── Test sample evaluation ───────────────────────────────────────────────────
 
 
-def run_smoke_test(try_download: bool = True, top_k: int = 3) -> dict:
-    """
-    End-to-end pipeline test: Winter (2009) query -> CMU mocap matching -> PyBullet.
-
-    Query generation
-    ----------------
-    Uses Winter (2009) published biomechanical norms for normal gait with
-    realistic IMU sensor noise added — independent of the CMU database being
-    searched.
-
-    Matching
-    --------
-    Searches the **entire** database without category restriction; the query can
-    match walking, running, or any other motion if that is the closest segment.
-    The top-K distinct matches are returned (default K=3) and each receives its
-    own simulation run and a pair of GIF files:
-      smoke_test_<rank>_pred.gif  — prosthetic robot (orange right knee)
-      smoke_test_<rank>_gt.gif    — ground-truth mocap robot (blue)
-
-    Two RMSE values per match:
-      model_rmse   : prediction vs true query knee (reflects model noise level)
-      match_rmse   : matched segment vs query knee  (reflects DB quality)
-      knee_rmse_deg: pred vs matched segment (sim metric = match + model error)
-    """
+def run_test_sample(
+    mocap_dir: str | Path = "mocap_data",
+    out_path: str | Path = "eval_test_sample_results.json",
+    top_k: int = 3,
+    use_gui: bool = False,
+    use_physics: bool = True,
+    full_database: bool = True,
+    sim_backend: str = "mujoco",
+    aggregate_datasets: bool = False,
+    bandai_dir: Optional[str | Path] = None,
+    cmu_dir: Optional[str | Path] = None,
+    match_categories: Optional[List[str]] = None,
+    seconds: float = 4.0,
+    sample_source: str = "external",
+    external_url: Optional[str] = None,
+) -> dict:
+    """Run the motion-matching pipeline using real test sample curves."""
     print("=" * 60)
-    print("SMOKE TEST -- Winter (2009) query -> CMU mocap matching -> PyBullet")
+    print("TEST SAMPLE -- real mocap query -> motion matching -> simulation")
     print("=" * 60)
 
-    from mocap_evaluation.mocap_loader import (
-        load_or_generate_mocap_database,
-        _interp_gait_curve,
-        _KNEE_R,
-        _HIP_R,
-        TARGET_FPS,
-    )
-
-    # ── Load real mocap database (no synthetic augmentation) ──────────────
-    print()
-    print("  Loading mocap database ...")
-    db = load_or_generate_mocap_database(try_download=try_download)
-
-    fps = TARGET_FPS   # 200 Hz
-    db_dur = len(db["knee_right"]) / fps
-    n_cats = len({b[3] for b in db.get("file_boundaries", [])})
-    print(f"  DB: {db_dur:.1f}s @ {fps}Hz  source={db['source']}  {n_cats} categories")
-
-    # ── Build query from Winter (2009) biomechanical norms ────────────────
-    CADENCE  = 110.0
-    cycle_s  = 60.0 / (CADENCE / 2.0)
-    spc      = int(round(cycle_s * fps))
-    N_CYCLES = 3
-    T        = spc * N_CYCLES    # ≈654 frames at 200 Hz
-
-    rng = np.random.default_rng(42)
-
-    knee_true  = np.tile(_interp_gait_curve(_KNEE_R, spc), N_CYCLES).astype(np.float32)
-    thigh_true = np.tile(_interp_gait_curve(_HIP_R,  spc), N_CYCLES).astype(np.float32)
-    knee_imu   = knee_true  + rng.normal(0, 2.0, T).astype(np.float32)
-    thigh_imu  = thigh_true + rng.normal(0, 1.5, T).astype(np.float32)
-
-    # Simulated model prediction: true knee + ~1.5° RMS error (very low noise)
-    predicted  = knee_true + rng.normal(0, 1.5, T).astype(np.float32)
-    model_rmse = float(np.sqrt(np.mean((predicted - knee_true) ** 2)))
-
-    print(f"  Query   : {T} frames ({T/fps:.2f}s), Winter (2009) norms + IMU noise")
-    print(f"  Knee    : {knee_imu.min():.1f}° – {knee_imu.max():.1f}°")
-    print(f"  Model noise (pred vs true): {model_rmse:.2f}° RMS")
-
-    # ── Motion matching — no category restriction ─────────────────────────
-    # Any segment in the database is eligible; multiple plausible matches are
-    # retrieved so each can be visualised independently.
-    print()
-    print(f"  Finding top-{top_k} matches (no category restriction) …")
-    t0      = time.time()
-    matches = find_top_k_matches(
-        knee_imu, thigh_imu, db,
-        k=top_k,
-        # No `categories` argument → search entire database
-    )
-    print(f"  Matching done in {time.time()-t0:.2f}s")
-
-    all_metrics: List[dict] = []
-
-    for rank, (start, dist, segment) in enumerate(matches, start=1):
-        cat = segment.get("category", "unknown")
-        match_rmse = float(np.sqrt(np.mean(
-            (segment["knee_right"] - knee_imu) ** 2
-        )))
-        print()
-        print(f"  ── Match {rank}/{top_k} ─────────────────────────────")
-        print(f"     start={start}  DTW={dist:.4f}  category={cat}")
-        print(f"     Segment vs query RMSE: {match_rmse:.2f}°"
-              f"  ({'good' if match_rmse < 12 else 'fair — more BVH files improve this'})")
-
-        gif_pred = f"smoke_test_{rank}_pred.gif"
-        gif_gt   = f"smoke_test_{rank}_gt.gif"
-
-        print(f"     Running PyBullet simulation …")
-        t1 = time.time()
-        metrics = simulate_prosthetic_walking(
-            segment, predicted,
-            use_physics=True, use_gui=False, fps=float(fps),
-            gif_output_pred=gif_pred,
-            gif_output_gt=gif_gt,
+    categories = tuple(match_categories) if match_categories else ("walk",)
+    if sample_source == "external":
+        curves = extract_external_sample_curves(
+            seconds=seconds,
+            source_url=external_url,
         )
-        elapsed = time.time() - t1
-        print(f"     Simulation: {elapsed:.2f}s  mode={metrics.get('mode')}")
-
-        for path in (gif_pred, gif_gt):
-            if Path(path).exists():
-                label = "prosthetic (orange knee)" if "pred" in path else "ground-truth (blue)"
-                print(f"     GIF [{label}] → {path}")
-
-        metrics["match_rank"]  = rank
-        metrics["start_idx"]   = start
-        metrics["dtw_dist"]    = float(dist)
-        metrics["category"]    = cat
-        metrics["model_rmse"]  = model_rmse
-        metrics["match_rmse"]  = match_rmse
-        metrics["db_source"]   = db["source"]
-        all_metrics.append(metrics)
-
-        print(f"     knee_rmse_deg={metrics['knee_rmse_deg']:.2f}°  "
-              f"fall={metrics['fall_detected']}  "
-              f"stability={metrics['stability_score']:.3f}")
-
-    # ── Summary ───────────────────────────────────────────────────────────
-    print()
-    print("── Summary ─────────────────────────────────────────────────")
-    print(f"  model_rmse  : {model_rmse:.2f}°  (pred vs true query knee)")
-    for m in all_metrics:
-        print(
-            f"  Match {m['match_rank']} [{m['category']:8s}] "
-            f"match_rmse={m['match_rmse']:5.2f}°  "
-            f"knee_rmse={m['knee_rmse_deg']:5.2f}°  "
-            f"fall={m['fall_detected']}"
+    else:
+        curves = extract_real_sample_curves(
+            mocap_dir=mocap_dir,
+            seconds=seconds,
+            categories=categories,
+            full_database=full_database or aggregate_datasets,
         )
-    print()
-    print("  knee_rmse_deg ≈ model_rmse + residual cross-subject match error.")
-    print("  Download more BVH files for accuracy (recommended first):")
-    print("    python -m mocap_evaluation.bandai_namco_downloader")
-    print("  Optional fallback/source expansion:")
-    print("    python -m mocap_evaluation.cmu_downloader")
+    model_rmse = float(np.sqrt(np.mean(
+        (curves.predicted_knee_included_deg - curves.knee_label_included_deg) ** 2
+    )))
 
-    return all_metrics[0] if all_metrics else {}
+    print(
+        f"[eval] Real test sample: {len(curves.knee_label_included_deg)} frames @ {curves.fps} Hz"
+    )
+    print(f"[eval] Source file: {curves.source_file} [{curves.category}]")
+    print(f"[eval] Pred-vs-label RMSE (model surrogate): {model_rmse:.2f}°")
+
+    result = evaluate_from_curves(
+        knee_label_included=curves.knee_label_included_deg,
+        thigh_angle=curves.thigh_angle_deg,
+        predicted_knee_included=curves.predicted_knee_included_deg,
+        mocap_dir=mocap_dir,
+        top_k=top_k,
+        use_gui=use_gui,
+        use_physics=use_physics,
+        out_path=out_path,
+        full_database=full_database,
+        sim_backend=sim_backend,
+        aggregate_datasets=aggregate_datasets,
+        bandai_dir=bandai_dir,
+        cmu_dir=cmu_dir,
+        match_categories=match_categories,
+    )
+    result["test_sample_pred_vs_label_rmse_deg"] = model_rmse
+    with open(out_path, "w") as f:
+        json.dump(result, f, indent=2)
+    return result
 
 
 # ── Main evaluation loop ──────────────────────────────────────────────────────
@@ -310,7 +230,7 @@ def evaluate(
     use_physics: bool = True,
     device_str: str = "cpu",
     full_database: bool = False,
-    sim_backend: str = "pybullet",
+    sim_backend: str = "mujoco",
     aggregate_datasets: bool = False,
     bandai_dir: Optional[str | Path] = None,
     cmu_dir: Optional[str | Path] = None,
@@ -459,7 +379,7 @@ def evaluate_from_curves(
     use_physics: bool = True,
     out_path: str | Path = "eval_mock_results.json",
     full_database: bool = True,
-    sim_backend: str = "pybullet",
+    sim_backend: str = "mujoco",
     aggregate_datasets: bool = False,
     bandai_dir: Optional[str | Path] = None,
     cmu_dir: Optional[str | Path] = None,
@@ -563,8 +483,8 @@ def _parse_args():
                     help="Disable simulation GUI (GUI is on by default when backend supports it)")
     ap.add_argument("--no-physics",  action="store_true",
                     help="Use kinematic evaluation only (no physics backend)")
-    ap.add_argument("--smoke-test",  action="store_true",
-                    help="Run quick smoke test (no checkpoint needed)")
+    ap.add_argument("--test-sample",  action="store_true",
+                    help="Run quick evaluation with real test sample curves (no checkpoint needed)")
     ap.add_argument("--full-db",     action="store_true",
                     help="Use the full local mocap database with category metadata "
                          "(auto-downloads Bandai locomotion first, CMU fallback)")
@@ -581,10 +501,14 @@ def _parse_args():
     ap.add_argument("--save-real", default=None,
                     help="Optional .npz path to save extracted real walking curves")
     ap.add_argument("--real-seconds", type=float, default=4.0,
-                    help="Length in seconds for extracted real walking curves")
+                    help="Length in seconds for extracted real/external walking curves")
+    ap.add_argument("--test-sample-source", choices=["external", "mocap"], default="external",
+                    help="Source for --test-sample queries (external recommended for out-of-db testing)")
+    ap.add_argument("--external-sample-url", default=None,
+                    help="Optional URL override for external gait sample file (.mot/.sto)")
     ap.add_argument("--match-categories", default=None,
                     help="Comma-separated category filter for motion matching (e.g. walk,run)")
-    ap.add_argument("--sim-backend", default="pybullet", choices=["pybullet", "mujoco"],
+    ap.add_argument("--sim-backend", default="mujoco", choices=["pybullet", "mujoco"],
                     help="Physics backend preference")
     ap.add_argument("--aggregate-datasets", action="store_true",
                     help="Aggregate Bandai + CMU datasets (separate dirs under mocap-dir by default)")
@@ -598,13 +522,28 @@ def _parse_args():
 def main():
     args = _parse_args()
 
-    if args.smoke_test:
-        run_smoke_test()
-        return
-
     match_categories = None
     if args.match_categories:
         match_categories = [c.strip() for c in args.match_categories.split(",") if c.strip()]
+
+    if args.test_sample:
+        run_test_sample(
+            mocap_dir=args.mocap_dir,
+            out_path=args.out,
+            top_k=args.top_k,
+            use_gui=not args.no_gui,
+            use_physics=not args.no_physics,
+            full_database=args.full_db,
+            sim_backend=args.sim_backend,
+            aggregate_datasets=args.aggregate_datasets,
+            bandai_dir=args.bandai_dir,
+            cmu_dir=args.cmu_dir,
+            match_categories=match_categories,
+            seconds=args.real_seconds,
+            sample_source=args.test_sample_source,
+            external_url=args.external_sample_url,
+        )
+        return
 
     if args.real_walk_data:
         curves = extract_real_sample_curves(
@@ -667,7 +606,7 @@ def main():
                 "ERROR: No checkpoint found. Either:\n"
                 "  1. Train a model first:  python -m emg_tst.run_experiment\n"
                 "  2. Specify --checkpoint path/to/reg_best.pt\n"
-                "  3. Run smoke test:       --smoke-test",
+                "  3. Run test sample:      --test-sample",
                 file=sys.stderr,
             )
             sys.exit(1)

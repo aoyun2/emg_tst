@@ -3,8 +3,8 @@ mocap_evaluation — empirical prosthetic evaluation via motion matching + physi
 
 Quick start
 -----------
-Smoke test (no data / checkpoint required):
-    python -m mocap_evaluation.run_evaluation --smoke-test
+Test sample run (external online gait curves, no checkpoint required):
+    python -m mocap_evaluation.run_evaluation --test-sample
 
 Full evaluation with the complete CMU mocap database:
     python -m mocap_evaluation.run_evaluation \\
@@ -17,7 +17,7 @@ Download the full CMU mocap BVH dataset:
     python -m mocap_evaluation.cmu_downloader
     python -m mocap_evaluation.cmu_downloader --list     # show categories
 
-Visualise in PyBullet (requires display + pybullet):
+Visualise in MuJoCo (requires display + mujoco):
     python -m mocap_evaluation.prosthetic_sim --demo
     python -m mocap_evaluation.prosthetic_sim --demo --full-db
 
@@ -28,7 +28,7 @@ Pipeline
 3. bvh_parser       : parse CMU Graphics Lab BVH motion capture files
 4. mocap_loader     : load BVH files with per-file category metadata
 5. motion_matching  : category-aware DTW sliding-window search to align IMU signals with mocap
-6. prosthetic_sim   : PyBullet simulation; right knee = model prediction, GUI visualisation
+6. prosthetic_sim   : MuJoCo-first simulation; right knee = model prediction, GUI visualisation
 7. run_evaluation   : end-to-end pipeline + JSON metrics output
 
 The simulation replaces the RIGHT KNEE joint angle with the model's prediction
