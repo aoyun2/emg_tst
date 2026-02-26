@@ -5,7 +5,7 @@ Source : CMU Graphics Lab Motion Capture Database (BVH format).
          Supports the full CMU catalog (140+ subjects, 2600+ trials)
          with per-file category metadata for motion-type-aware matching.
 
-No synthetic fallback — real CMU BVH data is required.  Download with:
+Real CMU BVH data is required.  Download with:
     python -m mocap_evaluation.cmu_downloader
 
 Returned database dict (all angles in **degrees**, all arrays at TARGET_FPS):
@@ -107,7 +107,7 @@ def _resample(signal: np.ndarray, src_fps: float, tgt_fps: int = TARGET_FPS) -> 
 
 
 def generate_synthetic_gait(
-    n_cycles: int = 10,
+    n_cycles: int = 20,
     cadence_steps_per_min: float = 110.0,
     fps: int = TARGET_FPS,
 ) -> dict:
@@ -152,18 +152,21 @@ def generate_synthetic_gait(
     root_z     = (0.90 + 0.025 * np.sin(2 * np.pi * step_freq * 2 * t)).astype(np.float32)
     root_pos   = np.stack([root_x, np.zeros(N, np.float32), root_z], axis=1)
 
+    categories = np.full(N, "walk", dtype=object)
     return {
-        "knee_right":  tile(kr),
-        "knee_left":   tile(kl),
-        "hip_right":   tile(hr),
-        "hip_left":    tile(hl),
-        "ankle_right": tile(ar),
-        "ankle_left":  tile(al),
-        "pelvis_tilt": tile(pt),
-        "trunk_lean":  tile(tl),
-        "root_pos":    root_pos,
-        "fps":         float(fps),
-        "source":      "synthetic",
+        "knee_right":     tile(kr),
+        "knee_left":      tile(kl),
+        "hip_right":      tile(hr),
+        "hip_left":       tile(hl),
+        "ankle_right":    tile(ar),
+        "ankle_left":     tile(al),
+        "pelvis_tilt":    tile(pt),
+        "trunk_lean":     tile(tl),
+        "root_pos":       root_pos,
+        "fps":            float(fps),
+        "source":         "synthetic",
+        "categories":     categories,
+        "file_boundaries": [(0, N, "synthetic_gait", "walk")],
     }
 
 
@@ -202,6 +205,13 @@ def _extract_angles_from_bvh(parser: BVHParser) -> Optional[dict]:
     # We need at least the knee signals
     if "knee_right" not in angles or "knee_left" not in angles:
         return None
+
+    # CMU BVH angle sign convention: cgspeed conversions store flexion as
+    # negative Xrotation for both knee and hip.  Ensure positive = flexion
+    # to match the IMU convention used by our pipeline.
+    for k in ("knee_right", "knee_left", "hip_right", "hip_left"):
+        if k in angles and float(angles[k].mean()) < -5.0:
+            angles[k] = -angles[k]
 
     # Fill missing signals with zeros
     N = len(angles["knee_right"])
@@ -262,17 +272,12 @@ def load_or_generate_mocap_database(
     bvh_dir = Path(bvh_dir)
     bvh_files = sorted(bvh_dir.glob("*.bvh")) if bvh_dir.exists() else []
 
-    # ── try local files ────────────────────────────────────────────────────
+    # ── try local files (delegate to load_full_cmu_database for category metadata) ──
     if bvh_files:
-        print(f"[mocap_loader] Found {len(bvh_files)} local BVH file(s) in {bvh_dir}/")
-        segments = []
-        for bf in bvh_files:
-            db = load_cmu_bvh(bf)
-            if db is not None:
-                print(f"  Loaded {bf.name}: {len(db['knee_right'])/TARGET_FPS:.1f} s")
-                segments.append(db)
-        if segments:
-            return _concatenate_databases(segments)
+        try:
+            return load_full_cmu_database(bvh_dir=bvh_dir, try_download=False)
+        except Exception:
+            pass
 
     # ── try download ───────────────────────────────────────────────────────
     if try_download:
@@ -281,14 +286,7 @@ def load_or_generate_mocap_database(
             from mocap_evaluation.cmu_downloader import download_all
             downloaded = download_all(dest_dir=bvh_dir)
             if downloaded:
-                bvh_files = sorted(bvh_dir.glob("*.bvh"))
-                segments = []
-                for bf in bvh_files:
-                    db = load_cmu_bvh(bf)
-                    if db is not None:
-                        segments.append(db)
-                if segments:
-                    return _concatenate_databases(segments)
+                return load_full_cmu_database(bvh_dir=bvh_dir, try_download=False)
         except Exception:
             pass
 
