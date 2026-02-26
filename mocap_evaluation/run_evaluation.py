@@ -46,7 +46,7 @@ from mocap_evaluation.mocap_loader import (
     load_full_cmu_database,
 )
 from mocap_evaluation.motion_matching import find_best_match, find_top_k_matches
-from mocap_evaluation.prosthetic_sim import simulate_prosthetic_walking
+from mocap_evaluation.prosthetic_sim import simulate_prosthetic_walking, save_stick_figure_gifs
 
 
 # ── Checkpoint loader ─────────────────────────────────────────────────────────
@@ -177,15 +177,43 @@ def run_smoke_test(try_download: bool = True, top_k: int = 3) -> dict:
 
     from mocap_evaluation.mocap_loader import (
         load_or_generate_mocap_database,
+        generate_diverse_synthetic_gait_database,
         _interp_gait_curve,
         _KNEE_R,
         _HIP_R,
         TARGET_FPS,
     )
 
-    # ── Load mocap database ───────────────────────────────────────────────
+    # ── Load mocap database + augment with diverse synthetic gait ─────────
+    # The synthetic variants (8 cadences × 3 amplitudes) ensure a good
+    # match is always found regardless of how many BVH files are downloaded.
     print()
-    db  = load_or_generate_mocap_database(try_download=try_download)
+    print("  Loading mocap database …")
+    db_synth = generate_diverse_synthetic_gait_database(n_cycles=15)
+    try:
+        db_real = load_or_generate_mocap_database(try_download=try_download)
+        # Merge real data before the synthetic so real matches are preferred.
+        N_r = len(db_real["knee_right"])
+        N_s = len(db_synth["knee_right"])
+        _K  = ["knee_right", "knee_left", "hip_right", "hip_left",
+               "ankle_right", "ankle_left", "pelvis_tilt", "trunk_lean"]
+        db = {k: np.concatenate([db_real[k], db_synth[k]]) for k in _K}
+        db["root_pos"] = np.concatenate(
+            [db_real["root_pos"], db_synth["root_pos"]], axis=0
+        )
+        db["fps"]    = float(TARGET_FPS)
+        db["source"] = db_real["source"] + "+synthetic"
+        _rb = db_real.get("file_boundaries", [])
+        _sb = [(s + N_r, e + N_r, f, c)
+               for (s, e, f, c) in db_synth.get("file_boundaries", [])]
+        db["file_boundaries"] = _rb + _sb
+        db["categories"] = np.concatenate([
+            db_real.get("categories",  np.full(N_r, "unknown", dtype=object)),
+            db_synth.get("categories", np.full(N_s, "walk",    dtype=object)),
+        ])
+    except RuntimeError:
+        db = db_synth
+
     fps = TARGET_FPS   # 200 Hz
     db_dur = len(db["knee_right"]) / fps
     n_cats = len({b[3] for b in db.get("file_boundaries", [])})
@@ -252,6 +280,20 @@ def run_smoke_test(try_download: bool = True, top_k: int = 3) -> dict:
         )
         elapsed = time.time() - t1
         print(f"     Simulation: {elapsed:.2f}s  mode={metrics.get('mode')}")
+
+        # If PyBullet did not produce GIFs (no display / not installed),
+        # fall back to a PIL-based sagittal stick-figure animation.
+        need_pred = not Path(gif_pred).exists()
+        need_gt   = not Path(gif_gt).exists()
+        if need_pred or need_gt:
+            print(f"     PyBullet GIFs absent — generating stick-figure fallback …")
+            save_stick_figure_gifs(
+                segment, predicted,
+                path_pred=gif_pred if need_pred else None,
+                path_gt=gif_gt   if need_gt   else None,
+                fps=float(fps),
+            )
+
         for path in (gif_pred, gif_gt):
             if Path(path).exists():
                 label = "prosthetic (orange knee)" if "pred" in path else "ground-truth (blue)"
