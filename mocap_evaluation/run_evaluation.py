@@ -334,12 +334,20 @@ def evaluate(
             model, scaler, x_win, feature_cols, device
         )
 
-        # Motion matching
-        _, dtw_dist, segment = find_best_match(knee_label, thigh_sig, mocap_db)
+        # rigtest.py records knee angle as the absolute included angle between
+        # shin and thigh segments: diff = 180 - (shin_angle - thigh_angle),
+        # so straight leg ≈ 180°, 60° flexion ≈ 120°.
+        # The CMU mocap database uses the biomechanical flexion convention:
+        # 0° = straight, positive = flexion.  Convert before matching/simulation.
+        knee_label_flex = (180.0 - knee_label).astype(np.float32)
+        pred_knee_flex  = (180.0 - pred_knee).astype(np.float32)
 
-        # Simulation
+        # Motion matching (uses flexion convention)
+        _, dtw_dist, segment = find_best_match(knee_label_flex, thigh_sig, mocap_db)
+
+        # Simulation (uses flexion convention)
         metrics = simulate_prosthetic_walking(
-            segment, pred_knee,
+            segment, pred_knee_flex,
             use_physics=use_physics,
             use_gui=use_gui,
         )
@@ -348,7 +356,7 @@ def evaluate(
         metrics["dtw_dist"]    = float(dtw_dist)
         metrics["pred_rmse"]   = float(
             np.sqrt(np.mean((pred_knee - knee_label) ** 2))
-        )
+        )  # RMSE is invariant to the 180-x shift — compute in original convention
         metrics["elapsed_s"]   = float(time.time() - t0)
         per_window.append(metrics)
 
