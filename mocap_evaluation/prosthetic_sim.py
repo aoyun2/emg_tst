@@ -542,10 +542,10 @@ class ProstheticSimulator:
         robot_gt = self._robot_gt
         jmap_gt  = _discover_joints(robot_gt)
 
-        # ── GUI enhancements: color robots and add labels ────────────
+        # ── Color robots (applied for both GUI window and GIF capture) ──
+        _color_robot_prosthetic(robot, jmap, self._client)
+        _color_robot_ghost(robot_gt, self._client)
         if self.use_gui:
-            _color_robot_prosthetic(robot, jmap, self._client)
-            _color_robot_ghost(robot_gt, self._client)
             self._debug_ids: List[int] = []
 
         accum = _MetricsAccum(fall_threshold=self.fall_threshold)
@@ -607,9 +607,11 @@ class ProstheticSimulator:
             if _gif_frames is not None and t % _CAPTURE_EVERY == 0:
                 rx_c = float(root_traj[t, 0])
                 rz_c = float(root_traj[t, 2])
+                # Side view (looking in +Y): robot walks in X, camera at Y=-3.5
+                # Target centred between the two robots (Y=0 and Y=1.5)
                 _view = p.computeViewMatrix(
-                    cameraEyePosition=[rx_c - 2.5, -2.5, rz_c + 0.9],
-                    cameraTargetPosition=[rx_c, 0.6, rz_c + 0.5],
+                    cameraEyePosition=[rx_c, -3.5, rz_c + 1.1],
+                    cameraTargetPosition=[rx_c, 0.75, rz_c + 0.85],
                     cameraUpVector=[0, 0, 1],
                     physicsClientId=self._client,
                 )

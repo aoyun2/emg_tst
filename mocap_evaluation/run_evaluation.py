@@ -230,9 +230,13 @@ def run_smoke_test(try_download: bool = True) -> dict:
     print(f"  Model noise (pred vs true knee): {model_noise:.2f}° RMS")
 
     # ── Motion matching ───────────────────────────────────────────────────
+    # Restrict to walking segments — the query is normal walking gait so
+    # comparing to running/jumping segments would inflate the distance.
     print()
     t0 = time.time()
-    start, dist, segment = find_best_match(knee_imu, thigh_imu, db)
+    start, dist, segment = find_best_match(
+        knee_imu, thigh_imu, db, categories=["walk"]
+    )
     match_s = time.time() - t0
     cat = segment.get("category", "unknown")
     print(f"  Match  : start={start}, DTW={dist:.4f}, category={cat}  ({match_s:.2f}s)")
