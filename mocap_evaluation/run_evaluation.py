@@ -41,7 +41,10 @@ import torch
 
 from emg_tst.model import TSTEncoder, TSTRegressor
 from emg_tst.data import StandardScaler
-from mocap_evaluation.mocap_loader import load_or_generate_mocap_database
+from mocap_evaluation.mocap_loader import (
+    load_or_generate_mocap_database,
+    load_full_cmu_database,
+)
 from mocap_evaluation.motion_matching import find_best_match
 from mocap_evaluation.prosthetic_sim import simulate_prosthetic_walking
 
@@ -205,6 +208,8 @@ def evaluate(
     use_gui: bool = False,
     use_physics: bool = True,
     device_str: str = "cpu",
+    categories: Optional[list] = None,
+    full_database: bool = False,
 ) -> dict:
     """
     Full prosthetic evaluation pipeline.
@@ -230,9 +235,18 @@ def evaluate(
 
     # ── Load / generate mocap database ──────────────────────────────────────
     print(f"[eval] Loading mocap database from: {mocap_dir}")
-    mocap_db = load_or_generate_mocap_database(bvh_dir=mocap_dir)
+    if full_database:
+        mocap_db = load_full_cmu_database(
+            bvh_dir=mocap_dir,
+            categories=categories,
+        )
+    else:
+        mocap_db = load_or_generate_mocap_database(bvh_dir=mocap_dir)
     db_dur   = len(mocap_db["knee_right"]) / mocap_db["fps"]
-    print(f"       {db_dur:.1f} s @ {mocap_db['fps']:.0f} Hz  (source: {mocap_db['source']})")
+    n_files = len(mocap_db.get("file_boundaries", []))
+    extra = f", {n_files} files" if n_files else ""
+    print(f"       {db_dur:.1f} s @ {mocap_db['fps']:.0f} Hz  "
+          f"(source: {mocap_db['source']}{extra})")
 
     # ── Per-window loop ──────────────────────────────────────────────────────
     per_window = []
@@ -339,6 +353,11 @@ def _parse_args():
                     help="Use kinematic evaluation only (no PyBullet)")
     ap.add_argument("--smoke-test",  action="store_true",
                     help="Run quick smoke test with synthetic data (no files needed)")
+    ap.add_argument("--full-db",     action="store_true",
+                    help="Use the full CMU mocap database (auto-downloads if needed)")
+    ap.add_argument("--categories",  nargs="*", default=None,
+                    help="Motion categories to match against (e.g. walk run jump). "
+                         "Only effective with --full-db.")
     return ap.parse_args()
 
 
@@ -382,6 +401,8 @@ def main():
         use_gui         = args.gui,
         use_physics     = not args.no_physics,
         device_str      = args.device,
+        categories      = args.categories,
+        full_database   = args.full_db,
     )
 
 

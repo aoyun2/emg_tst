@@ -36,6 +36,7 @@ Stability metrics
 from __future__ import annotations
 
 import math
+import time as _time
 import warnings
 from contextlib import contextmanager
 from typing import Dict, List, Optional, Tuple
@@ -283,6 +284,13 @@ class ProstheticSimulator:
         p.setGravity(0, 0, -9.81, physicsClientId=self._client)
         p.setTimeStep(SIM_TIMESTEP / self.sub_steps, physicsClientId=self._client)
         self._plane = p.loadURDF("plane.urdf", physicsClientId=self._client)
+        if self.use_gui:
+            p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0,
+                                       physicsClientId=self._client)
+            p.configureDebugVisualizer(p.COV_ENABLE_SHADOWS, 1,
+                                       physicsClientId=self._client)
+            # Disable real-time so we control stepping
+            p.setRealTimeSimulation(0, physicsClientId=self._client)
         return self
 
     def __exit__(self, *_):
@@ -485,17 +493,26 @@ class ProstheticSimulator:
         jmap  = _discover_joints(robot)
 
         # Also discover the "ground truth" robot for CoM comparison
-        # (all joints follow mocap perfectly)
+        # (all joints follow mocap perfectly, offset +1.5 m in Y)
         self._robot_gt = self._load_robot(
-            [float(root_traj[0, 0]) + 1.0, 0.0, float(root_traj[0, 2])]
+            [float(root_traj[0, 0]), 1.5, float(root_traj[0, 2])]
         )
         robot_gt = self._robot_gt
         jmap_gt  = _discover_joints(robot_gt)
 
+        # ── GUI enhancements: color robots and add labels ────────────
+        if self.use_gui:
+            _color_robot_prosthetic(robot, jmap, self._client)
+            _color_robot_ghost(robot_gt, self._client)
+            self._debug_ids: List[int] = []
+
         accum = _MetricsAccum(fall_threshold=self.fall_threshold)
         com_heights_gt = []
+        dt = 1.0 / fps
 
         for t in range(T):
+            frame_start = _time.time()
+
             fr = {
                 "hip_right":   float(mocap_segment["hip_right"][t]),
                 "hip_left":    float(mocap_segment["hip_left"][t]),
@@ -524,7 +541,7 @@ class ProstheticSimulator:
             self._set_joint_kinematic(robot, jmap, "rightknee", pred_knee_deg)
 
             # ── ground truth robot (all joints from mocap) ────────────────
-            gt_pos_t = [float(root_traj[t, 0]) + 1.0, 0.0, float(root_traj[t, 2])]
+            gt_pos_t = [float(root_traj[t, 0]), 1.5, float(root_traj[t, 2])]
             p.resetBasePositionAndOrientation(
                 robot_gt, gt_pos_t, [0, 0, 0, 1], physicsClientId=self._client
             )
@@ -548,6 +565,19 @@ class ProstheticSimulator:
 
             right_c, left_c = self._check_foot_contacts(robot)
             accum.record(t, com_h, pred_knee_deg, fr["knee_right"], right_c, left_c)
+
+            # ── GUI: camera tracking + debug overlay ──────────────────────
+            if self.use_gui:
+                _update_gui_overlay(
+                    self._client, robot, robot_gt, root_traj, t, T,
+                    fps, pred_knee_deg, fr["knee_right"], com_h,
+                    accum.fall_detected, self._debug_ids,
+                )
+                # Real-time pacing
+                elapsed = _time.time() - frame_start
+                sleep = dt - elapsed
+                if sleep > 0:
+                    _time.sleep(sleep)
 
         p.removeBody(robot,    physicsClientId=self._client)
         p.removeBody(robot_gt, physicsClientId=self._client)
@@ -701,3 +731,194 @@ def simulate_prosthetic_walking(
 
     metrics = run_kinematic_evaluation(mocap_segment, predicted_knee)
     return metrics
+
+
+# ── GUI visualisation helpers ────────────────────────────────────────────────
+
+
+def _color_robot_prosthetic(robot: int, jmap: Dict[str, dict], client: int):
+    """
+    Color the predicted robot:
+      - right knee/leg links orange (prosthetic)
+      - body neutral grey
+    """
+    n = p.getNumJoints(robot, physicsClientId=client)
+    # Base link
+    p.changeVisualShape(robot, -1, rgbaColor=[0.6, 0.6, 0.6, 1.0],
+                        physicsClientId=client)
+    for i in range(n):
+        info = p.getJointInfo(robot, i, physicsClientId=client)
+        name = info[1].decode("utf-8").lower()
+        if "right" in name and ("knee" in name or "leg" in name
+                                or "foot" in name or "ankle" in name):
+            p.changeVisualShape(robot, i, rgbaColor=[1.0, 0.4, 0.1, 1.0],
+                                physicsClientId=client)
+        else:
+            p.changeVisualShape(robot, i, rgbaColor=[0.6, 0.6, 0.6, 1.0],
+                                physicsClientId=client)
+
+
+def _color_robot_ghost(robot: int, client: int):
+    """Color the ground-truth robot semi-transparent blue."""
+    n = p.getNumJoints(robot, physicsClientId=client)
+    blue = [0.2, 0.5, 0.9, 0.5]
+    p.changeVisualShape(robot, -1, rgbaColor=blue, physicsClientId=client)
+    for i in range(n):
+        p.changeVisualShape(robot, i, rgbaColor=blue, physicsClientId=client)
+
+
+def _update_gui_overlay(
+    client: int,
+    robot_pred: int,
+    robot_gt: int,
+    root_traj: np.ndarray,
+    t: int,
+    T: int,
+    fps: float,
+    pred_knee: float,
+    gt_knee: float,
+    com_h: float,
+    fall: bool,
+    debug_ids: List[int],
+):
+    """Update camera, HUD text, and labels each frame."""
+    # Remove previous debug text
+    for did in debug_ids:
+        p.removeUserDebugItem(did, physicsClientId=client)
+    debug_ids.clear()
+
+    rx = float(root_traj[t, 0])
+    rz = float(root_traj[t, 2])
+
+    # Camera: side view tracking the humanoid
+    p.resetDebugVisualizerCamera(
+        cameraDistance=2.8,
+        cameraYaw=90,
+        cameraPitch=-15,
+        cameraTargetPosition=[rx, 0.75, rz],
+        physicsClientId=client,
+    )
+
+    # Labels above each robot
+    d1 = p.addUserDebugText(
+        "PREDICTED",
+        [rx, -0.3, rz + 0.7],
+        textColorRGB=[1.0, 0.4, 0.1],
+        textSize=1.5,
+        lifeTime=0,
+        physicsClientId=client,
+    )
+    d2 = p.addUserDebugText(
+        "GROUND TRUTH",
+        [rx, 1.8, rz + 0.7],
+        textColorRGB=[0.2, 0.5, 0.9],
+        textSize=1.5,
+        lifeTime=0,
+        physicsClientId=client,
+    )
+    debug_ids.extend([d1, d2])
+
+    # HUD: time, knee error, CoM height
+    time_s = t / fps
+    knee_err = abs(pred_knee - gt_knee)
+    status = "FALL!" if fall else "OK"
+    hud = (
+        f"t={time_s:5.2f}s  [{t}/{T}]\n"
+        f"R-Knee pred={pred_knee:5.1f}  gt={gt_knee:5.1f}  err={knee_err:4.1f}\n"
+        f"CoM height={com_h:.3f}m   {status}"
+    )
+    d3 = p.addUserDebugText(
+        hud,
+        [rx - 1.5, -0.5, rz + 1.2],
+        textColorRGB=[1, 1, 1],
+        textSize=1.2,
+        lifeTime=0,
+        physicsClientId=client,
+    )
+    debug_ids.append(d3)
+
+
+# ── Standalone visualisation demo ────────────────────────────────────────────
+
+
+def run_visual_demo(use_full_db: bool = False):
+    """
+    Launch a PyBullet GUI window showing a walking simulation demo.
+
+    Uses synthetic data by default.  Pass use_full_db=True to load
+    real CMU mocap data (downloads if needed).
+    """
+    if not _PYBULLET_AVAILABLE:
+        print("ERROR: PyBullet is required.  Install: pip install pybullet",
+              file=__import__("sys").stderr)
+        return
+
+    from mocap_evaluation.mocap_loader import (
+        generate_synthetic_gait,
+        load_full_cmu_database,
+    )
+    from mocap_evaluation.motion_matching import find_best_match
+
+    print("=" * 60)
+    print("PYBULLET VISUALISATION DEMO")
+    print("=" * 60)
+
+    fps = 200
+    T   = 600  # 3 seconds
+
+    # Synthetic IMU-like query
+    t_arr = np.linspace(0, 3 * math.pi, T)
+    knee_imu  = (30 + 30 * np.sin(t_arr)).astype(np.float32)
+    thigh_imu = (15 * np.sin(t_arr + 0.5)).astype(np.float32)
+
+    # Noisy model prediction (realistic error)
+    rng = np.random.default_rng(42)
+    predicted = knee_imu + rng.normal(0, 4, T).astype(np.float32)
+
+    # Load database
+    if use_full_db:
+        db = load_full_cmu_database()
+    else:
+        db = generate_synthetic_gait(n_cycles=25)
+
+    db_dur = len(db["knee_right"]) / fps
+    print(f"  Database: {db_dur:.1f}s  source={db['source']}")
+
+    # Motion match
+    start, dist, segment = find_best_match(knee_imu, thigh_imu, db)
+    print(f"  Match: start={start}, DTW={dist:.4f}")
+
+    # Run with GUI
+    print(f"\n  Launching PyBullet window — {T/fps:.1f}s playback …")
+    print("  Close the window to exit.\n")
+
+    with ProstheticSimulator(use_gui=True) as sim:
+        metrics = sim.run(segment, predicted, fps=float(fps))
+
+    print("\nResults:")
+    for k, v in metrics.items():
+        print(f"  {k:<25} {v}")
+
+
+def main():
+    """CLI entry point for ``python -m mocap_evaluation.prosthetic_sim``."""
+    import argparse
+
+    ap = argparse.ArgumentParser(
+        description="Visualise prosthetic walking simulation in PyBullet"
+    )
+    ap.add_argument("--demo", action="store_true",
+                    help="Run visual demo with synthetic data")
+    ap.add_argument("--full-db", action="store_true",
+                    help="Use full CMU mocap database (downloads if needed)")
+    args = ap.parse_args()
+
+    if args.demo:
+        run_visual_demo(use_full_db=args.full_db)
+    else:
+        print("Usage:  python -m mocap_evaluation.prosthetic_sim --demo")
+        print("        python -m mocap_evaluation.prosthetic_sim --demo --full-db")
+
+
+if __name__ == "__main__":
+    main()

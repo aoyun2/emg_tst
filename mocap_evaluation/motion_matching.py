@@ -9,10 +9,17 @@ Pipeline
 4. Return best-matching start index → extract ALL joint angles for that window.
 
 DTW implementation uses a Sakoe-Chiba band for O(n · W) cost instead of O(n²).
+
+Category-aware matching
+-----------------------
+When the mocap database contains ``file_boundaries`` metadata (produced by
+:func:`mocap_loader.load_full_cmu_database`), matching can be restricted to
+specific motion categories (e.g. only "walk" or only "run") and the returned
+result includes the matched category.
 """
 from __future__ import annotations
 
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -104,6 +111,36 @@ def _xcorr_distances(
 # ── Main matching function ────────────────────────────────────────────────────
 
 
+def _valid_start_mask(
+    db_len: int,
+    window: int,
+    stride: int,
+    mocap_db: dict,
+    categories: Optional[Sequence[str]],
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Return (starts, mask) where mask[i] is True if starts[i] falls entirely
+    within a segment of one of the requested categories.
+    """
+    starts = np.arange(0, db_len - window + 1, stride)
+    if categories is None or "file_boundaries" not in mocap_db:
+        return starts, np.ones(len(starts), dtype=bool)
+
+    cat_set = set(categories)
+    boundaries = mocap_db["file_boundaries"]
+    mask = np.zeros(len(starts), dtype=bool)
+
+    for seg_start, seg_end, _fname, cat in boundaries:
+        if cat not in cat_set:
+            continue
+        # A candidate window [s, s+window) is valid if it fits in this segment
+        lo = max(0, np.searchsorted(starts, seg_start))
+        hi = np.searchsorted(starts, seg_end - window, side="right")
+        mask[lo:hi] = True
+
+    return starts, mask
+
+
 def find_best_match(
     imu_knee: np.ndarray,
     imu_thigh: np.ndarray,
@@ -111,6 +148,7 @@ def find_best_match(
     stride: int = 5,
     dtw_band: int = 40,
     top_k_prefilter: int = 20,
+    categories: Optional[Sequence[str]] = None,
 ) -> Tuple[int, float, dict]:
     """
     Find the mocap segment that best matches (imu_knee, imu_thigh).
@@ -119,17 +157,19 @@ def find_best_match(
     ----------
     imu_knee   : (T,) knee angle labels from IMU recording (degrees)
     imu_thigh  : (T,) thigh angle from IMU recording (degrees)
-    mocap_db   : database dict from mocap_loader.load_or_generate_mocap_database()
+    mocap_db   : database dict from mocap_loader
     stride     : step size for sliding window pre-filter (samples)
     dtw_band   : Sakoe-Chiba half-bandwidth for DTW
     top_k_prefilter : number of candidates to score with full DTW
+    categories : restrict matching to these motion categories (None = all).
+                 Only effective when mocap_db has ``file_boundaries`` metadata.
 
     Returns
     -------
     best_start  : int   start index in mocap_db arrays
     best_dist   : float normalised DTW distance
     matched     : dict  {joint_name: (T,) array} for the best window,
-                        plus 'root_pos': (T, 3)
+                        plus 'root_pos': (T, 3) and 'category': str
     """
     T = len(imu_knee)
     assert len(imu_thigh) == T
@@ -151,13 +191,28 @@ def find_best_match(
     ).astype(np.float64)
     db_n   = _zscore(db_raw)
 
+    # ── category-aware candidate generation ───────────────────────────────
+    starts, valid = _valid_start_mask(db_len, T, stride, mocap_db, categories)
+    valid_starts = starts[valid]
+
+    if len(valid_starts) == 0:
+        # Fall back to all starts if no valid ones for the requested category
+        valid_starts = starts
+        valid = np.ones(len(starts), dtype=bool)
+
     # ── stage 1: fast L2 pre-filter ───────────────────────────────────────
-    starts     = np.arange(0, db_len - T + 1, stride)
-    l2_dists   = _xcorr_distances(query_n, db_n, T, stride)
+    l2_dists = _xcorr_distances(query_n, db_n, T, stride)
+    # Mask out invalid starts with inf
+    l2_masked = l2_dists.copy()
+    l2_masked[~valid] = float("inf")
 
     # Sort and keep top-K candidates
-    k = min(top_k_prefilter, len(l2_dists))
-    top_idx   = np.argpartition(l2_dists, k - 1)[:k]
+    k = min(top_k_prefilter, int(valid.sum()))
+    if k == 0:
+        k = min(top_k_prefilter, len(l2_dists))
+        l2_masked = l2_dists  # fall back to unmasked
+
+    top_idx    = np.argpartition(l2_masked, k - 1)[:k]
     top_starts = starts[top_idx]
 
     # ── stage 2: DTW on top-K ─────────────────────────────────────────────
@@ -182,6 +237,12 @@ def find_best_match(
             matched[k] = np.zeros(T, dtype=np.float32)
 
     matched["root_pos"] = mocap_db["root_pos"][best_start : best_start + T].copy()
+
+    # ── attach matched category ───────────────────────────────────────────
+    if "categories" in mocap_db:
+        matched["category"] = str(mocap_db["categories"][best_start])
+    else:
+        matched["category"] = "unknown"
 
     return best_start, best_dist, matched
 
