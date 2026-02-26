@@ -44,9 +44,11 @@ from emg_tst.data import StandardScaler
 from mocap_evaluation.mocap_loader import (
     load_or_generate_mocap_database,
     load_full_cmu_database,
+    load_aggregated_bandai_cmu_database,
 )
 from mocap_evaluation.motion_matching import find_best_match, find_top_k_matches
 from mocap_evaluation.prosthetic_sim import simulate_prosthetic_walking
+from mocap_evaluation.mock_data import generate_mock_curves, save_mock_curves
 
 
 # ── Checkpoint loader ─────────────────────────────────────────────────────────
@@ -286,8 +288,10 @@ def run_smoke_test(try_download: bool = True, top_k: int = 3) -> dict:
         )
     print()
     print("  knee_rmse_deg ≈ model_rmse + residual cross-subject match error.")
-    print("  Download more BVH files (python -m mocap_evaluation.cmu_downloader)")
-    print("  to improve match quality and category diversity.")
+    print("  Download more BVH files for accuracy (recommended first):")
+    print("    python -m mocap_evaluation.bandai_namco_downloader")
+    print("  Optional fallback/source expansion:")
+    print("    python -m mocap_evaluation.cmu_downloader")
 
     return all_metrics[0] if all_metrics else {}
 
@@ -305,6 +309,10 @@ def evaluate(
     use_physics: bool = True,
     device_str: str = "cpu",
     full_database: bool = False,
+    sim_backend: str = "pybullet",
+    aggregate_datasets: bool = False,
+    bandai_dir: Optional[str | Path] = None,
+    cmu_dir: Optional[str | Path] = None,
 ) -> dict:
     """
     Full prosthetic evaluation pipeline.
@@ -330,7 +338,15 @@ def evaluate(
 
     # ── Load / generate mocap database ──────────────────────────────────────
     print(f"[eval] Loading mocap database from: {mocap_dir}")
-    if full_database:
+    if aggregate_datasets:
+        bandai_path = Path(bandai_dir) if bandai_dir else Path(mocap_dir) / "bandai"
+        cmu_path = Path(cmu_dir) if cmu_dir else Path(mocap_dir) / "cmu"
+        mocap_db = load_aggregated_bandai_cmu_database(
+            bandai_dir=bandai_path,
+            cmu_dir=cmu_path,
+            try_download=True,
+        )
+    elif full_database:
         mocap_db = load_full_cmu_database(bvh_dir=mocap_dir)
     else:
         mocap_db = load_or_generate_mocap_database(bvh_dir=mocap_dir)
@@ -370,6 +386,7 @@ def evaluate(
             segment, pred_knee_flex,
             use_physics=use_physics,
             use_gui=use_gui,
+            backend=sim_backend,
         )
 
         metrics["window_idx"]  = i
@@ -428,6 +445,95 @@ def evaluate(
     return result
 
 
+def evaluate_from_curves(
+    knee_label_included: np.ndarray,
+    thigh_angle: np.ndarray,
+    predicted_knee_included: np.ndarray,
+    mocap_dir: str | Path = "mocap_data",
+    top_k: int = 3,
+    use_gui: bool = True,
+    use_physics: bool = True,
+    out_path: str | Path = "eval_mock_results.json",
+    full_database: bool = True,
+    sim_backend: str = "pybullet",
+    aggregate_datasets: bool = False,
+    bandai_dir: Optional[str | Path] = None,
+    cmu_dir: Optional[str | Path] = None,
+) -> dict:
+    """Evaluate motion matching directly from label/thigh curves.
+
+    This path is designed for early feasibility testing before recorded data is
+    available from ``rigtest.py``.
+    """
+    knee_label_flex = (180.0 - knee_label_included).astype(np.float32)
+    pred_knee_flex = (180.0 - predicted_knee_included).astype(np.float32)
+
+    if aggregate_datasets:
+        bandai_path = Path(bandai_dir) if bandai_dir else Path(mocap_dir) / "bandai"
+        cmu_path = Path(cmu_dir) if cmu_dir else Path(mocap_dir) / "cmu"
+        mocap_db = load_aggregated_bandai_cmu_database(
+            bandai_dir=bandai_path,
+            cmu_dir=cmu_path,
+            try_download=True,
+        )
+    elif full_database:
+        mocap_db = load_full_cmu_database(bvh_dir=mocap_dir)
+    else:
+        mocap_db = load_or_generate_mocap_database(bvh_dir=mocap_dir)
+
+    matches = find_top_k_matches(
+        imu_knee=knee_label_flex,
+        imu_thigh=thigh_angle.astype(np.float32),
+        mocap_db=mocap_db,
+        k=top_k,
+    )
+
+    per_match = []
+    for rank, (start, dist, segment) in enumerate(matches, start=1):
+        gt_metrics = simulate_prosthetic_walking(
+            segment,
+            knee_label_flex,
+            use_physics=use_physics,
+            use_gui=use_gui,
+            backend=sim_backend,
+        )
+        pred_metrics = simulate_prosthetic_walking(
+            segment,
+            pred_knee_flex,
+            use_physics=use_physics,
+            use_gui=use_gui,
+            backend=sim_backend,
+        )
+        per_match.append(
+            {
+                "match_rank": rank,
+                "start_idx": int(start),
+                "dtw_dist": float(dist),
+                "category": segment.get("category", "unknown"),
+                "ground_truth_replaced_right_knee": gt_metrics,
+                "prediction_replaced_right_knee": pred_metrics,
+                "pred_vs_label_rmse_deg": float(
+                    np.sqrt(np.mean((predicted_knee_included - knee_label_included) ** 2))
+                ),
+            }
+        )
+
+    result = {
+        "mode": "curve_direct",
+        "n_frames": int(len(knee_label_included)),
+        "top_k": int(top_k),
+        "mocap_source": mocap_db.get("source", "unknown"),
+        "matches": per_match,
+    }
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w") as f:
+        json.dump(result, f, indent=2)
+    print(f"[eval] Curve-direct results saved -> {out_path}")
+    return result
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 
@@ -448,14 +554,30 @@ def _parse_args():
     ap.add_argument("--device",      default="cpu",
                     help="torch device (cpu / cuda)")
     ap.add_argument("--no-gui",      action="store_true",
-                    help="Disable PyBullet GUI (GUI is on by default)")
+                    help="Disable simulation GUI (GUI is on by default when backend supports it)")
     ap.add_argument("--no-physics",  action="store_true",
-                    help="Use kinematic evaluation only (no PyBullet)")
+                    help="Use kinematic evaluation only (no physics backend)")
     ap.add_argument("--smoke-test",  action="store_true",
                     help="Run quick smoke test (no checkpoint needed)")
     ap.add_argument("--full-db",     action="store_true",
-                    help="Use the full CMU mocap database with category metadata "
-                         "(auto-downloads if needed)")
+                    help="Use the full local mocap database with category metadata "
+                         "(auto-downloads Bandai locomotion first, CMU fallback)")
+    ap.add_argument("--mock-data", action="store_true",
+                    help="Run with generated mock knee/thigh curves (no checkpoint needed)")
+    ap.add_argument("--mock-seconds", type=float, default=4.0,
+                    help="Mock curve length in seconds")
+    ap.add_argument("--top-k", type=int, default=3,
+                    help="Top-k motion matches to simulate")
+    ap.add_argument("--save-mock", default=None,
+                    help="Optional .npz path to save generated mock curves")
+    ap.add_argument("--sim-backend", default="pybullet", choices=["pybullet", "mujoco"],
+                    help="Physics backend preference")
+    ap.add_argument("--aggregate-datasets", action="store_true",
+                    help="Aggregate Bandai + CMU datasets (separate dirs under mocap-dir by default)")
+    ap.add_argument("--bandai-dir", default=None,
+                    help="Bandai BVH directory (default: <mocap-dir>/bandai when aggregating)")
+    ap.add_argument("--cmu-dir", default=None,
+                    help="CMU BVH directory (default: <mocap-dir>/cmu when aggregating)")
     return ap.parse_args()
 
 
@@ -464,6 +586,28 @@ def main():
 
     if args.smoke_test:
         run_smoke_test()
+        return
+
+    if args.mock_data:
+        curves = generate_mock_curves(length_s=args.mock_seconds)
+        if args.save_mock:
+            save_mock_curves(args.save_mock, curves)
+            print(f"[eval] Saved mock curves -> {args.save_mock}")
+        evaluate_from_curves(
+            knee_label_included=curves.knee_label_included_deg,
+            thigh_angle=curves.thigh_angle_deg,
+            predicted_knee_included=curves.predicted_knee_included_deg,
+            mocap_dir=args.mocap_dir,
+            top_k=args.top_k,
+            use_gui=not args.no_gui,
+            use_physics=not args.no_physics,
+            out_path=args.out,
+            full_database=args.full_db,
+            sim_backend=args.sim_backend,
+            aggregate_datasets=args.aggregate_datasets,
+            bandai_dir=args.bandai_dir,
+            cmu_dir=args.cmu_dir,
+        )
         return
 
     if args.checkpoint is None:
@@ -500,6 +644,10 @@ def main():
         use_physics     = not args.no_physics,
         device_str      = args.device,
         full_database   = args.full_db,
+        sim_backend      = args.sim_backend,
+        aggregate_datasets = args.aggregate_datasets,
+        bandai_dir        = args.bandai_dir,
+        cmu_dir           = args.cmu_dir,
     )
 
 
