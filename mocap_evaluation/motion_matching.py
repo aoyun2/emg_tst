@@ -3,9 +3,10 @@ Motion matching: find the mocap segment that best matches our IMU recording.
 
 Pipeline
 --------
-1. Query  = z-score-normalised (knee_angle, thigh_angle) from our device at 200 Hz.
-2. Database = (knee_right, hip_right) from mocap at 200 Hz.
-3. Slide over database with step `stride`, compute DTW distance to query.
+1. Query  = multi-feature curve set from our device at 200 Hz
+   (knee, thigh, knee velocity, thigh velocity).
+2. Database = the same feature set built from mocap (knee_right, hip_right).
+3. Slide over database with step `stride`, pre-filter with L2, then compute DTW.
 4. Return best-matching start index → extract ALL joint angles for that window.
 
 DTW implementation uses a Sakoe-Chiba band for O(n · W) cost instead of O(n²).
@@ -26,32 +27,29 @@ import numpy as np
 
 # ── Normalisation ─────────────────────────────────────────────────────────────
 
-# Fixed channel scales for matching.  These are typical physiological ranges
-# (degrees) used to make the knee and hip channels comparable without removing
-# absolute angle information (which z-scoring would do).
-_KNEE_SCALE = 70.0   # typical walking knee flexion range (0–70°)
-_HIP_SCALE  = 40.0   # typical walking hip flexion range (-10° to 30°)
+# Fixed channel scales for matching.  We use both angles and their velocities
+# to improve free-motion matching without relying on category restrictions.
+_KNEE_SCALE = 70.0   # angle range in degrees
+_HIP_SCALE  = 40.0
+_KNEE_VEL_SCALE = 140.0  # deg/s-ish scale at 200 Hz finite difference
+_HIP_VEL_SCALE  = 90.0
 
 
-def _zscore(x: np.ndarray, eps: float = 1e-6) -> np.ndarray:
-    """Z-score a 1-D or 2-D array column-wise."""
-    if x.ndim == 1:
-        m, s = x.mean(), x.std()
-        return (x - m) / max(s, eps)
-    m = x.mean(axis=0, keepdims=True)
-    s = x.std(axis=0, keepdims=True)
-    s = np.where(s < eps, eps, s)
-    return (x - m) / s
+def _build_features(knee: np.ndarray, hip: np.ndarray) -> np.ndarray:
+    """Build scaled feature matrix [knee, hip, dknee, dhip] for matching."""
+    knee = knee.astype(np.float64)
+    hip = hip.astype(np.float64)
 
+    dknee = np.empty_like(knee)
+    dhip = np.empty_like(hip)
+    dknee[0] = 0.0
+    dhip[0] = 0.0
+    dknee[1:] = np.diff(knee)
+    dhip[1:] = np.diff(hip)
 
-def _range_scale(x: np.ndarray) -> np.ndarray:
-    """
-    Scale a (N, 2) matrix where col 0 = knee and col 1 = hip by fixed
-    physiological ranges.  Unlike z-scoring, this preserves absolute angle
-    values — segments with the right amplitude match better.
-    """
-    scales = np.array([[_KNEE_SCALE, _HIP_SCALE]])
-    return x / scales
+    feats = np.stack([knee, hip, dknee, dhip], axis=1)
+    scales = np.array([[_KNEE_SCALE, _HIP_SCALE, _KNEE_VEL_SCALE, _HIP_VEL_SCALE]])
+    return feats / scales
 
 
 # ── DTW ───────────────────────────────────────────────────────────────────────
@@ -114,9 +112,8 @@ def _xcorr_distances(
     Returns (n_candidates,) array of L2 distances.
     Each candidate is a contiguous window of length `window` in database.
 
-    Uses direct L2 on the (already range-scaled) input — no per-window
-    mean subtraction, so candidates with the right absolute angle values
-    are preferred over shape-only matches.
+    Uses direct L2 on pre-built multi-feature inputs, preserving both
+    absolute angles and local dynamics for robust free-motion pre-filtering.
     """
     starts = np.arange(0, len(database) - window + 1, stride)
     dists  = np.empty(len(starts), dtype=np.float64)
@@ -199,17 +196,9 @@ def find_best_match(
             "Generate more synthetic cycles or use a longer BVH recording."
         )
 
-    # ── build scaled query matrix (T, 2): [knee, thigh] ────────────────────
-    # Range-scaling (not z-score) so absolute angle values are preserved —
-    # walking segments match walking queries better than sport/dance.
-    query_raw = np.stack([imu_knee, imu_thigh], axis=1).astype(np.float64)
-    query_n   = _range_scale(query_raw)
-
-    # ── build scaled database matrix: [knee_right, hip_right] ─────────────
-    db_raw = np.stack(
-        [mocap_db["knee_right"], mocap_db["hip_right"]], axis=1
-    ).astype(np.float64)
-    db_n   = _range_scale(db_raw)
+    # ── build query/database feature matrices: [knee, hip, dknee, dhip] ───
+    query_n = _build_features(imu_knee, imu_thigh)
+    db_n = _build_features(mocap_db["knee_right"], mocap_db["hip_right"])
 
     # ── category-aware candidate generation ───────────────────────────────
     starts, valid = _valid_start_mask(db_len, T, stride, mocap_db, categories)
@@ -320,14 +309,9 @@ def find_top_k_matches(
             f"Mocap database ({db_len} frames) shorter than query ({T} frames)."
         )
 
-    # Build scaled query and database matrices
-    query_raw = np.stack([imu_knee, imu_thigh], axis=1).astype(np.float64)
-    query_n   = _range_scale(query_raw)
-
-    db_raw = np.stack(
-        [mocap_db["knee_right"], mocap_db["hip_right"]], axis=1
-    ).astype(np.float64)
-    db_n = _range_scale(db_raw)
+    # Build multi-feature query and database matrices
+    query_n = _build_features(imu_knee, imu_thigh)
+    db_n = _build_features(mocap_db["knee_right"], mocap_db["hip_right"])
 
     # Category-aware candidate generation
     starts, valid = _valid_start_mask(db_len, T, stride, mocap_db, categories)
