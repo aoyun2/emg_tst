@@ -11,21 +11,22 @@ from mocap_evaluation.mocap_loader import TARGET_FPS
 from mocap_evaluation.sample_data import SampleCurves
 
 # Public OpenSim IK sample with hip/knee angles.
+# The file moved from OpenSim/Examples/Gait2354_Simbody/ to Applications/*/test/
 DEFAULT_EXTERNAL_GAIT_URL = (
     "https://raw.githubusercontent.com/opensim-org/opensim-core/main/"
-    "OpenSim/Examples/Gait2354_Simbody/subject01_walk1_ik.mot"
+    "Applications/CMC/test/subject01_walk1_ik.mot"
 )
 
 # Public fallback URLs from external online repositories/CDNs.
 FALLBACK_EXTERNAL_GAIT_URLS = (
+    "https://raw.githubusercontent.com/opensim-org/opensim-core/main/"
+    "Applications/Forward/test/subject01_walk1_ik.mot",
+    "https://raw.githubusercontent.com/opensim-org/opensim-core/main/"
+    "Applications/RRA/test/subject01_walk1_ik.mot",
     "https://github.com/opensim-org/opensim-core/raw/refs/heads/main/"
-    "OpenSim/Examples/Gait2354_Simbody/subject01_walk1_ik.mot",
+    "Applications/CMC/test/subject01_walk1_ik.mot",
     "https://raw.githubusercontent.com/opensim-org/opensim-core/master/"
-    "OpenSim/Examples/Gait2354_Simbody/subject01_walk1_ik.mot",
-    "https://cdn.jsdelivr.net/gh/opensim-org/opensim-core@main/"
-    "OpenSim/Examples/Gait2354_Simbody/subject01_walk1_ik.mot",
-    "https://raw.githubusercontent.com/opensim-org/opensim-models/master/"
-    "Tutorials/Gait2354/subject01_walk1_ik.mot",
+    "Applications/CMC/test/subject01_walk1_ik.mot",
 )
 
 
