@@ -845,8 +845,9 @@ def run_visual_demo(use_full_db: bool = False):
     """
     Launch a PyBullet GUI window showing a walking simulation demo.
 
-    Uses synthetic data by default.  Pass use_full_db=True to load
-    real CMU mocap data (downloads if needed).
+    The query is generated from Winter (2009) biomechanical norms with
+    simulated IMU sensor noise — matching what rigtest.py would record.
+    Pass use_full_db=True to load real CMU mocap data (downloads if needed).
     """
     if not _PYBULLET_AVAILABLE:
         print("ERROR: PyBullet is required.  Install: pip install pybullet",
@@ -854,8 +855,12 @@ def run_visual_demo(use_full_db: bool = False):
         return
 
     from mocap_evaluation.mocap_loader import (
-        generate_synthetic_gait,
+        _interp_gait_curve,
+        _KNEE_R,
+        _HIP_R,
+        TARGET_FPS,
         load_full_cmu_database,
+        load_or_generate_mocap_database,
     )
     from mocap_evaluation.motion_matching import find_best_match
 
@@ -863,30 +868,38 @@ def run_visual_demo(use_full_db: bool = False):
     print("PYBULLET VISUALISATION DEMO")
     print("=" * 60)
 
-    fps = 200
-    T   = 600  # 3 seconds
+    fps      = TARGET_FPS   # 200 Hz
+    CADENCE  = 110.0        # steps/min — natural comfortable walking
+    cycle_s  = 60.0 / (CADENCE / 2.0)
+    spc      = int(round(cycle_s * fps))   # samples per gait cycle (~218)
+    N_CYCLES = 3
+    T        = spc * N_CYCLES             # ~654 frames (~3.3 s)
 
-    # Synthetic IMU-like query
-    t_arr = np.linspace(0, 3 * math.pi, T)
-    knee_imu  = (30 + 30 * np.sin(t_arr)).astype(np.float32)
-    thigh_imu = (15 * np.sin(t_arr + 0.5)).astype(np.float32)
-
-    # Noisy model prediction (realistic error)
     rng = np.random.default_rng(42)
-    predicted = knee_imu + rng.normal(0, 4, T).astype(np.float32)
+
+    # Realistic query: Winter 2009 kinematics + IMU sensor noise
+    knee_true  = np.tile(_interp_gait_curve(_KNEE_R, spc), N_CYCLES).astype(np.float32)
+    thigh_true = np.tile(_interp_gait_curve(_HIP_R,  spc), N_CYCLES).astype(np.float32)
+    knee_imu   = knee_true  + rng.normal(0, 2.0, T).astype(np.float32)
+    thigh_imu  = thigh_true + rng.normal(0, 1.5, T).astype(np.float32)
+
+    # Simulated model prediction: true knee + ~5° RMS error
+    predicted = knee_true + rng.normal(0, 5.0, T).astype(np.float32)
 
     # Load database
     if use_full_db:
         db = load_full_cmu_database()
     else:
-        db = generate_synthetic_gait(n_cycles=25)
+        db = load_or_generate_mocap_database()
 
     db_dur = len(db["knee_right"]) / fps
     print(f"  Database: {db_dur:.1f}s  source={db['source']}")
+    print(f"  Query   : {T} frames ({T/fps:.2f}s), Winter 2009 kinematics + IMU noise")
 
     # Motion match
     start, dist, segment = find_best_match(knee_imu, thigh_imu, db)
-    print(f"  Match: start={start}, DTW={dist:.4f}")
+    cat = segment.get("category", "unknown")
+    print(f"  Match   : start={start}, DTW={dist:.4f}, category={cat}")
 
     # Run with GUI
     print(f"\n  Launching PyBullet window — {T/fps:.1f}s playback …")

@@ -368,6 +368,41 @@ CATALOG: List[TrialInfo] = [
 
 
 # ---------------------------------------------------------------------------
+# Alternative / larger datasets for future expansion
+# ---------------------------------------------------------------------------
+#
+# The CMU catalog here covers ~247 curated trials (≈ 10% of the full 2605).
+# For more diverse or larger-scale matching, consider these datasets:
+#
+# AMASS (Archive of Motion Capture as Surface Shapes)
+#   - 40+ hours of motion; ~11,000 sequences across 300+ subjects
+#   - Unifies 15 mocap databases (CMU, BMLrub, EKUT, KIT, SFU, etc.)
+#   - Requires free registration: https://amass.is.tue.mpg.de
+#   - Format: SMPL-H parameters (not BVH); needs conversion for our loader
+#
+# KIT Motion-Language Dataset
+#   - 3,911 recordings, 11+ hours, 100+ motion types
+#   - Annotated with natural-language descriptions
+#   - Free download: https://motion-annotation.humanoids.kit.edu/dataset/
+#   - Format: C3D + MMM XML; BVH conversion available
+#
+# HDM05 (MPI Informatik)
+#   - 3.0 hours, 130 motion classes, 5 subjects
+#   - Reliable labeling; good for classification / retrieval benchmarks
+#   - https://resources.mpi-inf.mpg.de/HDM05/
+#   - Format: native BVH — directly loadable by our bvh_parser
+#
+# BMLrub (Bielefeld)
+#   - 115 subjects, 9 activities (walk, jog, run, etc.), 3,000+ trials
+#   - Included in AMASS; also available standalone (free registration)
+#   - https://motion-db.humanoids.kit.edu
+#
+# To use HDM05 or BMLrub directly with this pipeline:
+#   1. Download BVH files into mocap_data/
+#   2. Run: python -m mocap_evaluation.run_evaluation --full-db --mocap-dir mocap_data/
+#   Or add entries to _RAW_CATALOG above using the correct subject/trial numbering.
+#
+# ---------------------------------------------------------------------------
 # Query helpers
 # ---------------------------------------------------------------------------
 

@@ -144,54 +144,135 @@ def predict_knee_sequence(
     return out[0, :, 0].cpu().numpy()
 
 
-# ── Smoke test (no real data needed) ─────────────────────────────────────────
+# ── Smoke test ────────────────────────────────────────────────────────────────
 
 
-def run_smoke_test() -> dict:
+def run_smoke_test(try_download: bool = True) -> dict:
     """
-    Quick end-to-end test using synthetic signals throughout.
-    No checkpoint or data file required.
+    End-to-end pipeline test that verifies motion matching actually works.
+
+    Query generation
+    ----------------
+    Produces realistic knee and thigh angle signals that mimic what
+    rigtest.py would record from a walking patient wearing the device.
+    Uses Winter (2009) biomechanical norms — the same kinematic template
+    underlying CMU walking data — so the DTW matcher should find a
+    close segment and the match quality is meaningful.
+
+    Two RMSE values are reported:
+      model_rmse   : prediction vs the original query knee signal.
+                     This is your model's actual error (set by noise level).
+      knee_rmse_deg: prediction vs the MATCHED mocap segment's knee_right.
+                     If matching is good → ≈ model_rmse.
+                     If matching is poor → much higher (indicates DB mismatch).
+
+    Database
+    --------
+    Attempts to download real CMU BVH walking files. If the network is
+    unavailable, falls back to a large synthetic database built from the
+    same Winter 2009 template — which will always produce a near-zero
+    knee_rmse_deg since query and database share the same template.
     """
     print("=" * 60)
-    print("SMOKE TEST — synthetic signals only")
+    print("SMOKE TEST — realistic gait query → CMU mocap matching")
     print("=" * 60)
 
-    from mocap_evaluation.mocap_loader import generate_synthetic_gait
+    from mocap_evaluation.mocap_loader import (
+        generate_synthetic_gait,
+        load_or_generate_mocap_database,
+        _interp_gait_curve,
+        _KNEE_R,
+        _HIP_R,
+        TARGET_FPS,
+    )
 
-    fps   = 200
-    T     = 400  # 2 seconds
+    fps      = TARGET_FPS   # 200 Hz
+    CADENCE  = 110.0        # steps/min — natural comfortable walking
+    # At 110 steps/min → 55 cycles/min → period ≈ 1.09 s → 218 samples/cycle
+    cycle_s  = 60.0 / (CADENCE / 2.0)
+    spc      = int(round(cycle_s * fps))   # samples per gait cycle
+    N_CYCLES = 2
+    T        = spc * N_CYCLES              # ≈ 436 frames @ 200 Hz
 
-    # Synthetic "IMU" signals: one gait cycle
-    t     = np.linspace(0, 2 * math.pi, T)
-    knee_imu   = (30 + 30 * np.sin(t)).astype(np.float32)    # 0–60°
-    thigh_imu  = (15 * np.sin(t + 0.5)).astype(np.float32)   # ±15°
-
-    # Synthetic "model prediction" — adds small random error to ground truth
     rng = np.random.default_rng(42)
-    predicted  = knee_imu + rng.normal(0, 3, T).astype(np.float32)
 
-    print(f"  Query length: {T/fps:.1f} s @ {fps} Hz")
+    # ── Build realistic query (Winter 2009 kinematics + sensor noise) ─────
+    # This simulates what the IMU sensors on the device would actually record.
+    knee_true  = np.tile(_interp_gait_curve(_KNEE_R, spc), N_CYCLES).astype(np.float32)
+    thigh_true = np.tile(_interp_gait_curve(_HIP_R,  spc), N_CYCLES).astype(np.float32)
 
-    # Generate mocap database
-    db = generate_synthetic_gait(n_cycles=20)
-    print(f"  Mocap database: {len(db['knee_right'])/fps:.1f} s, source={db['source']}")
+    # IMU sensor noise: ~2° RMS on knee, ~1.5° on thigh (realistic)
+    knee_imu  = knee_true  + rng.normal(0, 2.0, T).astype(np.float32)
+    thigh_imu = thigh_true + rng.normal(0, 1.5, T).astype(np.float32)
 
-    # Motion matching
+    # ── Simulated model prediction: true knee + ~5° RMS error ────────────
+    # Represents a trained model's output quality.
+    # In real evaluation this comes from the TST model forward pass.
+    predicted = knee_true + rng.normal(0, 5.0, T).astype(np.float32)
+
+    print(f"  Query  : {T} frames ({T/fps:.2f}s), {N_CYCLES} gait cycles @ {fps}Hz")
+    print(f"  Knee   : {knee_imu.min():.1f}° – {knee_imu.max():.1f}°  "
+          f"(Winter 2009 + 2° noise)")
+    print(f"  Pred   : knee + N(0,5°)  — simulated model output")
+    model_noise = float(np.sqrt(np.mean((predicted - knee_true) ** 2)))
+    print(f"  Model noise (pred vs true knee): {model_noise:.2f}° RMS")
+
+    # ── Load real CMU mocap database ──────────────────────────────────────
+    print()
+    db = load_or_generate_mocap_database(try_download=try_download)
+    db_dur = len(db["knee_right"]) / fps
+    print(f"  DB: {db_dur:.1f}s @ {fps}Hz  source={db['source']}")
+    if db["source"] == "synthetic":
+        print("  WARNING: using synthetic DB fallback — download CMU data for a real test:")
+        print("           python -m mocap_evaluation.cmu_downloader -c walk")
+
+    # ── Motion matching ───────────────────────────────────────────────────
+    print()
     t0 = time.time()
     start, dist, segment = find_best_match(knee_imu, thigh_imu, db)
-    print(f"  Motion match: start={start}, DTW dist={dist:.4f}  ({time.time()-t0:.2f}s)")
+    match_s = time.time() - t0
+    cat = segment.get("category", "unknown")
+    print(f"  Match  : start={start}, DTW={dist:.4f}, category={cat}  ({match_s:.2f}s)")
 
-    # Simulation
-    print("  Running simulation …")
+    # Match quality: how similar is the matched segment to the query?
+    match_rmse = float(np.sqrt(np.mean(
+        (segment["knee_right"] - knee_imu) ** 2
+    )))
+    print(f"  Segment vs query knee RMSE: {match_rmse:.2f}°"
+          f"  ({'good' if match_rmse < 10 else 'poor — try downloading more BVH files'})")
+
+    # ── Simulation ────────────────────────────────────────────────────────
+    print()
+    print("  Running PyBullet simulation …")
     t1 = time.time()
     metrics = simulate_prosthetic_walking(
         segment, predicted, use_physics=True, use_gui=False, fps=float(fps)
     )
-    print(f"  Simulation done in {time.time()-t1:.2f}s")
+    print(f"  Simulation: {time.time()-t1:.2f}s  mode={metrics.get('mode')}")
 
-    print("\nResults:")
-    for k, v in metrics.items():
-        print(f"  {k:<25} {v}")
+    # ── Report ────────────────────────────────────────────────────────────
+    model_rmse = float(np.sqrt(np.mean((predicted - knee_true) ** 2)))
+    metrics["model_rmse"]   = model_rmse
+    metrics["match_rmse"]   = match_rmse
+    metrics["dtw_dist"]     = float(dist)
+    metrics["db_source"]    = db["source"]
+
+    print()
+    print("── Results ──────────────────────────────────────────────")
+    print(f"  model_rmse   {model_rmse:6.2f}°  pred vs true query knee (model error)")
+    print(f"  match_rmse   {match_rmse:6.2f}°  matched seg vs query knee (DB quality)")
+    print(f"  knee_rmse_deg{metrics['knee_rmse_deg']:6.2f}°  pred vs matched seg (sim metric)")
+    print(f"  dtw_dist     {dist:8.4f}  lower = better match")
+    print(f"  fall_detected  {metrics['fall_detected']}")
+    print(f"  stability_score{metrics['stability_score']:6.3f}")
+    print(f"  db_source      {db['source']}")
+    print()
+    if db["source"] == "synthetic":
+        print("  NOTE: knee_rmse_deg ≈ model_rmse because query and DB share the same")
+        print("  template. Download real CMU data for an independent evaluation:")
+        print("    python -m mocap_evaluation.cmu_downloader -c walk")
+    else:
+        print("  knee_rmse_deg = model_rmse + residual match error across subjects.")
 
     return metrics
 
