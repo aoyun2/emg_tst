@@ -1,11 +1,12 @@
 """
 Mocap data loader.
 
-Primary source : CMU Graphics Lab Motion Capture Database (BVH format).
-                 Supports the full CMU catalog (140+ subjects, 2600+ trials)
-                 with per-file category metadata for motion-type-aware matching.
-Fallback       : Synthetic normal gait generated from Winter (2009)
-                 biomechanical norms at 200 Hz.
+Source : CMU Graphics Lab Motion Capture Database (BVH format).
+         Supports the full CMU catalog (140+ subjects, 2600+ trials)
+         with per-file category metadata for motion-type-aware matching.
+
+No synthetic fallback — real CMU BVH data is required.  Download with:
+    python -m mocap_evaluation.cmu_downloader -c walk run jump
 
 Returned database dict (all angles in **degrees**, all arrays at TARGET_FPS):
     knee_right   : (N,)   right knee flexion (+= flexion)
@@ -16,9 +17,9 @@ Returned database dict (all angles in **degrees**, all arrays at TARGET_FPS):
     ankle_left   : (N,)   left  ankle dorsiflexion
     pelvis_tilt  : (N,)   anterior pelvic tilt (+= anterior)
     trunk_lean   : (N,)   trunk forward lean (+= forward)
-    root_pos     : (N, 3) pelvis position in metres (may be zeros for synthetic)
+    root_pos     : (N, 3) pelvis position in metres
     fps          : float  always TARGET_FPS after resampling
-    source       : str    "cmu_bvh" | "synthetic"
+    source       : str    "cmu_bvh"
     categories   : (N,) str array — per-frame motion category label (optional)
     file_boundaries : list of (start, end, filename, category) tuples
 """
@@ -242,18 +243,17 @@ def load_cmu_bvh(bvh_path: str | Path) -> Optional[dict]:
 def load_or_generate_mocap_database(
     bvh_dir: str | Path = MOCAP_DATA_DIR,
     try_download: bool = True,
-    n_synthetic_cycles: int = 15,
 ) -> dict:
     """
     Load mocap database from BVH files found in `bvh_dir`.
     If none found, optionally download CMU BVH data.
-    Falls back to synthetic normal gait.
+
+    Raises RuntimeError if no BVH data can be loaded.
 
     Parameters
     ----------
-    bvh_dir          : directory to search (and download) BVH files
-    try_download     : if True, attempt to download CMU BVH if directory empty
-    n_synthetic_cycles : number of gait cycles for synthetic fallback
+    bvh_dir      : directory to search (and download) BVH files
+    try_download : if True, attempt to download CMU BVH if directory empty
 
     Returns
     -------
@@ -277,7 +277,7 @@ def load_or_generate_mocap_database(
     # ── try download ───────────────────────────────────────────────────────
     if try_download:
         print("[mocap_loader] No local BVH files. Attempting CMU download …")
-        # Try downloading a representative set (walking only for backward compat)
+        # Try downloading a representative set of walking trials
         try:
             from mocap_evaluation.cmu_downloader import download_by_category
             downloaded = download_by_category(
@@ -305,10 +305,10 @@ def load_or_generate_mocap_database(
                 print(f"  CMU BVH loaded: {len(db['knee_right'])/TARGET_FPS:.1f} s")
                 return db
 
-    # ── synthetic fallback ─────────────────────────────────────────────────
-    print(f"[mocap_loader] Using synthetic normal gait ({n_synthetic_cycles} cycles).")
-    print("  To use real mocap, run:  python -m mocap_evaluation.cmu_downloader")
-    return generate_synthetic_gait(n_cycles=n_synthetic_cycles)
+    raise RuntimeError(
+        "No CMU BVH mocap data available. Download it first:\n"
+        "  python -m mocap_evaluation.cmu_downloader -c walk run jump"
+    )
 
 
 def _concatenate_databases(dbs: list, meta: Optional[list] = None) -> dict:
@@ -369,13 +369,14 @@ def load_full_cmu_database(
     try_download: bool = True,
     download_categories: Optional[Sequence[str]] = None,
     max_per_category: Optional[int] = None,
-    n_synthetic_cycles: int = 15,
 ) -> dict:
     """
     Load the full CMU mocap database with category metadata.
 
     This is the recommended entry point for motion matching across
     diverse motion types.
+
+    Raises RuntimeError if no BVH data can be loaded.
 
     Parameters
     ----------
@@ -384,7 +385,6 @@ def load_full_cmu_database(
     try_download        : if True and directory is empty, download from CMU
     download_categories : categories to download (None = all cataloged)
     max_per_category    : cap downloads per category
-    n_synthetic_cycles  : fallback synthetic gait cycles
 
     Returns
     -------
@@ -436,7 +436,7 @@ def load_full_cmu_database(
                   f"{total_dur:.1f}s total, {n_cats} categories")
             return combined
 
-    # ── synthetic fallback ────────────────────────────────────────────────
-    print(f"[mocap_loader] Using synthetic normal gait ({n_synthetic_cycles} cycles).")
-    print("  To use real mocap, run:  python -m mocap_evaluation.cmu_downloader")
-    return generate_synthetic_gait(n_cycles=n_synthetic_cycles)
+    raise RuntimeError(
+        "No CMU BVH mocap data available. Download it first:\n"
+        "  python -m mocap_evaluation.cmu_downloader -c walk run jump"
+    )

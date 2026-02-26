@@ -168,17 +168,14 @@ def run_smoke_test(try_download: bool = True) -> dict:
 
     Database
     --------
-    Attempts to download real CMU BVH walking files. If the network is
-    unavailable, falls back to a large synthetic database built from the
-    same Winter 2009 template — which will always produce a near-zero
-    knee_rmse_deg since query and database share the same template.
+    Requires real CMU BVH walking files. Downloads automatically if not
+    already present.  If download fails, raises RuntimeError.
     """
     print("=" * 60)
     print("SMOKE TEST — realistic gait query → CMU mocap matching")
     print("=" * 60)
 
     from mocap_evaluation.mocap_loader import (
-        generate_synthetic_gait,
         load_or_generate_mocap_database,
         _interp_gait_curve,
         _KNEE_R,
@@ -222,9 +219,6 @@ def run_smoke_test(try_download: bool = True) -> dict:
     db = load_or_generate_mocap_database(try_download=try_download)
     db_dur = len(db["knee_right"]) / fps
     print(f"  DB: {db_dur:.1f}s @ {fps}Hz  source={db['source']}")
-    if db["source"] == "synthetic":
-        print("  WARNING: using synthetic DB fallback — download CMU data for a real test:")
-        print("           python -m mocap_evaluation.cmu_downloader -c walk")
 
     # ── Motion matching ───────────────────────────────────────────────────
     print()
@@ -267,12 +261,7 @@ def run_smoke_test(try_download: bool = True) -> dict:
     print(f"  stability_score{metrics['stability_score']:6.3f}")
     print(f"  db_source      {db['source']}")
     print()
-    if db["source"] == "synthetic":
-        print("  NOTE: knee_rmse_deg ≈ model_rmse because query and DB share the same")
-        print("  template. Download real CMU data for an independent evaluation:")
-        print("    python -m mocap_evaluation.cmu_downloader -c walk")
-    else:
-        print("  knee_rmse_deg = model_rmse + residual match error across subjects.")
+    print("  knee_rmse_deg = model_rmse + residual match error across subjects.")
 
     return metrics
 
