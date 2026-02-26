@@ -144,7 +144,7 @@ def predict_knee_sequence(
 # ── Smoke test ────────────────────────────────────────────────────────────────
 
 
-def run_smoke_test(try_download: bool = True, use_gui: bool = False) -> dict:
+def run_smoke_test(try_download: bool = True, use_gui: bool = True) -> dict:
     """
     End-to-end pipeline test that verifies motion matching actually works.
 
