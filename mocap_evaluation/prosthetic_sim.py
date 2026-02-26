@@ -292,6 +292,134 @@ def _save_gif(frames: list, path: str, capture_fps: float = 25.0) -> None:
         warnings.warn(f"Could not save GIF to {path}: {exc}", RuntimeWarning)
 
 
+# ── Stick-figure GIF (PIL fallback, no PyBullet needed) ──────────────────────
+
+
+def _draw_stick_leg(
+    draw,
+    pelvis_x: int,
+    pelvis_y: int,
+    hip_deg: float,
+    knee_deg: float,
+    seg_len: int,
+    body_color: tuple,
+    shank_color: tuple,
+) -> None:
+    """Draw one leg (thigh + shank) on a PIL ImageDraw context.
+
+    Coordinate system: PIL y=0 is the top of the image; y increases downward.
+    hip_deg  > 0 → thigh forward (positive x direction).
+    knee_deg > 0 → knee flexion (shank pulled backward relative to thigh).
+    """
+    h = math.radians(hip_deg)
+    kx = pelvis_x + int(seg_len * math.sin(h))
+    ky = pelvis_y + int(seg_len * math.cos(h))   # downward in PIL
+    draw.line([(pelvis_x, pelvis_y), (kx, ky)], fill=body_color, width=5)
+    draw.ellipse([(kx - 5, ky - 5), (kx + 5, ky + 5)], fill=body_color)
+
+    s = math.radians(hip_deg - knee_deg)
+    ax = kx + int(seg_len * math.sin(s))
+    ay = ky + int(seg_len * math.cos(s))
+    draw.line([(kx, ky), (ax, ay)], fill=shank_color, width=5)
+    draw.line([(ax - 15, ay), (ax + 12, ay)], fill=body_color, width=3)  # foot
+
+
+def save_stick_figure_gifs(
+    mocap_segment: dict,
+    predicted_knee: np.ndarray,
+    path_pred: Optional[str],
+    path_gt: Optional[str],
+    fps: float = 200.0,
+    width: int = 640,
+    height: int = 480,
+) -> None:
+    """
+    Generate sagittal-plane stick-figure GIFs using PIL (no PyBullet required).
+
+    Produces two GIFs — one showing the predicted prosthetic knee (orange right
+    shank) and one showing the ground-truth mocap knee (blue right shank).
+
+    Parameters
+    ----------
+    mocap_segment   : matched mocap segment dict (keys: knee_right, hip_right, …)
+    predicted_knee  : (T,) predicted right-knee angles in degrees
+    path_pred       : output path for the predicted-knee GIF (skipped if None)
+    path_gt         : output path for the ground-truth GIF (skipped if None)
+    fps             : recording frame rate (Hz)
+    width, height   : GIF frame dimensions in pixels
+    """
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        warnings.warn(
+            "Pillow not installed — cannot generate stick-figure GIFs. "
+            "Run: pip install pillow",
+            RuntimeWarning,
+        )
+        return
+
+    T = len(predicted_knee)
+    knee_gt = mocap_segment["knee_right"][:T]
+    hip_r   = mocap_segment["hip_right"][:T]
+    hip_l   = mocap_segment["hip_left"][:T]
+    knee_l  = mocap_segment["knee_left"][:T]
+
+    capture_fps = fps / _CAPTURE_EVERY
+    seg_len     = int(height * 0.28)    # pixel length of one leg segment
+    pelvis_x    = width  // 2
+    pelvis_y    = height // 2 - 30
+    body_col    = (70,  70,  70)
+    pred_col    = (230, 120,  30)       # orange: prosthetic right shank
+    gt_col      = (50,  100, 210)       # blue:   ground-truth right shank
+
+    frames_pred: list = []
+    frames_gt:   list = []
+
+    for t in range(0, T, _CAPTURE_EVERY):
+        for knee_val, shank_col, flist, label in [
+            (float(predicted_knee[t]), pred_col, frames_pred, "Predicted (prosthetic)"),
+            (float(knee_gt[t]),        gt_col,   frames_gt,   "Ground truth (mocap)"),
+        ]:
+            img  = Image.new("RGB", (width, height), (225, 225, 225))
+            draw = ImageDraw.Draw(img)
+
+            # Ground line
+            floor_y = pelvis_y + seg_len * 2 + 24
+            draw.line([(0, floor_y), (width, floor_y)], fill=(100, 100, 100), width=2)
+
+            # Torso + head
+            torso_top_y = pelvis_y - int(seg_len * 0.50)
+            draw.line([(pelvis_x, pelvis_y), (pelvis_x, torso_top_y)],
+                      fill=body_col, width=5)
+            r_head = 17
+            draw.ellipse(
+                [(pelvis_x - r_head, torso_top_y - r_head * 2),
+                 (pelvis_x + r_head, torso_top_y)],
+                fill=body_col,
+            )
+
+            # Left leg first (drawn "behind"), then right leg on top
+            _draw_stick_leg(draw, pelvis_x, pelvis_y,
+                            float(hip_l[t]), float(knee_l[t]),
+                            seg_len, body_col, body_col)
+            _draw_stick_leg(draw, pelvis_x, pelvis_y,
+                            float(hip_r[t]), knee_val,
+                            seg_len, body_col, shank_col)
+
+            # Progress bar
+            prog = t / max(T - 1, 1)
+            draw.rectangle([(0, height - 8), (int(prog * width), height)],
+                           fill=(80, 160, 80))
+            draw.text((8, 8), f"{label}   t={t/fps:.2f}s", fill=(40, 40, 40))
+
+            flist.append(np.array(img, dtype=np.uint8))
+
+    if path_pred is not None and frames_pred:
+        _save_gif(frames_pred, path_pred, capture_fps=capture_fps)
+    if path_gt is not None and frames_gt:
+        _save_gif(frames_gt, path_gt, capture_fps=capture_fps)
+
+
 # ── Simulator class ───────────────────────────────────────────────────────────
 
 

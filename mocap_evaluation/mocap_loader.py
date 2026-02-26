@@ -30,7 +30,7 @@ import urllib.request
 import urllib.error
 from math import gcd
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -60,6 +60,20 @@ _CMU_JOINT_MAP = {
     "LowerBack":  "pelvis_tilt",
     "Spine":      "trunk_lean",
 }
+
+# Mapping for Bandai Namco Research Motiondataset-2 BVH files.
+# Joint names differ from CMU; root position is on "joint_Root" not "Hips".
+_BANDAI_JOINT_MAP = {
+    "LowerLeg_R": "knee_right",
+    "LowerLeg_L": "knee_left",
+    "UpperLeg_R": "hip_right",
+    "UpperLeg_L": "hip_left",
+    "Foot_R":     "ankle_right",
+    "Foot_L":     "ankle_left",
+    "Spine":      "trunk_lean",
+    "Hips":       "pelvis_tilt",
+}
+_BANDAI_ROOT_JOINT = "joint_Root"
 
 # ── Normal gait kinematics from Winter (2009) ─────────────────────────────────
 # Each dict maps gait-cycle percentage [0, 100] → angle in degrees.
@@ -170,6 +184,59 @@ def generate_synthetic_gait(
     }
 
 
+def generate_diverse_synthetic_gait_database(
+    n_cycles: int = 20,
+    cadences: Optional[Sequence[float]] = None,
+    amplitude_scales: Optional[Sequence[float]] = None,
+    fps: int = TARGET_FPS,
+) -> dict:
+    """
+    Generate a diverse synthetic gait database for robust motion matching.
+
+    Creates gait cycles at multiple cadences and amplitude scales, covering
+    the typical range of human walking speeds.  Useful as a guaranteed
+    matching target when real CMU BVH data is unavailable or incomplete.
+
+    Parameters
+    ----------
+    n_cycles         : gait cycles per cadence/amplitude variant
+    cadences         : cadences in steps/min (default: 70–140 in steps of 10)
+    amplitude_scales : angle amplitude multipliers (default: [0.7, 1.0, 1.3])
+    fps              : target frame rate
+
+    Returns
+    -------
+    database dict (same schema as load_or_generate_mocap_database) with
+    ``source="synthetic_diverse"``.
+    """
+    if cadences is None:
+        cadences = [70.0, 80.0, 90.0, 100.0, 110.0, 120.0, 130.0, 140.0]
+    if amplitude_scales is None:
+        amplitude_scales = [0.7, 1.0, 1.3]
+
+    segments: List[dict] = []
+    meta: List[Tuple[str, str]] = []
+
+    for cadence in cadences:
+        for amp in amplitude_scales:
+            db = generate_synthetic_gait(
+                n_cycles=n_cycles,
+                cadence_steps_per_min=float(cadence),
+                fps=fps,
+            )
+            if amp != 1.0:
+                for k in ("knee_right", "knee_left", "hip_right", "hip_left",
+                          "ankle_right", "ankle_left"):
+                    db[k] = (db[k] * amp).astype(np.float32)
+            fname = f"synth_{int(cadence):03d}spm_{amp:.1f}x"
+            segments.append(db)
+            meta.append((fname, "walk"))
+
+    result = _concatenate_databases(segments, meta=meta)
+    result["source"] = "synthetic_diverse"
+    return result
+
+
 # ── CMU BVH loader ────────────────────────────────────────────────────────────
 
 
@@ -191,12 +258,27 @@ def _extract_angles_from_bvh(parser: BVHParser) -> Optional[dict]:
     """
     Extract walking-relevant joint angles from a parsed BVH file.
 
+    Supports both the CMU cgspeed skeleton (joint names "RightLeg", etc.) and
+    the Bandai Namco Motiondataset-2 skeleton ("LowerLeg_R", etc.).  The
+    correct joint map is selected automatically based on joint names present
+    in the parsed file.
+
     Returns the database dict at TARGET_FPS, or None if key joints are missing.
     """
     src_fps = parser.fps
-    angles  = {}
 
-    for bvh_joint, key in _CMU_JOINT_MAP.items():
+    # ── Auto-detect skeleton ───────────────────────────────────────────────
+    if "LowerLeg_R" in parser.joints and "LowerLeg_L" in parser.joints:
+        joint_map       = _BANDAI_JOINT_MAP
+        root_joint_name = _BANDAI_ROOT_JOINT
+        source_tag      = "bandai_bvh"
+    else:
+        joint_map       = _CMU_JOINT_MAP
+        root_joint_name = "Hips"
+        source_tag      = "cmu_bvh"
+
+    angles: dict = {}
+    for bvh_joint, key in joint_map.items():
         arr = parser.get_flexion(bvh_joint)
         if arr is None:
             continue
@@ -206,9 +288,8 @@ def _extract_angles_from_bvh(parser: BVHParser) -> Optional[dict]:
     if "knee_right" not in angles or "knee_left" not in angles:
         return None
 
-    # CMU BVH angle sign convention: cgspeed conversions store flexion as
-    # negative Xrotation for both knee and hip.  Ensure positive = flexion
-    # to match the IMU convention used by our pipeline.
+    # Ensure positive = flexion (CMU cgspeed stores flexion as negative Xrotation;
+    # Bandai Namco uses the same ZXY convention so the same fix applies).
     for k in ("knee_right", "knee_left", "hip_right", "hip_left"):
         if k in angles and float(angles[k].mean()) < -5.0:
             angles[k] = -angles[k]
@@ -220,23 +301,22 @@ def _extract_angles_from_bvh(parser: BVHParser) -> Optional[dict]:
         if k not in angles:
             angles[k] = np.zeros(N, dtype=np.float32)
 
-    # Root position (metres; CMU BVH positions are in cm)
-    # CMU BVH uses Y-up: channels are Xposition(lateral), Yposition(height), Zposition(forward).
+    # Root position (metres; BVH positions are typically in cm)
+    # BVH uses Y-up: Xposition=lateral, Yposition=height, Zposition=forward.
     # PyBullet uses Z-up: index 0=forward(X), 1=lateral(Y), 2=height(Z).
-    # We must swap axes so the humanoid spawns at the correct height above the ground plane.
-    root_pos_raw = parser.get_positions("Hips")
-    if root_pos_raw is not None:
-        rp = _resample_2d(root_pos_raw, src_fps, TARGET_FPS) / 100.0  # cm → m
+    root_pos_raw = parser.get_positions(root_joint_name)
+    if root_pos_raw is not None and root_pos_raw.shape[1] >= 3:
+        rp = _resample_2d(root_pos_raw[:, :3], src_fps, TARGET_FPS) / 100.0
         rp_pb = np.empty_like(rp)
-        rp_pb[:, 0] = rp[:, 2]   # forward: BVH Z  → PyBullet X
-        rp_pb[:, 1] = rp[:, 0]   # lateral: BVH X  → PyBullet Y
-        rp_pb[:, 2] = rp[:, 1]   # height:  BVH Y  → PyBullet Z
+        rp_pb[:, 0] = rp[:, 2]   # forward: BVH Z → PyBullet X
+        rp_pb[:, 1] = rp[:, 0]   # lateral: BVH X → PyBullet Y
+        rp_pb[:, 2] = rp[:, 1]   # height:  BVH Y → PyBullet Z
         angles["root_pos"] = rp_pb[:N]
     else:
         angles["root_pos"] = np.zeros((N, 3), dtype=np.float32)
 
     angles["fps"]    = float(TARGET_FPS)
-    angles["source"] = "cmu_bvh"
+    angles["source"] = source_tag
     return angles
 
 
@@ -297,10 +377,10 @@ def load_or_generate_mocap_database(
         except Exception:
             pass
 
-    raise RuntimeError(
-        "No CMU BVH mocap data available. Download it first:\n"
-        "  python -m mocap_evaluation.cmu_downloader"
-    )
+    print("[mocap_loader] No CMU BVH data available. "
+          "Using diverse synthetic gait database as fallback.\n"
+          "  Download real data with: python -m mocap_evaluation.cmu_downloader")
+    return generate_diverse_synthetic_gait_database()
 
 
 def _concatenate_databases(dbs: list, meta: Optional[list] = None) -> dict:
@@ -343,7 +423,21 @@ def _concatenate_databases(dbs: list, meta: Optional[list] = None) -> dict:
 
 
 def _category_for_file(filename: str) -> str:
-    """Look up the motion category for a BVH filename via the catalog."""
+    """
+    Look up the motion category for a BVH filename.
+
+    Recognises both the CMU catalog format (``07_01.bvh``) and Bandai Namco
+    filenames (``dataset-2_{motion}_{style}_{id}.bvh``).
+    """
+    # ── Bandai Namco filenames ─────────────────────────────────────────────
+    if filename.startswith("dataset-"):
+        if "_walk" in filename:
+            return "walk"
+        if "_run" in filename:
+            return "run"
+        return "misc"
+
+    # ── CMU catalog lookup ─────────────────────────────────────────────────
     try:
         from mocap_evaluation.cmu_catalog import CATALOG
     except ImportError:
@@ -411,11 +505,16 @@ def load_full_cmu_database(
             combined = _concatenate_databases(segments, meta=meta)
             total_dur = len(combined["knee_right"]) / TARGET_FPS
             n_cats = len({m[1] for m in meta})
+            sources  = {d.get("source", "unknown") for d in segments}
+            combined["source"] = "+".join(sorted(sources))
             print(f"[mocap_loader] Loaded {len(segments)} files, "
-                  f"{total_dur:.1f}s total, {n_cats} categories")
+                  f"{total_dur:.1f}s total, {n_cats} categories "
+                  f"(sources: {combined['source']})")
             return combined
 
     raise RuntimeError(
-        "No CMU BVH mocap data available. Download it first:\n"
-        "  python -m mocap_evaluation.cmu_downloader"
+        "No BVH mocap data available. Download CMU data first:\n"
+        "  python -m mocap_evaluation.cmu_downloader\n"
+        "Or download Bandai Namco walking data:\n"
+        "  python -m mocap_evaluation.bandai_namco_downloader"
     )
