@@ -221,10 +221,17 @@ def _extract_angles_from_bvh(parser: BVHParser) -> Optional[dict]:
             angles[k] = np.zeros(N, dtype=np.float32)
 
     # Root position (metres; CMU BVH positions are in cm)
+    # CMU BVH uses Y-up: channels are Xposition(lateral), Yposition(height), Zposition(forward).
+    # PyBullet uses Z-up: index 0=forward(X), 1=lateral(Y), 2=height(Z).
+    # We must swap axes so the humanoid spawns at the correct height above the ground plane.
     root_pos_raw = parser.get_positions("Hips")
     if root_pos_raw is not None:
         rp = _resample_2d(root_pos_raw, src_fps, TARGET_FPS) / 100.0  # cm → m
-        angles["root_pos"] = rp[:N]
+        rp_pb = np.empty_like(rp)
+        rp_pb[:, 0] = rp[:, 2]   # forward: BVH Z  → PyBullet X
+        rp_pb[:, 1] = rp[:, 0]   # lateral: BVH X  → PyBullet Y
+        rp_pb[:, 2] = rp[:, 1]   # height:  BVH Y  → PyBullet Z
+        angles["root_pos"] = rp_pb[:N]
     else:
         angles["root_pos"] = np.zeros((N, 3), dtype=np.float32)
 
