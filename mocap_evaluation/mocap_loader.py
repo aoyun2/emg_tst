@@ -1,10 +1,12 @@
 """
 Mocap data loader.
 
-Primary source : CMU Graphics Lab Motion Capture Database (BVH format).
-                 Subject 07, trials 01–12 are standard walking trials.
-Fallback       : Synthetic normal gait generated from Winter (2009)
-                 biomechanical norms at 200 Hz.
+Source : CMU Graphics Lab Motion Capture Database (BVH format).
+         Supports the full CMU catalog (140+ subjects, 2600+ trials)
+         with per-file category metadata for motion-type-aware matching.
+
+No synthetic fallback — real CMU BVH data is required.  Download with:
+    python -m mocap_evaluation.cmu_downloader
 
 Returned database dict (all angles in **degrees**, all arrays at TARGET_FPS):
     knee_right   : (N,)   right knee flexion (+= flexion)
@@ -15,9 +17,11 @@ Returned database dict (all angles in **degrees**, all arrays at TARGET_FPS):
     ankle_left   : (N,)   left  ankle dorsiflexion
     pelvis_tilt  : (N,)   anterior pelvic tilt (+= anterior)
     trunk_lean   : (N,)   trunk forward lean (+= forward)
-    root_pos     : (N, 3) pelvis position in metres (may be zeros for synthetic)
+    root_pos     : (N, 3) pelvis position in metres
     fps          : float  always TARGET_FPS after resampling
-    source       : str    "cmu_bvh" | "synthetic"
+    source       : str    "cmu_bvh"
+    categories   : (N,) str array — per-frame motion category label (optional)
+    file_boundaries : list of (start, end, filename, category) tuples
 """
 from __future__ import annotations
 
@@ -26,7 +30,7 @@ import urllib.request
 import urllib.error
 from math import gcd
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 
@@ -239,18 +243,17 @@ def load_cmu_bvh(bvh_path: str | Path) -> Optional[dict]:
 def load_or_generate_mocap_database(
     bvh_dir: str | Path = MOCAP_DATA_DIR,
     try_download: bool = True,
-    n_synthetic_cycles: int = 15,
 ) -> dict:
     """
     Load mocap database from BVH files found in `bvh_dir`.
     If none found, optionally download CMU BVH data.
-    Falls back to synthetic normal gait.
+
+    Raises RuntimeError if no BVH data can be loaded.
 
     Parameters
     ----------
-    bvh_dir          : directory to search (and download) BVH files
-    try_download     : if True, attempt to download CMU BVH if directory empty
-    n_synthetic_cycles : number of gait cycles for synthetic fallback
+    bvh_dir      : directory to search (and download) BVH files
+    try_download : if True, attempt to download CMU BVH if directory empty
 
     Returns
     -------
@@ -273,22 +276,39 @@ def load_or_generate_mocap_database(
 
     # ── try download ───────────────────────────────────────────────────────
     if try_download:
-        print("[mocap_loader] No local BVH files. Attempting CMU download …")
-        dest = bvh_dir / "07_01.bvh"
-        if _download_cmu_bvh(dest):
-            db = load_cmu_bvh(dest)
-            if db is not None:
-                print(f"  CMU BVH loaded: {len(db['knee_right'])/TARGET_FPS:.1f} s")
-                return db
+        print("[mocap_loader] No local BVH files. Downloading full CMU dataset …")
+        try:
+            from mocap_evaluation.cmu_downloader import download_all
+            downloaded = download_all(dest_dir=bvh_dir)
+            if downloaded:
+                bvh_files = sorted(bvh_dir.glob("*.bvh"))
+                segments = []
+                for bf in bvh_files:
+                    db = load_cmu_bvh(bf)
+                    if db is not None:
+                        segments.append(db)
+                if segments:
+                    return _concatenate_databases(segments)
+        except Exception:
+            pass
 
-    # ── synthetic fallback ─────────────────────────────────────────────────
-    print(f"[mocap_loader] Using synthetic normal gait ({n_synthetic_cycles} cycles).")
-    print("  To use real mocap, place CMU BVH files in ./mocap_data/ or run with try_download=True.")
-    return generate_synthetic_gait(n_cycles=n_synthetic_cycles)
+    raise RuntimeError(
+        "No CMU BVH mocap data available. Download it first:\n"
+        "  python -m mocap_evaluation.cmu_downloader"
+    )
 
 
-def _concatenate_databases(dbs: list) -> dict:
-    """Concatenate multiple database dicts along the time axis."""
+def _concatenate_databases(dbs: list, meta: Optional[list] = None) -> dict:
+    """
+    Concatenate multiple database dicts along the time axis.
+
+    Parameters
+    ----------
+    dbs  : list of database dicts (each has 1-D joint arrays + root_pos)
+    meta : optional parallel list of (filename, category) tuples — one per db.
+           When provided, per-frame ``categories`` array and
+           ``file_boundaries`` list are added to the result.
+    """
     keys_1d = ["knee_right", "knee_left", "hip_right", "hip_left",
                "ankle_right", "ankle_left", "pelvis_tilt", "trunk_lean"]
     result: dict = {}
@@ -297,4 +317,100 @@ def _concatenate_databases(dbs: list) -> dict:
     result["root_pos"] = np.concatenate([d["root_pos"] for d in dbs], axis=0)
     result["fps"]    = float(TARGET_FPS)
     result["source"] = dbs[0]["source"]
+
+    # ── per-frame metadata ────────────────────────────────────────────────
+    if meta is not None:
+        boundaries: List[tuple] = []
+        cats: List[np.ndarray] = []
+        offset = 0
+        for db, (fname, cat) in zip(dbs, meta):
+            n = len(db["knee_right"])
+            boundaries.append((offset, offset + n, fname, cat))
+            cats.append(np.full(n, cat, dtype=object))
+            offset += n
+        result["categories"] = np.concatenate(cats)
+        result["file_boundaries"] = boundaries
+
     return result
+
+
+# ── Full CMU dataset loader ──────────────────────────────────────────────────
+
+
+def _category_for_file(filename: str) -> str:
+    """Look up the motion category for a BVH filename via the catalog."""
+    try:
+        from mocap_evaluation.cmu_catalog import CATALOG
+    except ImportError:
+        return "unknown"
+
+    for trial in CATALOG:
+        if trial.filename == filename:
+            return trial.category
+    return "unknown"
+
+
+def load_full_cmu_database(
+    bvh_dir: str | Path = MOCAP_DATA_DIR,
+    try_download: bool = True,
+) -> dict:
+    """
+    Load the full CMU mocap database with category metadata.
+
+    This is the recommended entry point for motion matching across
+    diverse motion types.  All available BVH files are loaded — no
+    category filtering.
+
+    Raises RuntimeError if no BVH data can be loaded.
+
+    Parameters
+    ----------
+    bvh_dir      : directory containing (or for downloading) BVH files
+    try_download : if True and directory is empty, download from CMU
+
+    Returns
+    -------
+    database dict (see module docstring) with additional keys:
+        categories      : (N,) object array of per-frame category strings
+        file_boundaries : list of (start_idx, end_idx, filename, category)
+    """
+    bvh_dir = Path(bvh_dir)
+
+    # ── try download if directory empty ───────────────────────────────────
+    bvh_files = sorted(bvh_dir.glob("*.bvh")) if bvh_dir.exists() else []
+    if not bvh_files and try_download:
+        print("[mocap_loader] No local BVH files. Downloading full CMU dataset …")
+        try:
+            from mocap_evaluation.cmu_downloader import download_all
+            downloaded = download_all(dest_dir=bvh_dir)
+            if downloaded:
+                bvh_files = sorted(bvh_dir.glob("*.bvh"))
+        except Exception as exc:
+            print(f"  Download failed: {exc}")
+
+    # ── load all local files with metadata ────────────────────────────────
+    if bvh_files:
+        segments = []
+        meta = []
+
+        for bf in bvh_files:
+            cat = _category_for_file(bf.name)
+            db = load_cmu_bvh(bf)
+            if db is not None:
+                dur = len(db["knee_right"]) / TARGET_FPS
+                print(f"  Loaded {bf.name}: {dur:.1f}s [{cat}]")
+                segments.append(db)
+                meta.append((bf.name, cat))
+
+        if segments:
+            combined = _concatenate_databases(segments, meta=meta)
+            total_dur = len(combined["knee_right"]) / TARGET_FPS
+            n_cats = len({m[1] for m in meta})
+            print(f"[mocap_loader] Loaded {len(segments)} files, "
+                  f"{total_dur:.1f}s total, {n_cats} categories")
+            return combined
+
+    raise RuntimeError(
+        "No CMU BVH mocap data available. Download it first:\n"
+        "  python -m mocap_evaluation.cmu_downloader"
+    )
