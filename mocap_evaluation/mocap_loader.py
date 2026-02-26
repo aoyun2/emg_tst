@@ -5,8 +5,7 @@ Source : CMU Graphics Lab Motion Capture Database (BVH format).
          Supports the full CMU catalog (140+ subjects, 2600+ trials)
          with per-file category metadata for motion-type-aware matching.
 
-Falls back to built-in synthetic Winter 2009 gait if no BVH files are found.
-Download real CMU data for more diverse motion matching:
+Real CMU BVH data is required.  Download with:
     python -m mocap_evaluation.cmu_downloader
 
 Returned database dict (all angles in **degrees**, all arrays at TARGET_FPS):
@@ -207,9 +206,10 @@ def _extract_angles_from_bvh(parser: BVHParser) -> Optional[dict]:
     if "knee_right" not in angles or "knee_left" not in angles:
         return None
 
-    # CMU BVH knee flexion convention varies: some conversions store flexion as
-    # negative Xrotation.  Ensure positive = flexion (walking range 0–70°).
-    for k in ("knee_right", "knee_left"):
+    # CMU BVH angle sign convention: cgspeed conversions store flexion as
+    # negative Xrotation for both knee and hip.  Ensure positive = flexion
+    # to match the IMU convention used by our pipeline.
+    for k in ("knee_right", "knee_left", "hip_right", "hip_left"):
         if k in angles and float(angles[k].mean()) < -5.0:
             angles[k] = -angles[k]
 
@@ -290,9 +290,10 @@ def load_or_generate_mocap_database(
         except Exception:
             pass
 
-    # No BVH data — fall back to built-in synthetic gait (always works)
-    print("[mocap_loader] No BVH data available — using synthetic Winter 2009 gait kinematics")
-    return generate_synthetic_gait(n_cycles=20)
+    raise RuntimeError(
+        "No CMU BVH mocap data available. Download it first:\n"
+        "  python -m mocap_evaluation.cmu_downloader"
+    )
 
 
 def _concatenate_databases(dbs: list, meta: Optional[list] = None) -> dict:

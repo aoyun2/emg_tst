@@ -26,6 +26,12 @@ import numpy as np
 
 # ── Normalisation ─────────────────────────────────────────────────────────────
 
+# Fixed channel scales for matching.  These are typical physiological ranges
+# (degrees) used to make the knee and hip channels comparable without removing
+# absolute angle information (which z-scoring would do).
+_KNEE_SCALE = 70.0   # typical walking knee flexion range (0–70°)
+_HIP_SCALE  = 40.0   # typical walking hip flexion range (-10° to 30°)
+
 
 def _zscore(x: np.ndarray, eps: float = 1e-6) -> np.ndarray:
     """Z-score a 1-D or 2-D array column-wise."""
@@ -36,6 +42,16 @@ def _zscore(x: np.ndarray, eps: float = 1e-6) -> np.ndarray:
     s = x.std(axis=0, keepdims=True)
     s = np.where(s < eps, eps, s)
     return (x - m) / s
+
+
+def _range_scale(x: np.ndarray) -> np.ndarray:
+    """
+    Scale a (N, 2) matrix where col 0 = knee and col 1 = hip by fixed
+    physiological ranges.  Unlike z-scoring, this preserves absolute angle
+    values — segments with the right amplitude match better.
+    """
+    scales = np.array([[_KNEE_SCALE, _HIP_SCALE]])
+    return x / scales
 
 
 # ── DTW ───────────────────────────────────────────────────────────────────────
@@ -97,14 +113,16 @@ def _xcorr_distances(
 
     Returns (n_candidates,) array of L2 distances.
     Each candidate is a contiguous window of length `window` in database.
+
+    Uses direct L2 on the (already range-scaled) input — no per-window
+    mean subtraction, so candidates with the right absolute angle values
+    are preferred over shape-only matches.
     """
-    q_norm = query - query.mean(axis=0, keepdims=True)
     starts = np.arange(0, len(database) - window + 1, stride)
     dists  = np.empty(len(starts), dtype=np.float64)
     for k, s in enumerate(starts):
         seg = database[s : s + window]
-        seg_norm = seg - seg.mean(axis=0, keepdims=True)
-        dists[k] = float(np.mean((q_norm - seg_norm) ** 2))
+        dists[k] = float(np.mean((query - seg) ** 2))
     return dists
 
 
@@ -181,15 +199,17 @@ def find_best_match(
             "Generate more synthetic cycles or use a longer BVH recording."
         )
 
-    # ── build normalised query matrix (T, 2): [knee, thigh] ───────────────
+    # ── build scaled query matrix (T, 2): [knee, thigh] ────────────────────
+    # Range-scaling (not z-score) so absolute angle values are preserved —
+    # walking segments match walking queries better than sport/dance.
     query_raw = np.stack([imu_knee, imu_thigh], axis=1).astype(np.float64)
-    query_n   = _zscore(query_raw)
+    query_n   = _range_scale(query_raw)
 
-    # ── build normalised database matrix: [knee_right, hip_right] ─────────
+    # ── build scaled database matrix: [knee_right, hip_right] ─────────────
     db_raw = np.stack(
         [mocap_db["knee_right"], mocap_db["hip_right"]], axis=1
     ).astype(np.float64)
-    db_n   = _zscore(db_raw)
+    db_n   = _range_scale(db_raw)
 
     # ── category-aware candidate generation ───────────────────────────────
     starts, valid = _valid_start_mask(db_len, T, stride, mocap_db, categories)

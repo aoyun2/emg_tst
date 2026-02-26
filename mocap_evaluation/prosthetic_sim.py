@@ -36,6 +36,7 @@ Stability metrics
 from __future__ import annotations
 
 import math
+import os
 import time as _time
 import warnings
 from contextlib import contextmanager
@@ -716,10 +717,19 @@ def simulate_prosthetic_walking(
     dict of evaluation metrics
     """
     if use_physics and _PYBULLET_AVAILABLE:
+        # Check for display availability — PyBullet GUI hangs if no X server
+        effective_gui = use_gui
+        if use_gui and not os.environ.get("DISPLAY"):
+            warnings.warn(
+                "No DISPLAY found — falling back to headless PyBullet mode.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            effective_gui = False
         try:
-            with ProstheticSimulator(use_gui=use_gui) as sim:
+            with ProstheticSimulator(use_gui=effective_gui) as sim:
                 metrics = sim.run(mocap_segment, predicted_knee, fps=fps)
-            metrics["mode"] = "physics"
+            metrics["mode"] = "physics" + ("+gui" if effective_gui else "")
             return metrics
         except Exception as exc:
             warnings.warn(
