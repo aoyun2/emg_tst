@@ -163,9 +163,9 @@ def find_best_match(
     imu_knee: np.ndarray,
     imu_thigh: np.ndarray,
     mocap_db: dict,
-    stride: int = 5,
+    stride: int = 1,
     dtw_band: int = 40,
-    top_k_prefilter: int = 20,
+    top_k_prefilter: int = 50,
     categories: Optional[Sequence[str]] = None,
 ) -> Tuple[int, float, dict]:
     """
@@ -276,9 +276,9 @@ def find_top_k_matches(
     mocap_db: dict,
     k: int = 3,
     min_separation: Optional[int] = None,
-    stride: int = 5,
+    stride: int = 1,
     dtw_band: int = 40,
-    top_k_prefilter: int = 80,
+    top_k_prefilter: int = 150,
     categories: Optional[Sequence[str]] = None,
 ) -> List[Tuple[int, float, dict]]:
     """
