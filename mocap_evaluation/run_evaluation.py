@@ -153,11 +153,15 @@ def run_smoke_test(try_download: bool = True) -> dict:
 
     Query generation
     ----------------
-    Extracts a real walking segment from the CMU database and adds
-    realistic IMU sensor noise — mimicking what rigtest.py would record
-    from a walking patient.  Because the query comes from the same data
-    source, the match quality measures the pipeline's ability to
-    re-discover the correct segment despite noise.
+    Uses Winter (2009) published biomechanical norms for normal gait with
+    realistic IMU sensor noise added — this is independent of the CMU
+    database being searched, so the match quality genuinely reflects the
+    algorithm's ability to retrieve a biomechanically similar segment from
+    an external data source (exactly what would happen with a real patient).
+
+    Using a query extracted from the database itself would trivially inflate
+    match quality (the correct segment is always in the DB) and defeat the
+    purpose of the test.
 
     Two RMSE values are reported:
       model_rmse   : prediction vs the original query knee signal.
@@ -170,13 +174,22 @@ def run_smoke_test(try_download: bool = True) -> dict:
     --------
     Requires real CMU BVH walking files. Downloads automatically if not
     already present.  If download fails, raises RuntimeError.
+
+    Visualization
+    -------------
+    Saves an animated GIF of the PyBullet simulation to ``smoke_test_sim.gif``
+    in the current directory.  Frame capture runs via PyBullet's built-in
+    software renderer (works without a display).
     """
     print("=" * 60)
-    print("SMOKE TEST — real CMU walking query → mocap matching")
+    print("SMOKE TEST — Winter (2009) query → CMU mocap matching → PyBullet")
     print("=" * 60)
 
     from mocap_evaluation.mocap_loader import (
         load_or_generate_mocap_database,
+        _interp_gait_curve,
+        _KNEE_R,
+        _HIP_R,
         TARGET_FPS,
     )
 
@@ -187,30 +200,20 @@ def run_smoke_test(try_download: bool = True) -> dict:
     db_dur = len(db["knee_right"]) / fps
     print(f"  DB: {db_dur:.1f}s @ {fps}Hz  source={db['source']}")
 
-    # ── Extract a real walking segment as the query ──────────────────────
-    # Pick a walking segment from the database (different from what the
-    # matcher will find, to test cross-subject generalisation).
-    T = 400  # 2 seconds at 200 Hz
-
-    walk_segments = [
-        (s, e, f, c) for s, e, f, c in db.get("file_boundaries", [])
-        if c == "walk" and (e - s) >= T * 2
-    ]
-    if not walk_segments:
-        raise RuntimeError("No walking segments long enough in the database.")
-
-    # Use the SECOND qualifying walk file so the matcher can potentially
-    # find a better match from a DIFFERENT file (cross-subject test).
-    seg_idx = min(1, len(walk_segments) - 1)
-    seg_start, seg_end, seg_file, _ = walk_segments[seg_idx]
-    # Take from the middle of the segment (avoid start/end artefacts)
-    mid = (seg_start + seg_end) // 2
-    q_start = mid - T // 2
-
-    knee_true  = db["knee_right"][q_start : q_start + T].copy()
-    thigh_true = db["hip_right"][q_start : q_start + T].copy()
+    # ── Generate query from Winter (2009) biomechanical norms ─────────────
+    # These are published normal-gait curves — completely independent of the
+    # CMU database.  The matcher must retrieve a genuinely similar segment
+    # rather than the trivially identical one it came from.
+    CADENCE  = 110.0                          # steps/min — comfortable walk
+    cycle_s  = 60.0 / (CADENCE / 2.0)        # seconds per full gait cycle
+    spc      = int(round(cycle_s * fps))      # samples per cycle (~218 @ 200 Hz)
+    N_CYCLES = 3
+    T        = spc * N_CYCLES                 # ~654 frames (~3.3 s)
 
     rng = np.random.default_rng(42)
+
+    knee_true  = np.tile(_interp_gait_curve(_KNEE_R, spc), N_CYCLES).astype(np.float32)
+    thigh_true = np.tile(_interp_gait_curve(_HIP_R,  spc), N_CYCLES).astype(np.float32)
 
     # IMU sensor noise: ~2° RMS on knee, ~1.5° on thigh (realistic)
     knee_imu  = knee_true  + rng.normal(0, 2.0, T).astype(np.float32)
@@ -219,9 +222,9 @@ def run_smoke_test(try_download: bool = True) -> dict:
     # ── Simulated model prediction: true knee + ~5° RMS error ────────────
     predicted = knee_true + rng.normal(0, 5.0, T).astype(np.float32)
 
-    print(f"  Query  : {T} frames ({T/fps:.2f}s) from {seg_file} @ {fps}Hz")
+    print(f"  Query  : {T} frames ({T/fps:.2f}s), Winter (2009) norms + IMU noise @ {fps}Hz")
     print(f"  Knee   : {knee_imu.min():.1f}° – {knee_imu.max():.1f}°  "
-          f"(real CMU walking + 2° noise)")
+          f"(biomechanical norms, NOT from CMU DB)")
     print(f"  Pred   : knee + N(0,5°)  — simulated model output")
     model_noise = float(np.sqrt(np.mean((predicted - knee_true) ** 2)))
     print(f"  Model noise (pred vs true knee): {model_noise:.2f}° RMS")
@@ -244,11 +247,16 @@ def run_smoke_test(try_download: bool = True) -> dict:
     # ── Simulation ────────────────────────────────────────────────────────
     print()
     print("  Running PyBullet simulation …")
+    gif_out = "smoke_test_sim.gif"
     t1 = time.time()
     metrics = simulate_prosthetic_walking(
-        segment, predicted, use_physics=True, use_gui=True, fps=float(fps)
+        segment, predicted,
+        use_physics=True, use_gui=True, fps=float(fps),
+        gif_output=gif_out,
     )
     print(f"  Simulation: {time.time()-t1:.2f}s  mode={metrics.get('mode')}")
+    if Path(gif_out).exists():
+        print(f"  Visualization → {gif_out}")
 
     # ── Report ────────────────────────────────────────────────────────────
     model_rmse = float(np.sqrt(np.mean((predicted - knee_true) ** 2)))
