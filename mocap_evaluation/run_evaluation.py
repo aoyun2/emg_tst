@@ -34,7 +34,7 @@ import math
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import numpy as np
 import torch
@@ -45,7 +45,7 @@ from mocap_evaluation.mocap_loader import (
     load_or_generate_mocap_database,
     load_full_cmu_database,
 )
-from mocap_evaluation.motion_matching import find_best_match
+from mocap_evaluation.motion_matching import find_best_match, find_top_k_matches
 from mocap_evaluation.prosthetic_sim import simulate_prosthetic_walking
 
 
@@ -147,39 +147,29 @@ def predict_knee_sequence(
 # ── Smoke test ────────────────────────────────────────────────────────────────
 
 
-def run_smoke_test(try_download: bool = True) -> dict:
+def run_smoke_test(try_download: bool = True, top_k: int = 3) -> dict:
     """
-    End-to-end pipeline test that verifies motion matching actually works.
+    End-to-end pipeline test: Winter (2009) query → CMU mocap matching → PyBullet.
 
     Query generation
     ----------------
     Uses Winter (2009) published biomechanical norms for normal gait with
-    realistic IMU sensor noise added — this is independent of the CMU
-    database being searched, so the match quality genuinely reflects the
-    algorithm's ability to retrieve a biomechanically similar segment from
-    an external data source (exactly what would happen with a real patient).
+    realistic IMU sensor noise added — independent of the CMU database being
+    searched.
 
-    Using a query extracted from the database itself would trivially inflate
-    match quality (the correct segment is always in the DB) and defeat the
-    purpose of the test.
-
-    Two RMSE values are reported:
-      model_rmse   : prediction vs the original query knee signal.
-                     This is your model's actual error (set by noise level).
-      knee_rmse_deg: prediction vs the MATCHED mocap segment's knee_right.
-                     If matching is good → ≈ model_rmse.
-                     If matching is poor → much higher (indicates DB mismatch).
-
-    Database
+    Matching
     --------
-    Requires real CMU BVH walking files. Downloads automatically if not
-    already present.  If download fails, raises RuntimeError.
+    Searches the **entire** database without category restriction; the query can
+    match walking, running, or any other motion if that is the closest segment.
+    The top-K distinct matches are returned (default K=3) and each receives its
+    own simulation run and a pair of GIF files:
+      smoke_test_<rank>_pred.gif  — prosthetic robot (orange right knee)
+      smoke_test_<rank>_gt.gif    — ground-truth mocap robot (blue)
 
-    Visualization
-    -------------
-    Saves an animated GIF of the PyBullet simulation to ``smoke_test_sim.gif``
-    in the current directory.  Frame capture runs via PyBullet's built-in
-    software renderer (works without a display).
+    Two RMSE values per match:
+      model_rmse   : prediction vs true query knee (reflects model noise level)
+      match_rmse   : matched segment vs query knee  (reflects DB quality)
+      knee_rmse_deg: pred vs matched segment (sim metric = match + model error)
     """
     print("=" * 60)
     print("SMOKE TEST — Winter (2009) query → CMU mocap matching → PyBullet")
@@ -193,95 +183,110 @@ def run_smoke_test(try_download: bool = True) -> dict:
         TARGET_FPS,
     )
 
-    # ── Load real CMU mocap database ──────────────────────────────────────
+    # ── Load mocap database ───────────────────────────────────────────────
     print()
-    db = load_or_generate_mocap_database(try_download=try_download)
-    fps      = TARGET_FPS   # 200 Hz
+    db  = load_or_generate_mocap_database(try_download=try_download)
+    fps = TARGET_FPS   # 200 Hz
     db_dur = len(db["knee_right"]) / fps
-    print(f"  DB: {db_dur:.1f}s @ {fps}Hz  source={db['source']}")
+    n_cats = len({b[3] for b in db.get("file_boundaries", [])})
+    print(f"  DB: {db_dur:.1f}s @ {fps}Hz  source={db['source']}  {n_cats} categories")
 
-    # ── Generate query from Winter (2009) biomechanical norms ─────────────
-    # These are published normal-gait curves — completely independent of the
-    # CMU database.  The matcher must retrieve a genuinely similar segment
-    # rather than the trivially identical one it came from.
-    CADENCE  = 110.0                          # steps/min — comfortable walk
-    cycle_s  = 60.0 / (CADENCE / 2.0)        # seconds per full gait cycle
-    spc      = int(round(cycle_s * fps))      # samples per cycle (~218 @ 200 Hz)
+    # ── Build query from Winter (2009) biomechanical norms ────────────────
+    CADENCE  = 110.0
+    cycle_s  = 60.0 / (CADENCE / 2.0)
+    spc      = int(round(cycle_s * fps))
     N_CYCLES = 3
-    T        = spc * N_CYCLES                 # ~654 frames (~3.3 s)
+    T        = spc * N_CYCLES    # ≈654 frames at 200 Hz
 
     rng = np.random.default_rng(42)
 
     knee_true  = np.tile(_interp_gait_curve(_KNEE_R, spc), N_CYCLES).astype(np.float32)
     thigh_true = np.tile(_interp_gait_curve(_HIP_R,  spc), N_CYCLES).astype(np.float32)
+    knee_imu   = knee_true  + rng.normal(0, 2.0, T).astype(np.float32)
+    thigh_imu  = thigh_true + rng.normal(0, 1.5, T).astype(np.float32)
 
-    # IMU sensor noise: ~2° RMS on knee, ~1.5° on thigh (realistic)
-    knee_imu  = knee_true  + rng.normal(0, 2.0, T).astype(np.float32)
-    thigh_imu = thigh_true + rng.normal(0, 1.5, T).astype(np.float32)
-
-    # ── Simulated model prediction: true knee + ~5° RMS error ────────────
-    predicted = knee_true + rng.normal(0, 5.0, T).astype(np.float32)
-
-    print(f"  Query  : {T} frames ({T/fps:.2f}s), Winter (2009) norms + IMU noise @ {fps}Hz")
-    print(f"  Knee   : {knee_imu.min():.1f}° – {knee_imu.max():.1f}°  "
-          f"(biomechanical norms, NOT from CMU DB)")
-    print(f"  Pred   : knee + N(0,5°)  — simulated model output")
-    model_noise = float(np.sqrt(np.mean((predicted - knee_true) ** 2)))
-    print(f"  Model noise (pred vs true knee): {model_noise:.2f}° RMS")
-
-    # ── Motion matching ───────────────────────────────────────────────────
-    # Restrict to walking segments — the query is normal walking gait so
-    # comparing to running/jumping segments would inflate the distance.
-    print()
-    t0 = time.time()
-    start, dist, segment = find_best_match(
-        knee_imu, thigh_imu, db, categories=["walk"]
-    )
-    match_s = time.time() - t0
-    cat = segment.get("category", "unknown")
-    print(f"  Match  : start={start}, DTW={dist:.4f}, category={cat}  ({match_s:.2f}s)")
-
-    # Match quality: how similar is the matched segment to the query?
-    match_rmse = float(np.sqrt(np.mean(
-        (segment["knee_right"] - knee_imu) ** 2
-    )))
-    print(f"  Segment vs query knee RMSE: {match_rmse:.2f}°"
-          f"  ({'good' if match_rmse < 10 else 'poor — try downloading more BVH files'})")
-
-    # ── Simulation ────────────────────────────────────────────────────────
-    print()
-    print("  Running PyBullet simulation …")
-    gif_out = "smoke_test_sim.gif"
-    t1 = time.time()
-    metrics = simulate_prosthetic_walking(
-        segment, predicted,
-        use_physics=True, use_gui=True, fps=float(fps),
-        gif_output=gif_out,
-    )
-    print(f"  Simulation: {time.time()-t1:.2f}s  mode={metrics.get('mode')}")
-    if Path(gif_out).exists():
-        print(f"  Visualization → {gif_out}")
-
-    # ── Report ────────────────────────────────────────────────────────────
+    # Simulated model prediction: true knee + ~5° RMS error
+    predicted  = knee_true + rng.normal(0, 5.0, T).astype(np.float32)
     model_rmse = float(np.sqrt(np.mean((predicted - knee_true) ** 2)))
-    metrics["model_rmse"]   = model_rmse
-    metrics["match_rmse"]   = match_rmse
-    metrics["dtw_dist"]     = float(dist)
-    metrics["db_source"]    = db["source"]
 
-    print()
-    print("── Results ──────────────────────────────────────────────")
-    print(f"  model_rmse   {model_rmse:6.2f}°  pred vs true query knee (model error)")
-    print(f"  match_rmse   {match_rmse:6.2f}°  matched seg vs query knee (DB quality)")
-    print(f"  knee_rmse_deg{metrics['knee_rmse_deg']:6.2f}°  pred vs matched seg (sim metric)")
-    print(f"  dtw_dist     {dist:8.4f}  lower = better match")
-    print(f"  fall_detected  {metrics['fall_detected']}")
-    print(f"  stability_score{metrics['stability_score']:6.3f}")
-    print(f"  db_source      {db['source']}")
-    print()
-    print("  knee_rmse_deg = model_rmse + residual match error across subjects.")
+    print(f"  Query   : {T} frames ({T/fps:.2f}s), Winter (2009) norms + IMU noise")
+    print(f"  Knee    : {knee_imu.min():.1f}° – {knee_imu.max():.1f}°")
+    print(f"  Model noise (pred vs true): {model_rmse:.2f}° RMS")
 
-    return metrics
+    # ── Motion matching — no category restriction ─────────────────────────
+    # Any segment in the database is eligible; multiple plausible matches are
+    # retrieved so each can be visualised independently.
+    print()
+    print(f"  Finding top-{top_k} matches (no category restriction) …")
+    t0      = time.time()
+    matches = find_top_k_matches(
+        knee_imu, thigh_imu, db,
+        k=top_k,
+        # No `categories` argument → search entire database
+    )
+    print(f"  Matching done in {time.time()-t0:.2f}s")
+
+    all_metrics: List[dict] = []
+
+    for rank, (start, dist, segment) in enumerate(matches, start=1):
+        cat = segment.get("category", "unknown")
+        match_rmse = float(np.sqrt(np.mean(
+            (segment["knee_right"] - knee_imu) ** 2
+        )))
+        print()
+        print(f"  ── Match {rank}/{top_k} ─────────────────────────────")
+        print(f"     start={start}  DTW={dist:.4f}  category={cat}")
+        print(f"     Segment vs query RMSE: {match_rmse:.2f}°"
+              f"  ({'good' if match_rmse < 12 else 'fair — more BVH files improve this'})")
+
+        gif_pred = f"smoke_test_{rank}_pred.gif"
+        gif_gt   = f"smoke_test_{rank}_gt.gif"
+
+        print(f"     Running PyBullet simulation …")
+        t1 = time.time()
+        metrics = simulate_prosthetic_walking(
+            segment, predicted,
+            use_physics=True, use_gui=False, fps=float(fps),
+            gif_output_pred=gif_pred,
+            gif_output_gt=gif_gt,
+        )
+        elapsed = time.time() - t1
+        print(f"     Simulation: {elapsed:.2f}s  mode={metrics.get('mode')}")
+        for path in (gif_pred, gif_gt):
+            if Path(path).exists():
+                label = "prosthetic (orange knee)" if "pred" in path else "ground-truth (blue)"
+                print(f"     GIF [{label}] → {path}")
+
+        metrics["match_rank"]  = rank
+        metrics["start_idx"]   = start
+        metrics["dtw_dist"]    = float(dist)
+        metrics["category"]    = cat
+        metrics["model_rmse"]  = model_rmse
+        metrics["match_rmse"]  = match_rmse
+        metrics["db_source"]   = db["source"]
+        all_metrics.append(metrics)
+
+        print(f"     knee_rmse_deg={metrics['knee_rmse_deg']:.2f}°  "
+              f"fall={metrics['fall_detected']}  "
+              f"stability={metrics['stability_score']:.3f}")
+
+    # ── Summary ───────────────────────────────────────────────────────────
+    print()
+    print("── Summary ─────────────────────────────────────────────────")
+    print(f"  model_rmse  : {model_rmse:.2f}°  (pred vs true query knee)")
+    for m in all_metrics:
+        print(
+            f"  Match {m['match_rank']} [{m['category']:8s}] "
+            f"match_rmse={m['match_rmse']:5.2f}°  "
+            f"knee_rmse={m['knee_rmse_deg']:5.2f}°  "
+            f"fall={m['fall_detected']}"
+        )
+    print()
+    print("  knee_rmse_deg ≈ model_rmse + residual cross-subject match error.")
+    print("  Download more BVH files (python -m mocap_evaluation.cmu_downloader)")
+    print("  to improve match quality and category diversity.")
+
+    return all_metrics[0] if all_metrics else {}
 
 
 # ── Main evaluation loop ──────────────────────────────────────────────────────

@@ -100,9 +100,20 @@ def _euler_to_quat_zxy(z_deg: float, x_deg: float, y_deg: float) -> List[float]:
 
 
 def _sagittal_quat(angle_deg: float) -> List[float]:
-    """Quaternion for a pure sagittal (X-axis) rotation. Used for hip/ankle."""
+    """
+    Quaternion for sagittal flexion of a spherical hip/ankle joint.
+
+    The humanoid.urdf (pybullet_data) defines its revolute knee joints with
+    ``axis xyz="0 0 1"`` (local Z-axis).  For consistency, we treat spherical
+    hip and ankle joints the same way: the primary sagittal degree-of-freedom
+    is a rotation about the local Z-axis.  This matches the URDF frame
+    orientations and produces anatomically correct flexion/extension in
+    PyBullet's Z-up world.
+
+    Format: [x, y, z, w] (PyBullet quaternion convention).
+    """
     half = math.radians(angle_deg) * 0.5
-    return [math.sin(half), 0.0, 0.0, math.cos(half)]
+    return [0.0, 0.0, math.sin(half), math.cos(half)]
 
 
 # ── Joint discovery ───────────────────────────────────────────────────────────
@@ -477,30 +488,30 @@ class ProstheticSimulator:
         mocap_segment: dict,
         predicted_knee: np.ndarray,
         fps: float = 200.0,
-        gif_output: Optional[str] = None,
+        gif_output: Optional[str] = None,          # legacy: single combined GIF
+        gif_output_pred: Optional[str] = None,     # GIF: prosthetic robot only
+        gif_output_gt: Optional[str] = None,       # GIF: ground-truth robot only
     ) -> dict:
         """
         Drive the humanoid with mocap joint angles (kinematic playback),
         replacing the right knee with `predicted_knee` (degrees).
 
-        Strategy: kinematic mode — joints are set directly via resetJointState
-        each frame (no PD forces), while the base follows the mocap root
-        trajectory.  This avoids PD instability while still using PyBullet's
-        multi-body kinematics engine for accurate CoM computation and
-        foot-contact detection.
+        Two robots are simulated side-by-side (separated 1.5 m in Y):
+          • Predicted (Y=0): grey body, **orange right leg** (prosthetic joint)
+          • Ground truth (Y=1.5): all joints from mocap (semi-transparent blue)
 
-        A 'fall' is declared when:
-        (a) CoM drops below `fall_threshold`, OR
-        (b) The right foot penetrates significantly into the ground
-            (prediction error causes foot to go through the floor).
+        Each robot is captured from its own dedicated side-view camera, producing
+        two independent GIF files so the viewer can compare them without overlap.
 
         Parameters
         ----------
-        mocap_segment   : dict of (T,) arrays from motion_matching.find_best_match()
-        predicted_knee  : (T,) predicted right-knee flexion in degrees
-        fps             : playback frame rate (informational, not used here)
-        gif_output      : if given, capture frames and save an animated GIF at
-                          this path (works in both GUI and headless DIRECT mode)
+        mocap_segment    : dict of (T,) arrays from motion_matching
+        predicted_knee   : (T,) right-knee flexion in degrees (model output)
+        fps              : playback rate (Hz)
+        gif_output       : legacy path — saves a combined wide-angle GIF showing
+                           both robots; use gif_output_pred/gt instead
+        gif_output_pred  : path for the prosthetic (predicted) robot GIF
+        gif_output_gt    : path for the ground-truth robot GIF
 
         Returns
         -------
@@ -509,51 +520,72 @@ class ProstheticSimulator:
         T = len(predicted_knee)
         assert len(mocap_segment["knee_right"]) >= T
 
-        # Root trajectory — use mocap if meaningful, else synthesise forward walk
+        # ── Root trajectory ────────────────────────────────────────────────
+        # After the BVH→PyBullet coordinate fix in mocap_loader, column 2 is
+        # the real height above the floor.  Check that before falling back to
+        # the synthetic constant-height trajectory.
         root_pos_all = mocap_segment["root_pos"][:T]
         root_z_range = root_pos_all[:, 2].max() - root_pos_all[:, 2].min()
-        has_real_root = root_z_range > 0.05 and root_pos_all[:, 2].mean() > 0.3
+        has_real_root = root_z_range > 0.02 and root_pos_all[:, 2].mean() > 0.3
 
         if has_real_root:
-            # Shift so minimum Z ≈ HUMANOID_INIT_HEIGHT (mocap root ≠ ground)
-            z_offset   = HUMANOID_INIT_HEIGHT - root_pos_all[:, 2].min()
+            # Normalise so the lowest root position sits at HUMANOID_INIT_HEIGHT.
+            # This accounts for BVH recordings where the subject is not exactly
+            # at floor level (e.g. marker-set offsets).
+            z_min      = root_pos_all[:, 2].min()
+            z_offset   = HUMANOID_INIT_HEIGHT - z_min
             root_traj  = root_pos_all.copy()
             root_traj[:, 2] += z_offset
         else:
-            # Synthetic: move forward at ≈1.35 m/s, constant height
-            N   = T
-            t_s = np.arange(N) / fps
-            root_traj = np.zeros((N, 3), dtype=np.float32)
+            # Fall back to a smooth forward walk at ~1.35 m/s, fixed height.
+            t_s = np.arange(T, dtype=np.float32) / fps
+            root_traj = np.zeros((T, 3), dtype=np.float32)
             root_traj[:, 0] = 1.35 * t_s
             root_traj[:, 2] = HUMANOID_INIT_HEIGHT
 
-        # Load robot at starting position
+        # ── Load both robots ───────────────────────────────────────────────
+        # Predicted robot at Y=0, ground-truth robot at Y=1.5 (side-by-side).
         self._robot = self._load_robot(
             [float(root_traj[0, 0]), 0.0, float(root_traj[0, 2])]
         )
         robot = self._robot
         jmap  = _discover_joints(robot)
 
-        # Also discover the "ground truth" robot for CoM comparison
-        # (all joints follow mocap perfectly, offset +1.5 m in Y)
         self._robot_gt = self._load_robot(
             [float(root_traj[0, 0]), 1.5, float(root_traj[0, 2])]
         )
         robot_gt = self._robot_gt
         jmap_gt  = _discover_joints(robot_gt)
 
-        # ── Color robots (applied for both GUI window and GIF capture) ──
+        # ── Colour coding ──────────────────────────────────────────────────
+        # Predicted robot: grey body + orange right-leg chain (prosthetic).
+        # Ground-truth robot: semi-transparent blue throughout.
         _color_robot_prosthetic(robot, jmap, self._client)
         _color_robot_ghost(robot_gt, self._client)
         if self.use_gui:
             self._debug_ids: List[int] = []
 
-        accum = _MetricsAccum(fall_threshold=self.fall_threshold)
-        com_heights_gt = []
-        dt = 1.0 / fps
+        accum          = _MetricsAccum(fall_threshold=self.fall_threshold)
+        com_heights_gt: List[float] = []
+        dt             = 1.0 / fps
 
-        # Frame capture for GIF output (works in both GUI and DIRECT mode)
-        _gif_frames: Optional[List] = [] if gif_output else None
+        # ── GIF frame buffers ─────────────────────────────────────────────
+        # Three possible outputs:
+        #   _frames_pred  – camera focused on predicted robot (Y=0)
+        #   _frames_gt    – camera focused on ground-truth robot (Y=1.5)
+        #   _frames_both  – legacy wide-angle showing both
+        want_pred = gif_output_pred is not None
+        want_gt   = gif_output_gt   is not None
+        want_both = gif_output       is not None
+        _frames_pred: Optional[List] = [] if want_pred else None
+        _frames_gt:   Optional[List] = [] if want_gt   else None
+        _frames_both: Optional[List] = [] if want_both else None
+
+        _proj = p.computeProjectionMatrixFOV(
+            fov=55, aspect=640.0 / 480.0,
+            nearVal=0.1, farVal=20.0,
+            physicsClientId=self._client,
+        )
 
         for t in range(T):
             frame_start = _time.time()
@@ -567,7 +599,7 @@ class ProstheticSimulator:
                 "ankle_left":  float(mocap_segment["ankle_left"][t]),
             }
 
-            # ── predicted robot (right knee = model) ──────────────────────
+            # ── Predicted robot: right knee overridden by model ───────────
             root_pos_t = [float(root_traj[t, 0]), 0.0, float(root_traj[t, 2])]
             p.resetBasePositionAndOrientation(
                 robot, root_pos_t, [0, 0, 0, 1], physicsClientId=self._client
@@ -580,19 +612,18 @@ class ProstheticSimulator:
                 ("leftankle",  fr["ankle_left"]),
             ]:
                 self._set_joint_kinematic(robot, jmap, kw, ang)
-
-            # RIGHT KNEE = model prediction (the prosthetic substitution)
+            # ★ RIGHT KNEE = model prediction (prosthetic substitution) ★
             pred_knee_deg = float(predicted_knee[t])
             self._set_joint_kinematic(robot, jmap, "rightknee", pred_knee_deg)
 
-            # ── ground truth robot (all joints from mocap) ────────────────
+            # ── Ground-truth robot: all joints from mocap ─────────────────
             gt_pos_t = [float(root_traj[t, 0]), 1.5, float(root_traj[t, 2])]
             p.resetBasePositionAndOrientation(
                 robot_gt, gt_pos_t, [0, 0, 0, 1], physicsClientId=self._client
             )
             for kw, ang in [
                 ("righthip",   fr["hip_right"]),
-                ("rightknee",  fr["knee_right"]),   # TRUE knee angle
+                ("rightknee",  fr["knee_right"]),   # true mocap knee
                 ("lefthip",    fr["hip_left"]),
                 ("leftknee",   fr["knee_left"]),
                 ("rightankle", fr["ankle_right"]),
@@ -600,39 +631,69 @@ class ProstheticSimulator:
             ]:
                 self._set_joint_kinematic(robot_gt, jmap_gt, kw, ang)
 
-            # Single physics step so contact detection is updated
+            # Single physics step to update contact detection
             p.stepSimulation(physicsClientId=self._client)
 
-            # ── frame capture (every _CAPTURE_EVERY steps) ────────────────
-            if _gif_frames is not None and t % _CAPTURE_EVERY == 0:
-                rx_c = float(root_traj[t, 0])
-                rz_c = float(root_traj[t, 2])
-                # Side view (looking in +Y): robot walks in X, camera at Y=-3.5
-                # Target centred between the two robots (Y=0 and Y=1.5)
-                _view = p.computeViewMatrix(
-                    cameraEyePosition=[rx_c, -3.5, rz_c + 1.1],
-                    cameraTargetPosition=[rx_c, 0.75, rz_c + 0.85],
-                    cameraUpVector=[0, 0, 1],
-                    physicsClientId=self._client,
-                )
-                _proj = p.computeProjectionMatrixFOV(
-                    fov=60, aspect=640.0 / 480.0,
-                    nearVal=0.1, farVal=20.0,
-                    physicsClientId=self._client,
-                )
-                _w, _h, _rgba, _, _ = p.getCameraImage(
-                    640, 480, _view, _proj,
-                    renderer=p.ER_TINY_RENDERER,
-                    physicsClientId=self._client,
-                )
-                _rgba_np = np.array(_rgba, dtype=np.uint8).reshape(_h, _w, 4)
-                _gif_frames.append(_rgba_np[:, :, :3])
+            # ── Frame capture (every _CAPTURE_EVERY steps) ────────────────
+            if t % _CAPTURE_EVERY == 0:
+                rx = float(root_traj[t, 0])
+                rz = float(root_traj[t, 2])
 
-            # ── metrics ───────────────────────────────────────────────────
+                if _frames_pred is not None:
+                    # Side view centred on predicted robot (Y=0)
+                    _view = p.computeViewMatrix(
+                        cameraEyePosition=[rx, -2.8, rz + 1.1],
+                        cameraTargetPosition=[rx, 0.0, rz + 0.88],
+                        cameraUpVector=[0, 0, 1],
+                        physicsClientId=self._client,
+                    )
+                    _, _, _rgba, _, _ = p.getCameraImage(
+                        640, 480, _view, _proj,
+                        renderer=p.ER_TINY_RENDERER,
+                        physicsClientId=self._client,
+                    )
+                    _frames_pred.append(
+                        np.array(_rgba, dtype=np.uint8).reshape(480, 640, 4)[:, :, :3]
+                    )
+
+                if _frames_gt is not None:
+                    # Side view centred on ground-truth robot (Y=1.5)
+                    _view = p.computeViewMatrix(
+                        cameraEyePosition=[rx, 4.3, rz + 1.1],
+                        cameraTargetPosition=[rx, 1.5, rz + 0.88],
+                        cameraUpVector=[0, 0, 1],
+                        physicsClientId=self._client,
+                    )
+                    _, _, _rgba, _, _ = p.getCameraImage(
+                        640, 480, _view, _proj,
+                        renderer=p.ER_TINY_RENDERER,
+                        physicsClientId=self._client,
+                    )
+                    _frames_gt.append(
+                        np.array(_rgba, dtype=np.uint8).reshape(480, 640, 4)[:, :, :3]
+                    )
+
+                if _frames_both is not None:
+                    # Wide-angle view showing both robots (legacy)
+                    _view = p.computeViewMatrix(
+                        cameraEyePosition=[rx, -3.5, rz + 1.3],
+                        cameraTargetPosition=[rx, 0.75, rz + 0.85],
+                        cameraUpVector=[0, 0, 1],
+                        physicsClientId=self._client,
+                    )
+                    _, _, _rgba, _, _ = p.getCameraImage(
+                        640, 480, _view, _proj,
+                        renderer=p.ER_TINY_RENDERER,
+                        physicsClientId=self._client,
+                    )
+                    _frames_both.append(
+                        np.array(_rgba, dtype=np.uint8).reshape(480, 640, 4)[:, :, :3]
+                    )
+
+            # ── Metrics ───────────────────────────────────────────────────
             com_h    = self._compute_com_height(robot)
             com_h_gt = self._compute_com_height(robot_gt)
             com_heights_gt.append(com_h_gt)
-
             right_c, left_c = self._check_foot_contacts(robot)
             accum.record(t, com_h, pred_knee_deg, fr["knee_right"], right_c, left_c)
 
@@ -643,9 +704,8 @@ class ProstheticSimulator:
                     fps, pred_knee_deg, fr["knee_right"], com_h,
                     accum.fall_detected, self._debug_ids,
                 )
-                # Real-time pacing
                 elapsed = _time.time() - frame_start
-                sleep = dt - elapsed
+                sleep   = dt - elapsed
                 if sleep > 0:
                     _time.sleep(sleep)
 
@@ -654,15 +714,18 @@ class ProstheticSimulator:
         self._robot    = None
         self._robot_gt = None
 
-        # ── Save GIF ──────────────────────────────────────────────────────
-        if gif_output and _gif_frames:
-            capture_fps = fps / _CAPTURE_EVERY
-            _save_gif(_gif_frames, gif_output, capture_fps=capture_fps)
+        # ── Save GIFs ─────────────────────────────────────────────────────
+        capture_fps = fps / _CAPTURE_EVERY
+        if _frames_pred:
+            _save_gif(_frames_pred, gif_output_pred, capture_fps=capture_fps)
+        if _frames_gt:
+            _save_gif(_frames_gt,   gif_output_gt,   capture_fps=capture_fps)
+        if _frames_both:
+            _save_gif(_frames_both, gif_output,       capture_fps=capture_fps)
 
         metrics = accum.summarise()
 
-        # Deviation from ground-truth CoM trajectory
-        gt_arr  = np.array(com_heights_gt)
+        gt_arr   = np.array(com_heights_gt)
         pred_arr = np.array(accum.com_heights)
         metrics["com_deviation_mean"] = float(np.mean(np.abs(pred_arr - gt_arr)))
         metrics["com_deviation_max"]  = float(np.max(np.abs(pred_arr - gt_arr)))
@@ -771,7 +834,9 @@ def simulate_prosthetic_walking(
     use_physics: bool = True,
     use_gui: bool = False,
     fps: float = 200.0,
-    gif_output: Optional[str] = None,
+    gif_output: Optional[str] = None,         # legacy: combined wide-angle GIF
+    gif_output_pred: Optional[str] = None,    # prosthetic robot GIF
+    gif_output_gt: Optional[str] = None,      # ground-truth robot GIF
 ) -> dict:
     """
     High-level entry point.
@@ -779,10 +844,15 @@ def simulate_prosthetic_walking(
     Attempts PyBullet physics simulation; falls back to kinematic evaluation
     if PyBullet is unavailable or fails.
 
-    When ``gif_output`` is given, each simulation frame is captured via
-    ``pybullet.getCameraImage`` (PyBullet's built-in software renderer —
-    works without a display) and the result is saved as an animated GIF.
-    This lets you inspect the simulation even in headless/CI environments.
+    GIF outputs
+    -----------
+    gif_output_pred  : animated GIF of the prosthetic robot (right knee =
+                       model prediction, highlighted in orange).
+    gif_output_gt    : animated GIF of the ground-truth robot (all joints from
+                       mocap, semi-transparent blue).
+    gif_output       : legacy combined wide-angle view (both robots).
+
+    Frame capture uses PyBullet's built-in software renderer — works headless.
 
     Parameters
     ----------
@@ -791,19 +861,18 @@ def simulate_prosthetic_walking(
     use_physics     : if False, use lightweight kinematic evaluation only
     use_gui         : show PyBullet GUI (requires a display)
     fps             : playback rate (Hz)
-    gif_output      : path for the animated GIF visualisation (optional)
 
     Returns
     -------
     dict of evaluation metrics
     """
     if use_physics and _PYBULLET_AVAILABLE:
-        # Check for display availability — PyBullet GUI hangs if no X server
         effective_gui = use_gui
         if use_gui and not os.environ.get("DISPLAY"):
             warnings.warn(
                 "No DISPLAY found — running headless PyBullet."
-                + (" Saving visualisation to GIF instead." if gif_output else ""),
+                + (" Saving visualisation to GIF(s) instead."
+                   if (gif_output or gif_output_pred or gif_output_gt) else ""),
                 RuntimeWarning,
                 stacklevel=2,
             )
@@ -813,6 +882,8 @@ def simulate_prosthetic_walking(
                 metrics = sim.run(
                     mocap_segment, predicted_knee, fps=fps,
                     gif_output=gif_output,
+                    gif_output_pred=gif_output_pred,
+                    gif_output_gt=gif_output_gt,
                 )
             metrics["mode"] = "physics" + ("+gui" if effective_gui else "")
             return metrics

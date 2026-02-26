@@ -267,6 +267,123 @@ def find_best_match(
     return best_start, best_dist, matched
 
 
+# ── Top-K matching ───────────────────────────────────────────────────────────
+
+
+def find_top_k_matches(
+    imu_knee: np.ndarray,
+    imu_thigh: np.ndarray,
+    mocap_db: dict,
+    k: int = 3,
+    min_separation: Optional[int] = None,
+    stride: int = 5,
+    dtw_band: int = 40,
+    top_k_prefilter: int = 80,
+    categories: Optional[Sequence[str]] = None,
+) -> List[Tuple[int, float, dict]]:
+    """
+    Find the top-K distinct mocap segments that best match (imu_knee, imu_thigh).
+
+    Unlike ``find_best_match``, this returns multiple candidates so that the
+    caller can run a separate simulation for each.  The query is **not**
+    restricted to any motion category by default — any segment in the database
+    is eligible.
+
+    Parameters
+    ----------
+    imu_knee        : (T,) knee angle labels from IMU recording (degrees)
+    imu_thigh       : (T,) thigh angle from IMU recording (degrees)
+    mocap_db        : database dict from mocap_loader
+    k               : number of results to return
+    min_separation  : minimum gap between start indices of any two returned
+                      matches (prevents near-duplicate windows).
+                      Defaults to ``len(imu_knee) // 2``.
+    stride          : step size for sliding-window pre-filter
+    dtw_band        : Sakoe-Chiba half-bandwidth for DTW
+    top_k_prefilter : candidates to score with full DTW (set higher than k)
+    categories      : restrict to specific motion categories (None = all)
+
+    Returns
+    -------
+    List of (start_index, dtw_distance, matched_dict) tuples, sorted by
+    ascending DTW distance (best match first).
+    """
+    T = len(imu_knee)
+    assert len(imu_thigh) == T
+
+    if min_separation is None:
+        min_separation = max(1, T // 2)
+
+    db_len = len(mocap_db["knee_right"])
+    if db_len < T:
+        raise ValueError(
+            f"Mocap database ({db_len} frames) shorter than query ({T} frames)."
+        )
+
+    # Build scaled query and database matrices
+    query_raw = np.stack([imu_knee, imu_thigh], axis=1).astype(np.float64)
+    query_n   = _range_scale(query_raw)
+
+    db_raw = np.stack(
+        [mocap_db["knee_right"], mocap_db["hip_right"]], axis=1
+    ).astype(np.float64)
+    db_n = _range_scale(db_raw)
+
+    # Category-aware candidate generation
+    starts, valid = _valid_start_mask(db_len, T, stride, mocap_db, categories)
+
+    l2_dists = _xcorr_distances(query_n, db_n, T, stride)
+    l2_masked = l2_dists.copy()
+    l2_masked[~valid] = float("inf")
+
+    # Pre-filter: keep enough candidates (at least k × 4 so we can deduplicate)
+    n_prefilter = min(max(top_k_prefilter, k * 4), int(valid.sum()) or len(starts))
+    top_idx = np.argpartition(l2_masked, min(n_prefilter - 1, len(l2_masked) - 1))[
+        :n_prefilter
+    ]
+    top_starts = starts[top_idx]
+
+    # Full DTW on all pre-filtered candidates
+    dtw_scores: List[Tuple[float, int]] = []
+    for s in top_starts:
+        seg = db_n[s : s + T]
+        d   = dtw_distance(query_n, seg, band=dtw_band)
+        dtw_scores.append((d, int(s)))
+
+    # Sort by DTW distance (best first) and de-duplicate by min_separation
+    dtw_scores.sort(key=lambda x: x[0])
+
+    selected: List[Tuple[int, float, dict]] = []
+    chosen_starts: List[int] = []
+
+    keys_1d = ["knee_right", "knee_left", "hip_right", "hip_left",
+               "ankle_right", "ankle_left", "pelvis_tilt", "trunk_lean"]
+
+    for dist, s in dtw_scores:
+        if len(selected) >= k:
+            break
+        # Reject if too close to an already-chosen window
+        if any(abs(s - cs) < min_separation for cs in chosen_starts):
+            continue
+        chosen_starts.append(s)
+
+        matched: dict = {}
+        for key in keys_1d:
+            if key in mocap_db:
+                matched[key] = mocap_db[key][s : s + T].copy()
+            else:
+                matched[key] = np.zeros(T, dtype=np.float32)
+        matched["root_pos"] = mocap_db["root_pos"][s : s + T].copy()
+        if "categories" in mocap_db:
+            matched["category"] = str(mocap_db["categories"][s])
+        else:
+            matched["category"] = "unknown"
+
+        selected.append((s, dist, matched))
+
+    return selected
+
+
 # ── Convenience: build a continuous predicted sequence ───────────────────────
 
 
