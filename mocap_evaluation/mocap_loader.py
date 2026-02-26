@@ -117,126 +117,6 @@ def _resample(signal: np.ndarray, src_fps: float, tgt_fps: int = TARGET_FPS) -> 
     return resample_poly(signal, up, dn).astype(np.float32)
 
 
-# ── synthetic generator ───────────────────────────────────────────────────────
-
-
-def generate_synthetic_gait(
-    n_cycles: int = 20,
-    cadence_steps_per_min: float = 110.0,
-    fps: int = TARGET_FPS,
-) -> dict:
-    """
-    Generate synthetic normal gait kinematics.
-
-    One gait cycle = two steps (right heel-strike to right heel-strike).
-    Cadence here is in steps/min (one step = one swing phase).
-    At 110 steps/min ≈ 55 cycles/min → cycle period ≈ 1.09 s.
-
-    Returns the mocap database dict (see module docstring).
-    """
-    cycle_period_s  = 60.0 / (cadence_steps_per_min / 2.0)   # seconds per full cycle
-    samples_per_cyc = int(round(cycle_period_s * fps))
-
-    # ── single cycle curves ────────────────────────────────────────────────
-    kr = _interp_gait_curve(_KNEE_R,       samples_per_cyc)
-    hr = _interp_gait_curve(_HIP_R,        samples_per_cyc)
-    ar = _interp_gait_curve(_ANKLE_R,      samples_per_cyc)
-    pt = _interp_gait_curve(_PELVIS_TILT,  samples_per_cyc)
-    tl = _interp_gait_curve(_TRUNK_LEAN,   samples_per_cyc)
-
-    # Left side: 50% phase shift
-    half = samples_per_cyc // 2
-    kl = np.roll(kr, half)
-    hl = np.roll(hr, half)
-    al = np.roll(ar, half)
-
-    # Tile to n_cycles
-    def tile(x):
-        return np.tile(x, n_cycles).astype(np.float32)
-
-    N = samples_per_cyc * n_cycles
-
-    # Root position: constant forward speed, height oscillates slightly
-    # Typical comfortable walking speed ≈ 1.35 m/s
-    speed_mps  = 1.35
-    t          = np.arange(N, dtype=np.float32) / fps
-    root_x     = (speed_mps * t).astype(np.float32)
-    # Vertical CoM oscillates ≈ ±2.5 cm at cadence * 2 Hz (each step)
-    step_freq  = cadence_steps_per_min / 60.0
-    root_z     = (0.90 + 0.025 * np.sin(2 * np.pi * step_freq * 2 * t)).astype(np.float32)
-    root_pos   = np.stack([root_x, np.zeros(N, np.float32), root_z], axis=1)
-
-    categories = np.full(N, "walk", dtype=object)
-    return {
-        "knee_right":     tile(kr),
-        "knee_left":      tile(kl),
-        "hip_right":      tile(hr),
-        "hip_left":       tile(hl),
-        "ankle_right":    tile(ar),
-        "ankle_left":     tile(al),
-        "pelvis_tilt":    tile(pt),
-        "trunk_lean":     tile(tl),
-        "root_pos":       root_pos,
-        "fps":            float(fps),
-        "source":         "synthetic",
-        "categories":     categories,
-        "file_boundaries": [(0, N, "synthetic_gait", "walk")],
-    }
-
-
-def generate_diverse_synthetic_gait_database(
-    n_cycles: int = 20,
-    cadences: Optional[Sequence[float]] = None,
-    amplitude_scales: Optional[Sequence[float]] = None,
-    fps: int = TARGET_FPS,
-) -> dict:
-    """
-    Generate a diverse synthetic gait database for robust motion matching.
-
-    Creates gait cycles at multiple cadences and amplitude scales, covering
-    the typical range of human walking speeds.  Useful as a guaranteed
-    matching target when real CMU BVH data is unavailable or incomplete.
-
-    Parameters
-    ----------
-    n_cycles         : gait cycles per cadence/amplitude variant
-    cadences         : cadences in steps/min (default: 70–140 in steps of 10)
-    amplitude_scales : angle amplitude multipliers (default: [0.7, 1.0, 1.3])
-    fps              : target frame rate
-
-    Returns
-    -------
-    database dict (same schema as load_or_generate_mocap_database) with
-    ``source="synthetic_diverse"``.
-    """
-    if cadences is None:
-        cadences = [70.0, 80.0, 90.0, 100.0, 110.0, 120.0, 130.0, 140.0]
-    if amplitude_scales is None:
-        amplitude_scales = [0.7, 1.0, 1.3]
-
-    segments: List[dict] = []
-    meta: List[Tuple[str, str]] = []
-
-    for cadence in cadences:
-        for amp in amplitude_scales:
-            db = generate_synthetic_gait(
-                n_cycles=n_cycles,
-                cadence_steps_per_min=float(cadence),
-                fps=fps,
-            )
-            if amp != 1.0:
-                for k in ("knee_right", "knee_left", "hip_right", "hip_left",
-                          "ankle_right", "ankle_left"):
-                    db[k] = (db[k] * amp).astype(np.float32)
-            fname = f"synth_{int(cadence):03d}spm_{amp:.1f}x"
-            segments.append(db)
-            meta.append((fname, "walk"))
-
-    result = _concatenate_databases(segments, meta=meta)
-    result["source"] = "synthetic_diverse"
-    return result
-
-
 # ── CMU BVH loader ────────────────────────────────────────────────────────────
 
 
@@ -377,10 +257,12 @@ def load_or_generate_mocap_database(
         except Exception:
             pass
 
-    print("[mocap_loader] No CMU BVH data available. "
-          "Using diverse synthetic gait database as fallback.\n"
-          "  Download real data with: python -m mocap_evaluation.cmu_downloader")
-    return generate_diverse_synthetic_gait_database()
+    raise RuntimeError(
+        "No BVH mocap data available. Download CMU data first:\n"
+        "  python -m mocap_evaluation.cmu_downloader\n"
+        "Or download Bandai Namco walking data:\n"
+        "  python -m mocap_evaluation.bandai_namco_downloader"
+    )
 
 
 def _concatenate_databases(dbs: list, meta: Optional[list] = None) -> dict:
