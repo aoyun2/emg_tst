@@ -6,7 +6,7 @@ Source : CMU Graphics Lab Motion Capture Database (BVH format).
          with per-file category metadata for motion-type-aware matching.
 
 No synthetic fallback — real CMU BVH data is required.  Download with:
-    python -m mocap_evaluation.cmu_downloader -c walk run jump
+    python -m mocap_evaluation.cmu_downloader
 
 Returned database dict (all angles in **degrees**, all arrays at TARGET_FPS):
     knee_right   : (N,)   right knee flexion (+= flexion)
@@ -276,15 +276,10 @@ def load_or_generate_mocap_database(
 
     # ── try download ───────────────────────────────────────────────────────
     if try_download:
-        print("[mocap_loader] No local BVH files. Attempting CMU download …")
-        # Try downloading a representative set of walking trials
+        print("[mocap_loader] No local BVH files. Downloading full CMU dataset …")
         try:
-            from mocap_evaluation.cmu_downloader import download_by_category
-            downloaded = download_by_category(
-                categories=["walk"],
-                dest_dir=bvh_dir,
-                max_per_category=5,
-            )
+            from mocap_evaluation.cmu_downloader import download_all
+            downloaded = download_all(dest_dir=bvh_dir)
             if downloaded:
                 bvh_files = sorted(bvh_dir.glob("*.bvh"))
                 segments = []
@@ -297,17 +292,9 @@ def load_or_generate_mocap_database(
         except Exception:
             pass
 
-        # Legacy single-file fallback
-        dest = bvh_dir / "07_01.bvh"
-        if _download_cmu_bvh(dest):
-            db = load_cmu_bvh(dest)
-            if db is not None:
-                print(f"  CMU BVH loaded: {len(db['knee_right'])/TARGET_FPS:.1f} s")
-                return db
-
     raise RuntimeError(
         "No CMU BVH mocap data available. Download it first:\n"
-        "  python -m mocap_evaluation.cmu_downloader -c walk run jump"
+        "  python -m mocap_evaluation.cmu_downloader"
     )
 
 
@@ -365,26 +352,21 @@ def _category_for_file(filename: str) -> str:
 
 def load_full_cmu_database(
     bvh_dir: str | Path = MOCAP_DATA_DIR,
-    categories: Optional[Sequence[str]] = None,
     try_download: bool = True,
-    download_categories: Optional[Sequence[str]] = None,
-    max_per_category: Optional[int] = None,
 ) -> dict:
     """
     Load the full CMU mocap database with category metadata.
 
     This is the recommended entry point for motion matching across
-    diverse motion types.
+    diverse motion types.  All available BVH files are loaded — no
+    category filtering.
 
     Raises RuntimeError if no BVH data can be loaded.
 
     Parameters
     ----------
-    bvh_dir             : directory containing (or for downloading) BVH files
-    categories          : only load files matching these categories (None = all)
-    try_download        : if True and directory is empty, download from CMU
-    download_categories : categories to download (None = all cataloged)
-    max_per_category    : cap downloads per category
+    bvh_dir      : directory containing (or for downloading) BVH files
+    try_download : if True and directory is empty, download from CMU
 
     Returns
     -------
@@ -397,30 +379,22 @@ def load_full_cmu_database(
     # ── try download if directory empty ───────────────────────────────────
     bvh_files = sorted(bvh_dir.glob("*.bvh")) if bvh_dir.exists() else []
     if not bvh_files and try_download:
-        print("[mocap_loader] No local BVH files. Downloading CMU dataset …")
+        print("[mocap_loader] No local BVH files. Downloading full CMU dataset …")
         try:
-            from mocap_evaluation.cmu_downloader import download_by_category
-            downloaded = download_by_category(
-                categories=download_categories,
-                dest_dir=bvh_dir,
-                max_per_category=max_per_category,
-            )
+            from mocap_evaluation.cmu_downloader import download_all
+            downloaded = download_all(dest_dir=bvh_dir)
             if downloaded:
                 bvh_files = sorted(bvh_dir.glob("*.bvh"))
         except Exception as exc:
             print(f"  Download failed: {exc}")
 
-    # ── load local files with metadata ────────────────────────────────────
+    # ── load all local files with metadata ────────────────────────────────
     if bvh_files:
         segments = []
         meta = []
-        cat_set = set(categories) if categories is not None else None
 
         for bf in bvh_files:
             cat = _category_for_file(bf.name)
-            if cat_set is not None and cat not in cat_set:
-                continue
-
             db = load_cmu_bvh(bf)
             if db is not None:
                 dur = len(db["knee_right"]) / TARGET_FPS
@@ -438,5 +412,5 @@ def load_full_cmu_database(
 
     raise RuntimeError(
         "No CMU BVH mocap data available. Download it first:\n"
-        "  python -m mocap_evaluation.cmu_downloader -c walk run jump"
+        "  python -m mocap_evaluation.cmu_downloader"
     )

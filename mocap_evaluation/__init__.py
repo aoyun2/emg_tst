@@ -10,13 +10,12 @@ Full evaluation with the complete CMU mocap database:
     python -m mocap_evaluation.run_evaluation \\
         --checkpoint checkpoints/<run>/fold_01/reg_best.pt \\
         --data       samples_dataset.npy \\
-        --full-db --categories walk run jump \\
+        --full-db \\
         --n-samples  20
 
-Download CMU mocap BVH files by category:
-    python -m mocap_evaluation.cmu_downloader --list
-    python -m mocap_evaluation.cmu_downloader -c walk run jump dance
-    python -m mocap_evaluation.cmu_downloader            # all categories
+Download the full CMU mocap BVH dataset:
+    python -m mocap_evaluation.cmu_downloader
+    python -m mocap_evaluation.cmu_downloader --list     # show categories
 
 Visualise in PyBullet (requires display + pybullet):
     python -m mocap_evaluation.prosthetic_sim --demo
@@ -27,7 +26,7 @@ Pipeline
 1. cmu_catalog      : curated index of CMU mocap subjects, trials, and motion categories
 2. cmu_downloader   : batch download BVH files from the CMU database with retry logic
 3. bvh_parser       : parse CMU Graphics Lab BVH motion capture files
-4. mocap_loader     : load BVH files with per-file category metadata (or synthetic fallback)
+4. mocap_loader     : load BVH files with per-file category metadata
 5. motion_matching  : category-aware DTW sliding-window search to align IMU signals with mocap
 6. prosthetic_sim   : PyBullet simulation; right knee = model prediction, GUI visualisation
 7. run_evaluation   : end-to-end pipeline + JSON metrics output

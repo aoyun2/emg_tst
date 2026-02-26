@@ -278,7 +278,6 @@ def evaluate(
     use_gui: bool = False,
     use_physics: bool = True,
     device_str: str = "cpu",
-    categories: Optional[list] = None,
     full_database: bool = False,
 ) -> dict:
     """
@@ -306,10 +305,7 @@ def evaluate(
     # ── Load / generate mocap database ──────────────────────────────────────
     print(f"[eval] Loading mocap database from: {mocap_dir}")
     if full_database:
-        mocap_db = load_full_cmu_database(
-            bvh_dir=mocap_dir,
-            categories=categories,
-        )
+        mocap_db = load_full_cmu_database(bvh_dir=mocap_dir)
     else:
         mocap_db = load_or_generate_mocap_database(bvh_dir=mocap_dir)
     db_dur   = len(mocap_db["knee_right"]) / mocap_db["fps"]
@@ -422,12 +418,10 @@ def _parse_args():
     ap.add_argument("--no-physics",  action="store_true",
                     help="Use kinematic evaluation only (no PyBullet)")
     ap.add_argument("--smoke-test",  action="store_true",
-                    help="Run quick smoke test with synthetic data (no files needed)")
+                    help="Run quick smoke test (no checkpoint needed)")
     ap.add_argument("--full-db",     action="store_true",
-                    help="Use the full CMU mocap database (auto-downloads if needed)")
-    ap.add_argument("--categories",  nargs="*", default=None,
-                    help="Motion categories to match against (e.g. walk run jump). "
-                         "Only effective with --full-db.")
+                    help="Use the full CMU mocap database with category metadata "
+                         "(auto-downloads if needed)")
     return ap.parse_args()
 
 
@@ -471,7 +465,6 @@ def main():
         use_gui         = args.gui,
         use_physics     = not args.no_physics,
         device_str      = args.device,
-        categories      = args.categories,
         full_database   = args.full_db,
     )
 
