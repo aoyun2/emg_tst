@@ -37,7 +37,7 @@ def main():
     args = _parse_args()
 
     curves = generate_mock_curves(length_s=args.seconds)
-    knee_flex = (180.0 - curves.knee_label_included_deg).astype(np.float32)
+    knee_included = curves.knee_label_included_deg.astype(np.float32)
     thigh = curves.thigh_angle_deg.astype(np.float32)
 
     if args.aggregate_datasets:
@@ -49,7 +49,7 @@ def main():
     else:
         db = load_or_generate_mocap_database(bvh_dir=args.mocap_dir)
 
-    start, dist, seg = find_best_match(knee_flex, thigh, db)
+    start, dist, seg = find_best_match(knee_included, thigh, db)
     print(f"Matched start={start}, dtw={dist:.4f}, category={seg.get('category','unknown')}")
 
     try:
@@ -59,10 +59,10 @@ def main():
             "matplotlib is required for plotting. Install dependencies from requirements_tst.txt"
         ) from exc
 
-    t = np.arange(len(knee_flex))
+    t = np.arange(len(knee_included))
     fig, ax = plt.subplots(2, 1, figsize=(11, 7), sharex=True)
 
-    ax[0].plot(t, knee_flex, label="mock query knee (flexion)", linewidth=2)
+    ax[0].plot(t, knee_included, label="mock query knee (included)", linewidth=2)
     ax[0].plot(t, seg["knee_right"], label="matched knee_right", linewidth=2, alpha=0.8)
     ax[0].set_ylabel("deg")
     ax[0].set_title("Mock segment vs matched mocap segment")

@@ -58,7 +58,7 @@ Notes:
 - Matching uses your thigh angle + knee label curves, then runs **K simulations** on the top-K mocap matches.
 - A "correct/reference" simulation is always run with the right knee replaced by the label curve.
 - A second simulation replaces only the right knee with the model prediction curve.
-- Knee convention from `rigtest.py` is handled explicitly: included-angle `[0, 180]` is converted to mocap flexion (`flexion = 180 - included`).
+- Angle convention is standardized across recorded data, BVH parsing, matching, and evaluation: included-angle `[0, 180]` with `180 = straight`.
 
 
 ### Aggregate Bandai + CMU datasets and visualise a match
