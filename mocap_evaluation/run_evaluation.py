@@ -63,18 +63,25 @@ def _derive_window_seconds(
 ) -> float:
     """Derive sample window duration (in seconds) from the model architecture.
 
-    Priority:
+    When both *checkpoint_path* and *data_path* are provided the two sources
+    must agree on the window length — the checkpoint's ``seq_len`` must equal
+    the dataset's ``window`` field.  A mismatch indicates that the wrong
+    checkpoint/dataset pair is being used and raises ``ValueError``.
+
+    Priority (when only one source is available):
     1. Checkpoint ``model_cfg["seq_len"]`` (exact model sequence length).
     2. Dataset ``window`` field from *samples_dataset.npy*.
     3. Architecture default: 200 samples @ 200 Hz = 1.0 s.
     """
+    ckpt_seq_len: int | None = None
+    dataset_window: int | None = None
+
     if checkpoint_path is not None:
         p = Path(checkpoint_path)
         if p.exists():
             try:
                 ckpt = torch.load(p, map_location="cpu", weights_only=False)
-                seq_len = int(ckpt["model_cfg"]["seq_len"])
-                return seq_len / TARGET_FPS
+                ckpt_seq_len = int(ckpt["model_cfg"]["seq_len"])
             except Exception:
                 pass
 
@@ -84,8 +91,22 @@ def _derive_window_seconds(
             d = np.load(p, allow_pickle=True)
             if isinstance(d, np.ndarray):
                 d = d.item()
-            window = int(d.get("window", 200))
-            return window / TARGET_FPS
+            dataset_window = int(d.get("window", 200))
+
+    if ckpt_seq_len is not None and dataset_window is not None:
+        if ckpt_seq_len != dataset_window:
+            raise ValueError(
+                f"Length mismatch: checkpoint seq_len={ckpt_seq_len} "
+                f"!= dataset window={dataset_window}. "
+                "Ensure the checkpoint and dataset were produced with the same window size."
+            )
+        return ckpt_seq_len / TARGET_FPS
+
+    if ckpt_seq_len is not None:
+        return ckpt_seq_len / TARGET_FPS
+
+    if dataset_window is not None:
+        return dataset_window / TARGET_FPS
 
     return 200 / TARGET_FPS
 
