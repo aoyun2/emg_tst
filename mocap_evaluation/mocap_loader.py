@@ -198,6 +198,11 @@ def _extract_angles_from_bvh(parser: BVHParser) -> Optional[dict]:
         arr = parser.get_flexion(bvh_joint)
         if arr is None:
             continue
+        # CMU BVH encodes knee flexion as negative Xrotation (shank rotates
+        # posteriorly in the thigh's local frame).  Our convention is
+        # flexion-positive, matching Winter (2009) norms → negate knee channels.
+        if key in ("knee_right", "knee_left"):
+            arr = -arr
         angles[key] = _resample(arr, src_fps, TARGET_FPS)
 
     # We need at least the knee signals

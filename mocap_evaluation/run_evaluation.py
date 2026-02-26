@@ -41,10 +41,7 @@ import torch
 
 from emg_tst.model import TSTEncoder, TSTRegressor
 from emg_tst.data import StandardScaler
-from mocap_evaluation.mocap_loader import (
-    load_or_generate_mocap_database,
-    load_full_cmu_database,
-)
+from mocap_evaluation.mocap_loader import load_full_cmu_database
 from mocap_evaluation.motion_matching import find_best_match
 from mocap_evaluation.prosthetic_sim import simulate_prosthetic_walking
 
@@ -147,7 +144,7 @@ def predict_knee_sequence(
 # ── Smoke test ────────────────────────────────────────────────────────────────
 
 
-def run_smoke_test(try_download: bool = True) -> dict:
+def run_smoke_test(try_download: bool = True, use_gui: bool = False) -> dict:
     """
     End-to-end pipeline test that verifies motion matching actually works.
 
@@ -176,7 +173,7 @@ def run_smoke_test(try_download: bool = True) -> dict:
     print("=" * 60)
 
     from mocap_evaluation.mocap_loader import (
-        load_or_generate_mocap_database,
+        load_full_cmu_database,
         _interp_gait_curve,
         _KNEE_R,
         _HIP_R,
@@ -216,7 +213,7 @@ def run_smoke_test(try_download: bool = True) -> dict:
 
     # ── Load real CMU mocap database ──────────────────────────────────────
     print()
-    db = load_or_generate_mocap_database(try_download=try_download)
+    db = load_full_cmu_database(try_download=try_download)
     db_dur = len(db["knee_right"]) / fps
     print(f"  DB: {db_dur:.1f}s @ {fps}Hz  source={db['source']}")
 
@@ -240,7 +237,7 @@ def run_smoke_test(try_download: bool = True) -> dict:
     print("  Running PyBullet simulation …")
     t1 = time.time()
     metrics = simulate_prosthetic_walking(
-        segment, predicted, use_physics=True, use_gui=False, fps=float(fps)
+        segment, predicted, use_physics=True, use_gui=use_gui, fps=float(fps)
     )
     print(f"  Simulation: {time.time()-t1:.2f}s  mode={metrics.get('mode')}")
 
@@ -278,7 +275,6 @@ def evaluate(
     use_gui: bool = False,
     use_physics: bool = True,
     device_str: str = "cpu",
-    full_database: bool = False,
 ) -> dict:
     """
     Full prosthetic evaluation pipeline.
@@ -304,10 +300,7 @@ def evaluate(
 
     # ── Load / generate mocap database ──────────────────────────────────────
     print(f"[eval] Loading mocap database from: {mocap_dir}")
-    if full_database:
-        mocap_db = load_full_cmu_database(bvh_dir=mocap_dir)
-    else:
-        mocap_db = load_or_generate_mocap_database(bvh_dir=mocap_dir)
+    mocap_db = load_full_cmu_database(bvh_dir=mocap_dir)
     db_dur   = len(mocap_db["knee_right"]) / mocap_db["fps"]
     n_files = len(mocap_db.get("file_boundaries", []))
     extra = f", {n_files} files" if n_files else ""
@@ -419,9 +412,6 @@ def _parse_args():
                     help="Use kinematic evaluation only (no PyBullet)")
     ap.add_argument("--smoke-test",  action="store_true",
                     help="Run quick smoke test (no checkpoint needed)")
-    ap.add_argument("--full-db",     action="store_true",
-                    help="Use the full CMU mocap database with category metadata "
-                         "(auto-downloads if needed)")
     return ap.parse_args()
 
 
@@ -429,7 +419,7 @@ def main():
     args = _parse_args()
 
     if args.smoke_test:
-        run_smoke_test()
+        run_smoke_test(use_gui=args.gui)
         return
 
     if args.checkpoint is None:
@@ -465,7 +455,6 @@ def main():
         use_gui         = args.gui,
         use_physics     = not args.no_physics,
         device_str      = args.device,
-        full_database   = args.full_db,
     )
 
 
