@@ -25,6 +25,7 @@ Returned database dict (all angles in **degrees**, all arrays at TARGET_FPS):
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import urllib.request
 import urllib.error
@@ -240,6 +241,65 @@ def load_cmu_bvh(bvh_path: str | Path) -> Optional[dict]:
 # ── main entry point ──────────────────────────────────────────────────────────
 
 
+def _cache_fingerprint(bvh_files: List[Path]) -> str:
+    """Compute a hash of BVH filenames + sizes to detect changes."""
+    h = hashlib.md5()
+    for f in sorted(bvh_files):
+        h.update(f.name.encode())
+        h.update(str(f.stat().st_size).encode())
+    return h.hexdigest()[:12]
+
+
+def _save_cache(db: dict, cache_path: Path) -> None:
+    """Save processed database to an .npz cache file."""
+    arrays = {}
+    scalars = {}
+    for k, v in db.items():
+        if isinstance(v, np.ndarray):
+            arrays[k] = v
+        elif k == "file_boundaries":
+            # Store as separate arrays for npz compatibility
+            starts = np.array([b[0] for b in v], dtype=np.int64)
+            ends = np.array([b[1] for b in v], dtype=np.int64)
+            names = np.array([b[2] for b in v], dtype=object)
+            cats = np.array([b[3] for b in v], dtype=object)
+            arrays["_fb_starts"] = starts
+            arrays["_fb_ends"] = ends
+            arrays["_fb_names"] = names
+            arrays["_fb_cats"] = cats
+        else:
+            scalars[k] = v
+    arrays["_scalars"] = np.array([scalars], dtype=object)
+    np.savez(cache_path, **arrays)
+
+
+def _load_cache(cache_path: Path) -> Optional[dict]:
+    """Load processed database from an .npz cache file."""
+    if not cache_path.exists():
+        return None
+    try:
+        data = np.load(cache_path, allow_pickle=True)
+        db = {}
+        scalars = data["_scalars"].item()
+        db.update(scalars)
+        for k in data.files:
+            if k == "_scalars":
+                continue
+            if k.startswith("_fb_"):
+                continue
+            db[k] = data[k]
+        if "_fb_starts" in data:
+            db["file_boundaries"] = list(zip(
+                data["_fb_starts"].tolist(),
+                data["_fb_ends"].tolist(),
+                data["_fb_names"].tolist(),
+                data["_fb_cats"].tolist(),
+            ))
+        return db
+    except Exception:
+        return None
+
+
 def load_or_generate_mocap_database(
     bvh_dir: str | Path = MOCAP_DATA_DIR,
     try_download: bool = True,
@@ -247,6 +307,9 @@ def load_or_generate_mocap_database(
     """
     Load mocap database from BVH files found in `bvh_dir`.
     If none found, optionally download CMU BVH data.
+
+    Processed results are cached to ``{bvh_dir}/.mocap_cache_*.npz``
+    so that BVH files only need to be parsed once.
 
     Raises RuntimeError if no BVH data can be loaded.
 
@@ -262,6 +325,16 @@ def load_or_generate_mocap_database(
     bvh_dir = Path(bvh_dir)
     bvh_files = sorted(bvh_dir.glob("*.bvh")) if bvh_dir.exists() else []
 
+    # ── try cache first ────────────────────────────────────────────────────
+    if bvh_files:
+        fp = _cache_fingerprint(bvh_files)
+        cache_path = bvh_dir / f".mocap_cache_{fp}.npz"
+        cached = _load_cache(cache_path)
+        if cached is not None:
+            dur = len(cached["knee_right"]) / TARGET_FPS
+            print(f"[mocap_loader] Loaded cached database ({dur:.1f}s) from {cache_path.name}")
+            return cached
+
     # ── try local files ────────────────────────────────────────────────────
     if bvh_files:
         print(f"[mocap_loader] Found {len(bvh_files)} local BVH file(s) in {bvh_dir}/")
@@ -272,7 +345,10 @@ def load_or_generate_mocap_database(
                 print(f"  Loaded {bf.name}: {len(db['knee_right'])/TARGET_FPS:.1f} s")
                 segments.append(db)
         if segments:
-            return _concatenate_databases(segments)
+            result = _concatenate_databases(segments)
+            _save_cache(result, cache_path)
+            print(f"[mocap_loader] Saved cache → {cache_path.name}")
+            return result
 
     # ── try download ───────────────────────────────────────────────────────
     if try_download:
@@ -282,13 +358,18 @@ def load_or_generate_mocap_database(
             downloaded = download_all(dest_dir=bvh_dir)
             if downloaded:
                 bvh_files = sorted(bvh_dir.glob("*.bvh"))
+                fp = _cache_fingerprint(bvh_files)
+                cache_path = bvh_dir / f".mocap_cache_{fp}.npz"
                 segments = []
                 for bf in bvh_files:
                     db = load_cmu_bvh(bf)
                     if db is not None:
                         segments.append(db)
                 if segments:
-                    return _concatenate_databases(segments)
+                    result = _concatenate_databases(segments)
+                    _save_cache(result, cache_path)
+                    print(f"[mocap_loader] Saved cache → {cache_path.name}")
+                    return result
         except Exception:
             pass
 
@@ -361,6 +442,9 @@ def load_full_cmu_database(
     diverse motion types.  All available BVH files are loaded — no
     category filtering.
 
+    Processed results are cached to ``{bvh_dir}/.mocap_full_cache_*.npz``
+    so that BVH files only need to be parsed once.
+
     Raises RuntimeError if no BVH data can be loaded.
 
     Parameters
@@ -388,6 +472,18 @@ def load_full_cmu_database(
         except Exception as exc:
             print(f"  Download failed: {exc}")
 
+    # ── try cache first ───────────────────────────────────────────────────
+    if bvh_files:
+        fp = _cache_fingerprint(bvh_files)
+        cache_path = bvh_dir / f".mocap_full_cache_{fp}.npz"
+        cached = _load_cache(cache_path)
+        if cached is not None:
+            dur = len(cached["knee_right"]) / TARGET_FPS
+            n_files = len(cached.get("file_boundaries", []))
+            print(f"[mocap_loader] Loaded cached full database ({dur:.1f}s, "
+                  f"{n_files} files) from {cache_path.name}")
+            return cached
+
     # ── load all local files with metadata ────────────────────────────────
     if bvh_files:
         segments = []
@@ -408,6 +504,8 @@ def load_full_cmu_database(
             n_cats = len({m[1] for m in meta})
             print(f"[mocap_loader] Loaded {len(segments)} files, "
                   f"{total_dur:.1f}s total, {n_cats} categories")
+            _save_cache(combined, cache_path)
+            print(f"[mocap_loader] Saved cache → {cache_path.name}")
             return combined
 
     raise RuntimeError(
