@@ -240,7 +240,7 @@ def run_smoke_test(try_download: bool = True) -> dict:
     print("  Running PyBullet simulation …")
     t1 = time.time()
     metrics = simulate_prosthetic_walking(
-        segment, predicted, use_physics=True, use_gui=False, fps=float(fps)
+        segment, predicted, use_physics=True, use_gui=True, fps=float(fps)
     )
     print(f"  Simulation: {time.time()-t1:.2f}s  mode={metrics.get('mode')}")
 
@@ -275,7 +275,7 @@ def evaluate(
     mocap_dir: str | Path = "mocap_data",
     out_path: str | Path  = "eval_results.json",
     n_samples: Optional[int] = None,
-    use_gui: bool = False,
+    use_gui: bool = True,
     use_physics: bool = True,
     device_str: str = "cpu",
     full_database: bool = False,
@@ -413,8 +413,8 @@ def _parse_args():
                     help="Limit number of test windows (None = all)")
     ap.add_argument("--device",      default="cpu",
                     help="torch device (cpu / cuda)")
-    ap.add_argument("--gui",         action="store_true",
-                    help="Show PyBullet GUI (requires display)")
+    ap.add_argument("--no-gui",      action="store_true",
+                    help="Disable PyBullet GUI (GUI is on by default)")
     ap.add_argument("--no-physics",  action="store_true",
                     help="Use kinematic evaluation only (no PyBullet)")
     ap.add_argument("--smoke-test",  action="store_true",
@@ -462,7 +462,7 @@ def main():
         mocap_dir       = args.mocap_dir,
         out_path        = args.out,
         n_samples       = args.n_samples,
-        use_gui         = args.gui,
+        use_gui         = not args.no_gui,
         use_physics     = not args.no_physics,
         device_str      = args.device,
         full_database   = args.full_db,
