@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 *.pyo
 mocap_data/
+smoke_test_sim.gif
