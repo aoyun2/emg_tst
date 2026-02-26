@@ -7,7 +7,7 @@ we can selectively download and load trials by motion category.
 
 URL pattern
 -----------
-  https://mocap.cs.cmu.edu/subjects/{subject:02d}/{subject:02d}_{trial:02d}.bvh
+  https://codewelt.com/dl/cmuconvert-mb2/{subject:02d}_{trial:02d}.bvh
 
 Motion categories (aligned with CMU's own labeling)
 ----------------------------------------------------
@@ -38,10 +38,7 @@ class TrialInfo:
 
     @property
     def url(self) -> str:
-        return (
-            f"https://mocap.cs.cmu.edu/subjects/"
-            f"{self.subject:02d}/{self.filename}"
-        )
+        return f"https://codewelt.com/dl/cmuconvert-mb2/{self.filename}"
 
 
 # ---------------------------------------------------------------------------
