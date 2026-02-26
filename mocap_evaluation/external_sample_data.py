@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Iterable, Optional
+from urllib.error import HTTPError, URLError
 import urllib.request
 
 import numpy as np
@@ -15,11 +16,43 @@ DEFAULT_EXTERNAL_GAIT_URL = (
     "OpenSim/Examples/Gait2354_Simbody/subject01_walk1_ik.mot"
 )
 
+# Public fallback URLs from external online repositories/CDNs.
+FALLBACK_EXTERNAL_GAIT_URLS = (
+    "https://github.com/opensim-org/opensim-core/raw/refs/heads/main/"
+    "OpenSim/Examples/Gait2354_Simbody/subject01_walk1_ik.mot",
+    "https://raw.githubusercontent.com/opensim-org/opensim-core/master/"
+    "OpenSim/Examples/Gait2354_Simbody/subject01_walk1_ik.mot",
+    "https://cdn.jsdelivr.net/gh/opensim-org/opensim-core@main/"
+    "OpenSim/Examples/Gait2354_Simbody/subject01_walk1_ik.mot",
+    "https://raw.githubusercontent.com/opensim-org/opensim-models/master/"
+    "Tutorials/Gait2354/subject01_walk1_ik.mot",
+)
+
 
 def _read_text(url: str, timeout_s: float = 20.0) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": "emg-tst-eval/1.0"})
     with urllib.request.urlopen(req, timeout=timeout_s) as resp:
         return resp.read().decode("utf-8", errors="replace")
+
+
+def _read_external_text(source_url: Optional[str], timeout_s: float = 20.0) -> tuple[str, str]:
+    """Read external gait text from online sources with URL fallbacks."""
+    urls = (source_url,) if source_url else (DEFAULT_EXTERNAL_GAIT_URL, *FALLBACK_EXTERNAL_GAIT_URLS)
+    errors: list[str] = []
+
+    for url in urls:
+        try:
+            return _read_text(url, timeout_s=timeout_s), url
+        except HTTPError as exc:
+            errors.append(f"{url} -> HTTP {exc.code}")
+        except URLError as exc:
+            errors.append(f"{url} -> URL error: {exc.reason}")
+
+    raise RuntimeError(
+        "Failed to download external gait sample from online sources. "
+        f"Tried: {'; '.join(errors)}. "
+        "Pass --external-sample-url with a reachable .mot/.sto file to override."
+    )
 
 
 def _load_opensim_table(raw_text: str) -> tuple[np.ndarray, dict[str, np.ndarray]]:
@@ -72,8 +105,7 @@ def extract_external_sample_curves(
     source_url: Optional[str] = None,
 ) -> SampleCurves:
     """Build sample curves from an external online gait file (not mocap DB)."""
-    url = source_url or DEFAULT_EXTERNAL_GAIT_URL
-    raw = _read_text(url)
+    raw, url = _read_external_text(source_url)
     time_s, table = _load_opensim_table(raw)
 
     # OpenSim IK conventions: hip_flexion_r and knee_angle_r are flexion-like.
