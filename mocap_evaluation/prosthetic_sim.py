@@ -78,6 +78,9 @@ _LOWER_BODY_KEYWORDS = (
     "hip", "knee", "ankle", "foot"
 )
 
+# GIF frame capture: record every Nth simulation frame
+_CAPTURE_EVERY = 8   # 200 Hz / 8 = 25 fps effective in the saved video
+
 
 # ── Helper: Euler → quaternion ────────────────────────────────────────────────
 
@@ -241,6 +244,41 @@ def _gait_symmetry(right: List[int], left: List[int]) -> float:
     if total < 1e-6:
         return 0.0
     return float(abs(mr - ml) / total)
+
+
+# ── GIF helper ───────────────────────────────────────────────────────────────
+
+
+def _save_gif(frames: list, path: str, capture_fps: float = 25.0) -> None:
+    """
+    Save a list of (H, W, 3) uint8 numpy arrays as an animated GIF.
+
+    Requires Pillow.  Falls back to saving a .npy frame dump if Pillow is
+    not installed so the caller can at least retrieve the raw frames.
+    """
+    if not frames:
+        return
+    duration_ms = max(1, int(1000.0 / capture_fps))
+    try:
+        from PIL import Image
+        imgs = [Image.fromarray(f) for f in frames]
+        imgs[0].save(
+            path,
+            save_all=True,
+            append_images=imgs[1:],
+            duration=duration_ms,
+            loop=0,
+            optimize=False,
+        )
+        print(f"  [sim] Visualization saved → {path}"
+              f"  ({len(frames)} frames @ {capture_fps:.0f} fps)")
+    except ImportError:
+        npy_path = path.rsplit(".", 1)[0] + "_frames.npy"
+        np.save(npy_path, np.array(frames, dtype=np.uint8))
+        print(f"  [sim] Frames saved → {npy_path}"
+              "  (install Pillow for GIF: pip install pillow)")
+    except Exception as exc:
+        warnings.warn(f"Could not save GIF to {path}: {exc}", RuntimeWarning)
 
 
 # ── Simulator class ───────────────────────────────────────────────────────────
@@ -439,6 +477,7 @@ class ProstheticSimulator:
         mocap_segment: dict,
         predicted_knee: np.ndarray,
         fps: float = 200.0,
+        gif_output: Optional[str] = None,
     ) -> dict:
         """
         Drive the humanoid with mocap joint angles (kinematic playback),
@@ -460,6 +499,8 @@ class ProstheticSimulator:
         mocap_segment   : dict of (T,) arrays from motion_matching.find_best_match()
         predicted_knee  : (T,) predicted right-knee flexion in degrees
         fps             : playback frame rate (informational, not used here)
+        gif_output      : if given, capture frames and save an animated GIF at
+                          this path (works in both GUI and headless DIRECT mode)
 
         Returns
         -------
@@ -501,15 +542,18 @@ class ProstheticSimulator:
         robot_gt = self._robot_gt
         jmap_gt  = _discover_joints(robot_gt)
 
-        # ── GUI enhancements: color robots and add labels ────────────
+        # ── Color robots (applied for both GUI window and GIF capture) ──
+        _color_robot_prosthetic(robot, jmap, self._client)
+        _color_robot_ghost(robot_gt, self._client)
         if self.use_gui:
-            _color_robot_prosthetic(robot, jmap, self._client)
-            _color_robot_ghost(robot_gt, self._client)
             self._debug_ids: List[int] = []
 
         accum = _MetricsAccum(fall_threshold=self.fall_threshold)
         com_heights_gt = []
         dt = 1.0 / fps
+
+        # Frame capture for GIF output (works in both GUI and DIRECT mode)
+        _gif_frames: Optional[List] = [] if gif_output else None
 
         for t in range(T):
             frame_start = _time.time()
@@ -559,6 +603,31 @@ class ProstheticSimulator:
             # Single physics step so contact detection is updated
             p.stepSimulation(physicsClientId=self._client)
 
+            # ── frame capture (every _CAPTURE_EVERY steps) ────────────────
+            if _gif_frames is not None and t % _CAPTURE_EVERY == 0:
+                rx_c = float(root_traj[t, 0])
+                rz_c = float(root_traj[t, 2])
+                # Side view (looking in +Y): robot walks in X, camera at Y=-3.5
+                # Target centred between the two robots (Y=0 and Y=1.5)
+                _view = p.computeViewMatrix(
+                    cameraEyePosition=[rx_c, -3.5, rz_c + 1.1],
+                    cameraTargetPosition=[rx_c, 0.75, rz_c + 0.85],
+                    cameraUpVector=[0, 0, 1],
+                    physicsClientId=self._client,
+                )
+                _proj = p.computeProjectionMatrixFOV(
+                    fov=60, aspect=640.0 / 480.0,
+                    nearVal=0.1, farVal=20.0,
+                    physicsClientId=self._client,
+                )
+                _w, _h, _rgba, _, _ = p.getCameraImage(
+                    640, 480, _view, _proj,
+                    renderer=p.ER_TINY_RENDERER,
+                    physicsClientId=self._client,
+                )
+                _rgba_np = np.array(_rgba, dtype=np.uint8).reshape(_h, _w, 4)
+                _gif_frames.append(_rgba_np[:, :, :3])
+
             # ── metrics ───────────────────────────────────────────────────
             com_h    = self._compute_com_height(robot)
             com_h_gt = self._compute_com_height(robot_gt)
@@ -584,6 +653,11 @@ class ProstheticSimulator:
         p.removeBody(robot_gt, physicsClientId=self._client)
         self._robot    = None
         self._robot_gt = None
+
+        # ── Save GIF ──────────────────────────────────────────────────────
+        if gif_output and _gif_frames:
+            capture_fps = fps / _CAPTURE_EVERY
+            _save_gif(_gif_frames, gif_output, capture_fps=capture_fps)
 
         metrics = accum.summarise()
 
@@ -697,6 +771,7 @@ def simulate_prosthetic_walking(
     use_physics: bool = True,
     use_gui: bool = False,
     fps: float = 200.0,
+    gif_output: Optional[str] = None,
 ) -> dict:
     """
     High-level entry point.
@@ -704,13 +779,19 @@ def simulate_prosthetic_walking(
     Attempts PyBullet physics simulation; falls back to kinematic evaluation
     if PyBullet is unavailable or fails.
 
+    When ``gif_output`` is given, each simulation frame is captured via
+    ``pybullet.getCameraImage`` (PyBullet's built-in software renderer —
+    works without a display) and the result is saved as an animated GIF.
+    This lets you inspect the simulation even in headless/CI environments.
+
     Parameters
     ----------
     mocap_segment   : matched mocap segment dict (from motion_matching)
     predicted_knee  : (T,) right-knee angle predictions in degrees
     use_physics     : if False, use lightweight kinematic evaluation only
-    use_gui         : show PyBullet GUI (for debugging)
+    use_gui         : show PyBullet GUI (requires a display)
     fps             : playback rate (Hz)
+    gif_output      : path for the animated GIF visualisation (optional)
 
     Returns
     -------
@@ -721,14 +802,18 @@ def simulate_prosthetic_walking(
         effective_gui = use_gui
         if use_gui and not os.environ.get("DISPLAY"):
             warnings.warn(
-                "No DISPLAY found — falling back to headless PyBullet mode.",
+                "No DISPLAY found — running headless PyBullet."
+                + (" Saving visualisation to GIF instead." if gif_output else ""),
                 RuntimeWarning,
                 stacklevel=2,
             )
             effective_gui = False
         try:
             with ProstheticSimulator(use_gui=effective_gui) as sim:
-                metrics = sim.run(mocap_segment, predicted_knee, fps=fps)
+                metrics = sim.run(
+                    mocap_segment, predicted_knee, fps=fps,
+                    gif_output=gif_output,
+                )
             metrics["mode"] = "physics" + ("+gui" if effective_gui else "")
             return metrics
         except Exception as exc:
