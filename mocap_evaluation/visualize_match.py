@@ -89,6 +89,10 @@ def main():
     start, dist, seg = find_best_match(knee_included, thigh, db)
     print(f"Matched start={start}, dtw={dist:.4f}, category={seg.get('category','unknown')}")
 
+    knee_rmse = float(np.sqrt(np.mean((knee_included - seg["knee_right"]) ** 2)))
+    thigh_rmse = float(np.sqrt(np.mean((thigh - seg["hip_right"]) ** 2)))
+    print(f"Knee RMSE={knee_rmse:.4f} deg, Thigh RMSE={thigh_rmse:.4f} deg")
+
     try:
         import matplotlib.pyplot as plt
     except Exception as exc:
@@ -102,7 +106,7 @@ def main():
     ax[0].plot(t, knee_included, label="test sample knee (included)", linewidth=2)
     ax[0].plot(t, seg["knee_right"], label="matched knee_right", linewidth=2, alpha=0.8)
     ax[0].set_ylabel("deg")
-    ax[0].set_title("Test sample segment vs matched mocap segment")
+    ax[0].set_title(f"Test sample segment vs matched mocap segment  |  Knee RMSE={knee_rmse:.2f}°")
     ax[0].legend()
     ax[0].grid(True, alpha=0.3)
 
@@ -110,6 +114,7 @@ def main():
     ax[1].plot(t, seg["hip_right"], label="matched hip_right", linewidth=2, alpha=0.8)
     ax[1].set_ylabel("deg")
     ax[1].set_xlabel("frame")
+    ax[1].set_title(f"Thigh RMSE={thigh_rmse:.2f}°")
     ax[1].legend()
     ax[1].grid(True, alpha=0.3)
 
