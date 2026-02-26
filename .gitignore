@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 *.pyo
+
+# Downloaded / generated mocap data (BVH files, processed caches)
+mocap_data/
