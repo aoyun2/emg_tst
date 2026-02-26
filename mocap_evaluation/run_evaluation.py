@@ -42,6 +42,7 @@ import torch
 from emg_tst.model import TSTEncoder, TSTRegressor
 from emg_tst.data import StandardScaler
 from mocap_evaluation.mocap_loader import (
+    TARGET_FPS,
     load_or_generate_mocap_database,
     load_full_cmu_database,
     load_aggregated_bandai_cmu_database,
@@ -51,6 +52,42 @@ from mocap_evaluation.prosthetic_sim import simulate_prosthetic_walking
 from mocap_evaluation.mock_data import generate_mock_curves, save_mock_curves
 from mocap_evaluation.sample_data import extract_real_sample_curves, save_sample_curves
 from mocap_evaluation.external_sample_data import extract_external_sample_curves
+
+
+# ── Window-length helper ──────────────────────────────────────────────────────
+
+
+def _derive_window_seconds(
+    data_path: str | Path | None,
+    checkpoint_path: str | Path | None = None,
+) -> float:
+    """Derive sample window duration (in seconds) from the model architecture.
+
+    Priority:
+    1. Checkpoint ``model_cfg["seq_len"]`` (exact model sequence length).
+    2. Dataset ``window`` field from *samples_dataset.npy*.
+    3. Architecture default: 200 samples @ 200 Hz = 1.0 s.
+    """
+    if checkpoint_path is not None:
+        p = Path(checkpoint_path)
+        if p.exists():
+            try:
+                ckpt = torch.load(p, map_location="cpu", weights_only=False)
+                seq_len = int(ckpt["model_cfg"]["seq_len"])
+                return seq_len / TARGET_FPS
+            except Exception:
+                pass
+
+    if data_path is not None:
+        p = Path(data_path)
+        if p.exists():
+            d = np.load(p, allow_pickle=True)
+            if isinstance(d, np.ndarray):
+                d = d.item()
+            window = int(d.get("window", 200))
+            return window / TARGET_FPS
+
+    return 200 / TARGET_FPS
 
 
 # ── Checkpoint loader ─────────────────────────────────────────────────────────
@@ -490,8 +527,6 @@ def _parse_args():
                          "(auto-downloads Bandai locomotion first, CMU fallback)")
     ap.add_argument("--mock-data", action="store_true",
                     help="Run with generated mock knee/thigh curves (no checkpoint needed)")
-    ap.add_argument("--mock-seconds", type=float, default=4.0,
-                    help="Mock curve length in seconds")
     ap.add_argument("--top-k", type=int, default=3,
                     help="Top-k motion matches to simulate")
     ap.add_argument("--save-mock", default=None,
@@ -500,8 +535,6 @@ def _parse_args():
                     help="Use a real walking segment from mocap DB (thigh pitch + knee included angle only)")
     ap.add_argument("--save-real", default=None,
                     help="Optional .npz path to save extracted real walking curves")
-    ap.add_argument("--real-seconds", type=float, default=4.0,
-                    help="Length in seconds for extracted real/external walking curves")
     ap.add_argument("--test-sample-source", choices=["external", "mocap"], default="external",
                     help="Source for --test-sample queries (external recommended for out-of-db testing)")
     ap.add_argument("--external-sample-url", default=None,
@@ -526,6 +559,9 @@ def main():
     if args.match_categories:
         match_categories = [c.strip() for c in args.match_categories.split(",") if c.strip()]
 
+    seconds = _derive_window_seconds(args.data, args.checkpoint)
+    print(f"[eval] Window duration derived from model architecture: {seconds:.3f} s")
+
     if args.test_sample:
         run_test_sample(
             mocap_dir=args.mocap_dir,
@@ -539,7 +575,7 @@ def main():
             bandai_dir=args.bandai_dir,
             cmu_dir=args.cmu_dir,
             match_categories=match_categories,
-            seconds=args.real_seconds,
+            seconds=seconds,
             sample_source=args.test_sample_source,
             external_url=args.external_sample_url,
         )
@@ -548,7 +584,7 @@ def main():
     if args.real_walk_data:
         curves = extract_real_sample_curves(
             mocap_dir=args.mocap_dir,
-            seconds=args.real_seconds,
+            seconds=seconds,
             categories=match_categories,
             full_database=args.full_db or args.aggregate_datasets,
         )
@@ -575,7 +611,7 @@ def main():
         return
 
     if args.mock_data:
-        curves = generate_mock_curves(length_s=args.mock_seconds)
+        curves = generate_mock_curves(length_s=seconds)
         if args.save_mock:
             save_mock_curves(args.save_mock, curves)
             print(f"[eval] Saved mock curves -> {args.save_mock}")

@@ -16,17 +16,37 @@ from mocap_evaluation.sample_data import extract_real_sample_curves
 from mocap_evaluation.external_sample_data import extract_external_sample_curves
 from mocap_evaluation.motion_matching import find_best_match
 from mocap_evaluation.mocap_loader import (
+    TARGET_FPS,
     load_or_generate_mocap_database,
     load_full_cmu_database,
     load_aggregated_bandai_cmu_database,
 )
 
 
+def _derive_window_seconds(data_path: str | Path) -> float:
+    """Derive sample window duration (in seconds) from the dataset file.
+
+    Reads the ``window`` field written by split_to_samples.py and divides by
+    TARGET_FPS so the query length always matches the model's sequence length.
+    Falls back to the architecture default (200 samples @ 200 Hz = 1 s).
+    """
+    p = Path(data_path)
+    if p.exists():
+        d = np.load(p, allow_pickle=True)
+        if isinstance(d, np.ndarray):
+            d = d.item()
+        window = int(d.get("window", 200))
+        return window / TARGET_FPS
+    return 200 / TARGET_FPS
+
+
 def _parse_args():
     ap = argparse.ArgumentParser(description="Test-sample-to-mocap matching visualisation")
     ap.add_argument("--mocap-dir", default="mocap_data")
     ap.add_argument("--out", default="test_sample_vs_match.png")
-    ap.add_argument("--seconds", type=float, default=6.0)
+    ap.add_argument("--data", default="samples_dataset.npy",
+                    help="samples_dataset.npy produced by split_to_samples.py "
+                         "(used to derive window length)")
     ap.add_argument("--sample-source", choices=["external", "mocap"], default="external")
     ap.add_argument("--external-sample-url", default=None)
     ap.add_argument("--full-db", action="store_true")
@@ -39,15 +59,18 @@ def _parse_args():
 def main():
     args = _parse_args()
 
+    seconds = _derive_window_seconds(args.data)
+    print(f"[viz] Window duration derived from dataset: {seconds:.3f} s")
+
     if args.sample_source == "external":
         curves = extract_external_sample_curves(
-            seconds=args.seconds,
+            seconds=seconds,
             source_url=args.external_sample_url,
         )
     else:
         curves = extract_real_sample_curves(
             mocap_dir=args.mocap_dir,
-            seconds=args.seconds,
+            seconds=seconds,
             categories=("walk",),
             full_database=args.full_db or args.aggregate_datasets,
         )
