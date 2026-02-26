@@ -79,3 +79,24 @@ python -m mocap_evaluation.visualize_match \
 
 This generates a mock knee/thigh segment, runs motion matching, and saves a plot of
 query-vs-match curves.
+
+
+### Use real walking sample curves (no synthetic templates)
+
+If you want to avoid synthetic mock curves, you can extract one real walking segment
+from your local mocap BVH files and evaluate directly on just:
+- right thigh pitch angle
+- right knee included angle
+
+```bash
+python -m mocap_evaluation.run_evaluation \
+  --real-walk-data \
+  --real-seconds 6 \
+  --full-db \
+  --top-k 5 \
+  --out eval_real_walk_results.json \
+  --save-real real_walk_curves.npz
+```
+
+Tip: for free-motion evaluation, keep matching unrestricted by default. If you need a
+targeted diagnostic run, `--match-categories` is still available as an optional filter.

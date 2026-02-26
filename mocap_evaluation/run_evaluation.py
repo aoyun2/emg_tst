@@ -49,6 +49,7 @@ from mocap_evaluation.mocap_loader import (
 from mocap_evaluation.motion_matching import find_best_match, find_top_k_matches
 from mocap_evaluation.prosthetic_sim import simulate_prosthetic_walking
 from mocap_evaluation.mock_data import generate_mock_curves, save_mock_curves
+from mocap_evaluation.sample_data import extract_real_sample_curves, save_sample_curves
 
 
 # ── Checkpoint loader ─────────────────────────────────────────────────────────
@@ -313,6 +314,7 @@ def evaluate(
     aggregate_datasets: bool = False,
     bandai_dir: Optional[str | Path] = None,
     cmu_dir: Optional[str | Path] = None,
+    match_categories: Optional[List[str]] = None,
 ) -> dict:
     """
     Full prosthetic evaluation pipeline.
@@ -376,7 +378,12 @@ def evaluate(
         pred_knee_inc = pred_knee.astype(np.float32)
 
         # Motion matching (included-angle convention)
-        _, dtw_dist, segment = find_best_match(knee_label_inc, thigh_sig, mocap_db)
+        _, dtw_dist, segment = find_best_match(
+            knee_label_inc,
+            thigh_sig,
+            mocap_db,
+            categories=match_categories,
+        )
 
         # Simulation consumes the same included-angle convention.
         metrics = simulate_prosthetic_walking(
@@ -456,6 +463,7 @@ def evaluate_from_curves(
     aggregate_datasets: bool = False,
     bandai_dir: Optional[str | Path] = None,
     cmu_dir: Optional[str | Path] = None,
+    match_categories: Optional[List[str]] = None,
 ) -> dict:
     """Evaluate motion matching directly from label/thigh curves.
 
@@ -483,6 +491,7 @@ def evaluate_from_curves(
         imu_thigh=thigh_angle.astype(np.float32),
         mocap_db=mocap_db,
         k=top_k,
+        categories=match_categories,
     )
 
     per_match = []
@@ -567,6 +576,14 @@ def _parse_args():
                     help="Top-k motion matches to simulate")
     ap.add_argument("--save-mock", default=None,
                     help="Optional .npz path to save generated mock curves")
+    ap.add_argument("--real-walk-data", action="store_true",
+                    help="Use a real walking segment from mocap DB (thigh pitch + knee included angle only)")
+    ap.add_argument("--save-real", default=None,
+                    help="Optional .npz path to save extracted real walking curves")
+    ap.add_argument("--real-seconds", type=float, default=4.0,
+                    help="Length in seconds for extracted real walking curves")
+    ap.add_argument("--match-categories", default=None,
+                    help="Comma-separated category filter for motion matching (e.g. walk,run)")
     ap.add_argument("--sim-backend", default="pybullet", choices=["pybullet", "mujoco"],
                     help="Physics backend preference")
     ap.add_argument("--aggregate-datasets", action="store_true",
@@ -583,6 +600,39 @@ def main():
 
     if args.smoke_test:
         run_smoke_test()
+        return
+
+    match_categories = None
+    if args.match_categories:
+        match_categories = [c.strip() for c in args.match_categories.split(",") if c.strip()]
+
+    if args.real_walk_data:
+        curves = extract_real_sample_curves(
+            mocap_dir=args.mocap_dir,
+            seconds=args.real_seconds,
+            categories=match_categories,
+            full_database=args.full_db or args.aggregate_datasets,
+        )
+        if args.save_real:
+            save_sample_curves(args.save_real, curves)
+            print(f"[eval] Saved real walking curves -> {args.save_real}")
+        print(f"[eval] Real sample source: {curves.source_file} [{curves.category}]")
+        evaluate_from_curves(
+            knee_label_included=curves.knee_label_included_deg,
+            thigh_angle=curves.thigh_angle_deg,
+            predicted_knee_included=curves.predicted_knee_included_deg,
+            mocap_dir=args.mocap_dir,
+            top_k=args.top_k,
+            use_gui=not args.no_gui,
+            use_physics=not args.no_physics,
+            out_path=args.out,
+            full_database=args.full_db,
+            sim_backend=args.sim_backend,
+            aggregate_datasets=args.aggregate_datasets,
+            bandai_dir=args.bandai_dir,
+            cmu_dir=args.cmu_dir,
+            match_categories=match_categories,
+        )
         return
 
     if args.mock_data:
@@ -604,6 +654,7 @@ def main():
             aggregate_datasets=args.aggregate_datasets,
             bandai_dir=args.bandai_dir,
             cmu_dir=args.cmu_dir,
+            match_categories=match_categories,
         )
         return
 
@@ -645,6 +696,7 @@ def main():
         aggregate_datasets = args.aggregate_datasets,
         bandai_dir        = args.bandai_dir,
         cmu_dir           = args.cmu_dir,
+        match_categories   = match_categories,
     )
 
 
