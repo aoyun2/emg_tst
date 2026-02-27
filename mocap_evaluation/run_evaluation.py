@@ -212,9 +212,6 @@ def run_test_sample(
     mocap_dir: str | Path = "mocap_data",
     out_path: str | Path = "eval_test_sample_results.json",
     top_k: int = 3,
-    use_gui: bool = False,
-    use_physics: bool = True,
-    sim_backend: str = "mujoco",
     match_categories: Optional[List[str]] = None,
     seconds: float = 4.0,
     sample_source: str = "external",
@@ -253,10 +250,7 @@ def run_test_sample(
         predicted_knee_included=curves.predicted_knee_included_deg,
         mocap_dir=mocap_dir,
         top_k=top_k,
-        use_gui=use_gui,
-        use_physics=use_physics,
         out_path=out_path,
-        sim_backend=sim_backend,
         match_categories=match_categories,
     )
     result["test_sample_pred_vs_label_rmse_deg"] = model_rmse
@@ -274,10 +268,7 @@ def evaluate(
     mocap_dir: str | Path = "mocap_data",
     out_path: str | Path  = "eval_results.json",
     n_samples: Optional[int] = None,
-    use_gui: bool = False,
-    use_physics: bool = True,
     device_str: str = "cpu",
-    sim_backend: str = "mujoco",
     match_categories: Optional[List[str]] = None,
 ) -> dict:
     """
@@ -343,9 +334,6 @@ def evaluate(
         # both the right knee and right thigh come from the sample, not mocap.
         metrics = simulate_prosthetic_walking(
             segment, pred_knee_inc,
-            use_physics=use_physics,
-            use_gui=use_gui,
-            backend=sim_backend,
             sample_thigh_right=thigh_sig,
         )
 
@@ -402,10 +390,7 @@ def evaluate_from_curves(
     predicted_knee_included: np.ndarray,
     mocap_dir: str | Path = "mocap_data",
     top_k: int = 3,
-    use_gui: bool = False,
-    use_physics: bool = True,
     out_path: str | Path = "eval_mock_results.json",
-    sim_backend: str = "mujoco",
     match_categories: Optional[List[str]] = None,
 ) -> dict:
     """Evaluate motion matching directly from label/thigh curves.
@@ -434,17 +419,11 @@ def evaluate_from_curves(
         gt_metrics = simulate_prosthetic_walking(
             segment,
             knee_label_inc,
-            use_physics=use_physics,
-            use_gui=use_gui,
-            backend=sim_backend,
             sample_thigh_right=thigh_angle,
         )
         pred_metrics = simulate_prosthetic_walking(
             segment,
             pred_knee_inc,
-            use_physics=use_physics,
-            use_gui=use_gui,
-            backend=sim_backend,
             sample_thigh_right=thigh_angle,
         )
         per_match.append(
@@ -496,10 +475,6 @@ def _parse_args():
                     help="Limit number of test windows (None = all)")
     ap.add_argument("--device",      default="cpu",
                     help="torch device (cpu / cuda)")
-    ap.add_argument("--gui",         action="store_true",
-                    help="Enable simulation GUI (headless by default)")
-    ap.add_argument("--no-physics",  action="store_true",
-                    help="(Deprecated — ignored. MuJoCo physics is always used.)")
     ap.add_argument("--test-sample",  action="store_true",
                     help="Run quick evaluation with real test sample curves (no checkpoint needed)")
     ap.add_argument("--mock-data", action="store_true",
@@ -518,8 +493,6 @@ def _parse_args():
                     help="Optional URL override for external gait sample file (.mot/.sto)")
     ap.add_argument("--match-categories", default=None,
                     help="Comma-separated category filter for motion matching (e.g. walk,run)")
-    ap.add_argument("--sim-backend", default="mujoco", choices=["mujoco"],
-                    help="Physics backend (MuJoCo)")
     return ap.parse_args()
 
 
@@ -530,15 +503,6 @@ def main():
     if args.match_categories:
         match_categories = [c.strip() for c in args.match_categories.split(",") if c.strip()]
 
-    if args.no_physics:
-        import warnings
-        warnings.warn(
-            "--no-physics is deprecated and ignored. "
-            "MuJoCo physics simulation is always used.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-
     seconds = _derive_window_seconds(args.data, args.checkpoint)
     print(f"[eval] Window duration derived from model architecture: {seconds:.3f} s")
 
@@ -547,9 +511,6 @@ def main():
             mocap_dir=args.mocap_dir,
             out_path=args.out,
             top_k=args.top_k,
-            use_gui=args.gui,
-            use_physics=True,
-            sim_backend=args.sim_backend,
             match_categories=match_categories,
             seconds=seconds,
             sample_source=args.test_sample_source,
@@ -573,10 +534,7 @@ def main():
             predicted_knee_included=curves.predicted_knee_included_deg,
             mocap_dir=args.mocap_dir,
             top_k=args.top_k,
-            use_gui=args.gui,
-            use_physics=True,
             out_path=args.out,
-            sim_backend=args.sim_backend,
             match_categories=match_categories,
         )
         return
@@ -592,10 +550,7 @@ def main():
             predicted_knee_included=curves.predicted_knee_included_deg,
             mocap_dir=args.mocap_dir,
             top_k=args.top_k,
-            use_gui=args.gui,
-            use_physics=True,
             out_path=args.out,
-            sim_backend=args.sim_backend,
             match_categories=match_categories,
         )
         return
@@ -630,11 +585,8 @@ def main():
         mocap_dir       = args.mocap_dir,
         out_path        = args.out,
         n_samples       = args.n_samples,
-        use_gui         = args.gui,
-        use_physics     = not args.no_physics,
         device_str      = args.device,
-        sim_backend      = args.sim_backend,
-        match_categories   = match_categories,
+        match_categories = match_categories,
     )
 
 

@@ -13,9 +13,7 @@ Internally we convert to flexion convention for the physics backend.
 from __future__ import annotations
 
 import math
-import os
 import time
-import warnings
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -346,15 +344,11 @@ class _MuJoCoRunner:
 def simulate_prosthetic_walking(
     mocap_segment: dict,
     predicted_knee: np.ndarray,
-    use_physics: bool = True,
     use_gui: bool = False,
     fps: float = SIM_FPS_DEFAULT,
-    gif_output_pred: Optional[str] = None,
-    gif_output_gt: Optional[str] = None,
-    backend: str = "mujoco",
     sample_thigh_right: Optional[np.ndarray] = None,
 ) -> dict:
-    """Run prosthetic gait simulation.
+    """Run prosthetic gait simulation via MuJoCo physics.
 
     Parameters
     ----------
@@ -365,28 +359,10 @@ def simulate_prosthetic_walking(
         to keep the right-leg inputs (thigh + knee) anchored to the sample
         being evaluated rather than the mocap reference.
     """
-    if gif_output_pred or gif_output_gt:
-        warnings.warn("GIF export is not implemented in this backend rewrite.", RuntimeWarning, stacklevel=2)
-
-    if not use_physics:
-        raise RuntimeError(
-            "Physics simulation is required (use_physics=False is no longer supported). "
-            "Use --sim-backend mujoco (default) to run with MuJoCo physics."
-        )
-
     if not _MUJOCO_AVAILABLE:
         raise RuntimeError(
             "MuJoCo is required but not installed.\n"
-            "Install it with:  pip install mujoco\n"
-            "MuJoCo is the only supported simulation backend; "
-            "kinematic fallback has been removed."
-        )
-    if use_gui and not os.environ.get("DISPLAY"):
-        raise RuntimeError(
-            "MuJoCo GUI requested but DISPLAY environment variable is not set.\n"
-            "Either:\n"
-            "  1. Run on a machine with a display (set DISPLAY=:0 or similar)\n"
-            "  2. Use --no-gui to run headless"
+            "Install it with:  pip install mujoco"
         )
     return _MuJoCoRunner(use_gui=use_gui, fps=fps).run(
         mocap_segment, predicted_knee, FALL_HEIGHT_THRESHOLD,
@@ -404,7 +380,7 @@ def run_visual_demo(use_full_db: bool = False):
     qt = db["hip_right"][:T]
     _, _, seg = find_best_match(qk, qt, db)
 
-    out = simulate_prosthetic_walking(seg, qk, use_physics=True, use_gui=True)
+    out = simulate_prosthetic_walking(seg, qk, use_gui=True)
     print("Demo metrics:", out)
 
 
