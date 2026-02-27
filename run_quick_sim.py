@@ -22,7 +22,7 @@ print(f"CMU DB: {len(db['knee_right'])/db['fps']:.0f}s, {len(db['file_boundaries
 # ── Motion matching: OpenSim query vs CMU DB ──────────────────────────────
 print("\nRunning motion matching (L2 pre-filter + DTW)...")
 best_start, dist, segment = find_best_match(
-    knee_query, thigh_query, db, categories=["walk"],
+    knee_query, thigh_query, db,
 )
 
 # Find matched file

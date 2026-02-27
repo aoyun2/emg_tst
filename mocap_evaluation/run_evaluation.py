@@ -346,7 +346,7 @@ def run_test_sample(
     print("TEST SAMPLE -- real mocap query -> motion matching -> simulation")
     print("=" * 60)
 
-    categories = tuple(match_categories) if match_categories else ("walk",)
+    categories = tuple(match_categories) if match_categories else None
     if sample_source == "external":
         curves = extract_external_sample_curves(
             seconds=seconds,
@@ -659,7 +659,7 @@ def play_mocap_match(
     All joints (including right knee) are driven by the matched mocap segment
     so the user can see exactly what motion was matched.
     """
-    categories = tuple(match_categories) if match_categories else ("walk",)
+    categories = tuple(match_categories) if match_categories else None
     if sample_source == "external":
         curves = extract_external_sample_curves(
             seconds=seconds,
