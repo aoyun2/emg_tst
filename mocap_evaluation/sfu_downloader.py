@@ -35,7 +35,7 @@ from typing import List, Optional, Sequence, NamedTuple
 # Constants
 # ---------------------------------------------------------------------------
 
-_BASE_URL = "https://mocap.cs.sfu.ca/data/"
+_BASE_URL = "https://mocap.cs.sfu.ca/nusmocap/"
 
 
 class SFUTrial(NamedTuple):

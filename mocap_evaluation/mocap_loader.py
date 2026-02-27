@@ -276,6 +276,20 @@ def _category_for_file(filename: str) -> str:
             return "misc"
         return action_base if action_base else "misc"
 
+    # ── SFU filenames (e.g. "0005_Walking001.bvh", "0007_Running002.bvh") ──
+    # Pattern: 4-digit subject ID + underscore + MotionNameNNN.bvh
+    if len(lower) > 5 and lower[:4].isdigit() and lower[4] == "_":
+        motion = lower[5:].split(".")[0].rstrip("0123456789")
+        if motion in ("walking",):
+            return "walk"
+        if motion in ("running", "jogging"):
+            return "run"
+        if motion in ("jumping",):
+            return "jump"
+        if motion in ("kicking", "boxing", "punching"):
+            return "sport"
+        return motion if motion else "misc"
+
     # ── CMU catalog lookup ─────────────────────────────────────────────────
     try:
         from mocap_evaluation.cmu_catalog import CATALOG

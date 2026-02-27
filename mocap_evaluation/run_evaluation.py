@@ -507,7 +507,7 @@ def _parse_args():
     ap.add_argument("--no-gui",      action="store_true",
                     help="Disable simulation GUI (GUI is on by default when backend supports it)")
     ap.add_argument("--no-physics",  action="store_true",
-                    help="Use kinematic evaluation only (no physics backend)")
+                    help="(Deprecated — ignored. MuJoCo physics is always used.)")
     ap.add_argument("--test-sample",  action="store_true",
                     help="Run quick evaluation with real test sample curves (no checkpoint needed)")
     ap.add_argument("--mock-data", action="store_true",
@@ -538,6 +538,15 @@ def main():
     if args.match_categories:
         match_categories = [c.strip() for c in args.match_categories.split(",") if c.strip()]
 
+    if args.no_physics:
+        import warnings
+        warnings.warn(
+            "--no-physics is deprecated and ignored. "
+            "MuJoCo physics simulation is always used.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
     seconds = _derive_window_seconds(args.data, args.checkpoint)
     print(f"[eval] Window duration derived from model architecture: {seconds:.3f} s")
 
@@ -547,7 +556,7 @@ def main():
             out_path=args.out,
             top_k=args.top_k,
             use_gui=not args.no_gui,
-            use_physics=not args.no_physics,
+            use_physics=True,
             sim_backend=args.sim_backend,
             match_categories=match_categories,
             seconds=seconds,
@@ -573,7 +582,7 @@ def main():
             mocap_dir=args.mocap_dir,
             top_k=args.top_k,
             use_gui=not args.no_gui,
-            use_physics=not args.no_physics,
+            use_physics=True,
             out_path=args.out,
             sim_backend=args.sim_backend,
             match_categories=match_categories,
@@ -592,7 +601,7 @@ def main():
             mocap_dir=args.mocap_dir,
             top_k=args.top_k,
             use_gui=not args.no_gui,
-            use_physics=not args.no_physics,
+            use_physics=True,
             out_path=args.out,
             sim_backend=args.sim_backend,
             match_categories=match_categories,

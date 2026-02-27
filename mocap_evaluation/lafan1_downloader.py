@@ -15,8 +15,9 @@ Dataset overview
   • Actions: aiming, dance, fallAndGetUp, fight, ground, jump, obstacles,
             push, run, walk, etc.
 
-Files are downloaded from the raw GitHub content and stored as the original
-filenames (e.g. ``aiming1_subject1.bvh``) in the destination directory.
+The BVH files are distributed as a zip archive (``lafan1.zip``) inside the
+GitHub repository (stored via Git LFS).  This downloader fetches the zip,
+extracts all ``.bvh`` files, and stores them in the destination directory.
 
 Usage
 -----
@@ -26,9 +27,11 @@ Usage
 """
 from __future__ import annotations
 
+import io
 import time
 import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 from typing import List, Optional, Sequence
 
@@ -36,10 +39,11 @@ from typing import List, Optional, Sequence
 # Constants
 # ---------------------------------------------------------------------------
 
-_BASE_URL = (
-    "https://raw.githubusercontent.com/"
+# The BVH files live inside lafan1.zip in the repo (Git LFS).
+_ZIP_URL = (
+    "https://github.com/"
     "ubisoft/ubisoft-laforge-animation-dataset/"
-    "master/lafan1/lafan1/"
+    "raw/master/lafan1/lafan1.zip"
 )
 
 # Complete file list for the LAFAN1 dataset (5 subjects × multiple actions).
@@ -88,43 +92,67 @@ def _make_filename(action: str, variant: int, subject: int) -> str:
     return f"{action}{variant}_subject{subject}.bvh"
 
 
-def _download_one(
-    filename: str,
+def _download_zip(
     dest_dir: Path,
     *,
-    timeout: float = 30.0,
+    actions: Optional[Sequence[str]] = None,
+    subjects: Optional[Sequence[int]] = None,
     retries: int = 4,
     verbose: bool = True,
-) -> bool:
-    dest = dest_dir / filename
-    if dest.exists() and dest.stat().st_size > 0:
-        return True
+) -> List[Path]:
+    """Download lafan1.zip from GitHub LFS and extract BVH files."""
+    if actions is None:
+        actions = ACTIONS
+    if subjects is None:
+        subjects = SUBJECTS
 
-    url = _BASE_URL + filename
+    # Build set of wanted filenames for filtering
+    wanted: set[str] | None = None
+    if actions is not ACTIONS or subjects is not SUBJECTS:
+        wanted = set()
+        for action in actions:
+            max_var = _ACTION_MAX_VARIANTS.get(action, 3)
+            for variant in range(1, max_var + 1):
+                for subj in subjects:
+                    wanted.add(_make_filename(action, variant, subj))
 
     for attempt in range(retries):
         try:
-            urllib.request.urlretrieve(url, dest)
-            if dest.stat().st_size > 100:
+            if verbose:
+                label = f" (attempt {attempt + 1})" if attempt else ""
+                print(f"[LAFAN1] Downloading lafan1.zip from GitHub LFS{label} …")
+            resp = urllib.request.urlopen(_ZIP_URL, timeout=120)
+            zip_bytes = resp.read()
+            break
+        except (urllib.error.URLError, OSError) as exc:
+            if attempt < retries - 1:
+                delay = _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)]
                 if verbose:
-                    print(f"  [ok] {filename}")
-                return True
-            dest.unlink(missing_ok=True)
-            return False
-        except urllib.error.HTTPError as exc:
-            if exc.code == 404:
-                dest.unlink(missing_ok=True)
-                return False
-        except (urllib.error.URLError, OSError):
-            pass
+                    print(f"  [retry] download failed ({exc}), waiting {delay}s …")
+                time.sleep(delay)
+            else:
+                raise RuntimeError(
+                    f"Failed to download lafan1.zip after {retries} attempts: {exc}"
+                ) from exc
 
-        if attempt < retries - 1:
-            delay = _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)]
-            time.sleep(delay)
+    downloaded: List[Path] = []
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        for member in zf.namelist():
+            if not member.endswith(".bvh"):
+                continue
+            basename = Path(member).name
+            if wanted is not None and basename not in wanted:
+                continue
+            dest = dest_dir / basename
+            if dest.exists() and dest.stat().st_size > 0:
+                downloaded.append(dest)
+                continue
+            dest.write_bytes(zf.read(member))
+            if verbose:
+                print(f"  [ok] {basename}")
+            downloaded.append(dest)
 
-    if verbose:
-        print(f"  [FAILED] {filename}")
-    return False
+    return downloaded
 
 
 # ---------------------------------------------------------------------------
@@ -149,28 +177,23 @@ def download_all(
     """
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
-    if actions is None:
-        actions = ACTIONS
-    if subjects is None:
-        subjects = SUBJECTS
 
-    downloaded: List[Path] = []
-    total_ok = 0
+    # Skip if BVH files already present
+    existing = sorted(dest_dir.glob("*.bvh"))
+    if existing:
+        if verbose:
+            print(f"[LAFAN1] {len(existing)} BVH files already in {dest_dir}/, skipping download.")
+        return existing
 
-    for action in actions:
-        max_var = _ACTION_MAX_VARIANTS.get(action, 3)
-        for variant in range(1, max_var + 1):
-            for subj in subjects:
-                fname = _make_filename(action, variant, subj)
-                if verbose:
-                    print(f"[LAFAN1] {action}{variant} / subject{subj}")
-                ok = _download_one(fname, dest_dir, verbose=verbose)
-                if ok:
-                    downloaded.append(dest_dir / fname)
-                    total_ok += 1
+    downloaded = _download_zip(
+        dest_dir,
+        actions=actions,
+        subjects=subjects,
+        verbose=verbose,
+    )
 
     if verbose:
-        print(f"\nLAFAN1: downloaded {total_ok} files to {dest_dir}/")
+        print(f"\nLAFAN1: extracted {len(downloaded)} BVH files to {dest_dir}/")
 
     return downloaded
 
