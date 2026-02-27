@@ -526,8 +526,8 @@ def _parse_args():
                     help="Optional URL override for external gait sample file (.mot/.sto)")
     ap.add_argument("--match-categories", default=None,
                     help="Comma-separated category filter for motion matching (e.g. walk,run)")
-    ap.add_argument("--sim-backend", default="mujoco", choices=["pybullet", "mujoco"],
-                    help="Physics backend preference")
+    ap.add_argument("--sim-backend", default="mujoco", choices=["mujoco"],
+                    help="Physics backend (MuJoCo)")
     return ap.parse_args()
 
 

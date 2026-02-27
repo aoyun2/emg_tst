@@ -36,7 +36,7 @@ emg_tst/
 │   ├── download_all.py             # Download all mocap datasets at once
 │   ├── mocap_loader.py             # Load BVH files with standardized joint angles
 │   ├── motion_matching.py          # DTW-based mocap-to-IMU signal matching
-│   ├── prosthetic_sim.py           # PyBullet physics simulation
+│   ├── prosthetic_sim.py           # MuJoCo physics simulation
 │   ├── run_evaluation.py           # End-to-end evaluation orchestrator
 │   ├── visualize_match.py          # Plot matched mocap vs query curves
 │   ├── sample_data.py              # Extract real walking segment curves from recordings
@@ -221,7 +221,7 @@ python -m mocap_evaluation.run_evaluation \
 
 What happens during evaluation:
 1. A query (mock or real) knee+thigh curve is matched against the mocap database via DTW.
-2. The top-K matches each drive a PyBullet physics simulation with the **model prediction** substituted for the right knee joint.
+2. The top-K matches each drive a MuJoCo physics simulation with the **model prediction** substituted for the right knee joint.
 3. A reference simulation is also run using the **ground-truth label** for comparison.
 4. Metrics reported: CoM height (fall threshold: `< 0.55m`), gait symmetry, step count, stability score.
 
@@ -257,7 +257,7 @@ Key packages from `requirements_tst.txt`:
 | `torch` | Transformer model and training |
 | `numpy` | Data I/O and numerical computing |
 | `scipy` | Signal resampling and spatial transforms |
-| `pybullet` | Physics simulation backend |
+| `mujoco` | Physics simulation backend |
 | `matplotlib` | All plotting |
 | `pillow` | GIF generation for gait visualization |
 | `pywitmotion` | BWT901CL IMU Bluetooth communication |

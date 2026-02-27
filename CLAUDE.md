@@ -37,7 +37,7 @@ emg_tst/
 │   ├── bandai_namco_downloader.py  # Bandai Namco dataset downloader
 │   ├── mocap_loader.py        # Load BVH files with standardized joint angles
 │   ├── motion_matching.py     # DTW-based mocap-to-IMU signal matching
-│   ├── prosthetic_sim.py      # MuJoCo/PyBullet physics simulation
+│   ├── prosthetic_sim.py      # MuJoCo physics simulation
 │   ├── run_evaluation.py      # End-to-end evaluation orchestrator
 │   ├── visualize_match.py     # Plot matched mocap vs query curves
 │   ├── sample_data.py         # Extract real walking segment curves from recordings
@@ -188,7 +188,7 @@ DTW-based matching strategy:
 - Right knee driven by **model prediction**
 - Reference simulation: right knee from ground-truth label
 - Metrics: CoM height (fall threshold: `< 0.55m`), gait symmetry, step count, stability score
-- Backend: PyBullet (MuJoCo as optional alternative)
+- Backend: MuJoCo
 
 ---
 
@@ -231,7 +231,7 @@ Key packages:
 | `torch` | Transformer model, training |
 | `numpy` | Data I/O, numerical computing |
 | `scipy` | Signal resampling, spatial transforms |
-| `pybullet` | Physics simulation |
+| `mujoco` | Physics simulation |
 | `pillow` | GIF generation for gait visualization |
 | `matplotlib` | All plotting |
 | `pywitmotion` | BWT901CL IMU Bluetooth communication |
@@ -255,4 +255,4 @@ Key packages:
 
 7. **Full-sequence supervision**: The regressor predicts **every timestep**, not just the final one. Both last-step and full-sequence metrics are reported and matter.
 
-8. **Physics simulation backend**: PyBullet is the default. MuJoCo support exists but requires a separate license/install. Use PyBullet for development unless specifically testing MuJoCo behavior.
+8. **Physics simulation backend**: MuJoCo is the only supported backend. Install with `pip install mujoco`.

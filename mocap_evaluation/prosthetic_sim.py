@@ -1,15 +1,14 @@
 """Prosthetic gait simulation/evaluation.
 
 Supports:
-- MuJoCo physics backend (primary)
-- PyBullet physics backend (fallback)
+- MuJoCo physics backend
 - Deterministic kinematic evaluator (dependency fallback)
 
 Public APIs accept included-angle convention (degrees):
 - 180 = straight / neutral
 - smaller values = increased flexion magnitude
 
-Internally we convert to flexion convention for the physics backends.
+Internally we convert to flexion convention for the physics backend.
 """
 from __future__ import annotations
 
@@ -18,7 +17,7 @@ import os
 import time
 import warnings
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 import numpy as np
 
@@ -29,12 +28,6 @@ try:
 except Exception:  # pragma: no cover
     _MUJOCO_AVAILABLE = False
 
-try:
-    import pybullet as p
-    import pybullet_data
-    _PYBULLET_AVAILABLE = True
-except Exception:  # pragma: no cover
-    _PYBULLET_AVAILABLE = False
 
 SIM_FPS_DEFAULT = 200.0
 HUMANOID_INIT_POS_Z = 1.05
@@ -349,110 +342,6 @@ class _MuJoCoRunner:
         return out
 
 
-class _PyBulletRunner:
-    def __init__(self, use_gui: bool, fps: float):
-        self.use_gui = bool(use_gui)
-        self.fps = float(fps)
-        self.dt = 1.0 / max(self.fps, 1.0)
-        self.client: Optional[int] = None
-
-    def __enter__(self) -> "_PyBulletRunner":
-        mode = p.GUI if self.use_gui else p.DIRECT
-        self.client = p.connect(mode)
-        p.setAdditionalSearchPath(pybullet_data.getDataPath(), physicsClientId=self.client)
-        p.setGravity(0, 0, -9.81, physicsClientId=self.client)
-        p.setTimeStep(self.dt, physicsClientId=self.client)
-        self.plane = p.loadURDF("plane.urdf", physicsClientId=self.client)
-        return self
-
-    def __exit__(self, *_):
-        if self.client is not None:
-            p.disconnect(self.client)
-
-    @staticmethod
-    def _find_joint(joints: Dict[str, int], key: str) -> Optional[int]:
-        token = key.lower().replace("_", "")
-        for n, idx in joints.items():
-            if token in n.replace("_", ""):
-                return idx
-        return None
-
-    def run(
-        self,
-        mocap_segment: dict,
-        predicted_knee: np.ndarray,
-        fall_threshold: float,
-        sample_thigh_right: Optional[np.ndarray] = None,
-    ) -> dict:
-        robot = p.loadURDF(
-            "humanoid/humanoid.urdf",
-            [0.0, 0.0, 3.45],
-            [math.sin(math.pi / 4), 0.0, 0.0, math.cos(math.pi / 4)],
-            useFixedBase=False,
-            physicsClientId=self.client,
-        )
-
-        joints: Dict[str, int] = {}
-        for j in range(p.getNumJoints(robot, physicsClientId=self.client)):
-            info = p.getJointInfo(robot, j, physicsClientId=self.client)
-            joints[info[1].decode("utf-8").lower()] = j
-
-        rk = self._find_joint(joints, "rightknee")
-        lk = self._find_joint(joints, "leftknee")
-        hr = self._find_joint(joints, "righthip")
-        hl = self._find_joint(joints, "lefthip")
-        ar = self._find_joint(joints, "rightankle")
-        al = self._find_joint(joints, "leftankle")
-
-        T = int(min(len(predicted_knee), len(mocap_segment["knee_right"])))
-        if sample_thigh_right is not None:
-            T = int(min(T, len(sample_thigh_right)))
-        pred = _included_to_flexion(np.asarray(predicted_knee, dtype=np.float64)[:T])
-        ref = _included_to_flexion(np.asarray(mocap_segment["knee_right"], dtype=np.float64)[:T])
-        if sample_thigh_right is not None:
-            hip_r = _included_to_flexion(np.asarray(sample_thigh_right, dtype=np.float64)[:T])
-        else:
-            hip_r = _included_to_flexion(np.asarray(mocap_segment.get("hip_right", np.full(T, 180.0)), dtype=np.float64)[:T])
-        hip_l = _included_to_flexion(np.asarray(mocap_segment.get("hip_left", np.full(T, 180.0)), dtype=np.float64)[:T])
-        knee_l = _included_to_flexion(np.asarray(mocap_segment.get("knee_left", np.full(T, 180.0)), dtype=np.float64)[:T])
-        ankle_r = _included_to_flexion(np.asarray(mocap_segment.get("ankle_right", np.full(T, 180.0)), dtype=np.float64)[:T])
-        ankle_l = _included_to_flexion(np.asarray(mocap_segment.get("ankle_left", np.full(T, 180.0)), dtype=np.float64)[:T])
-
-        metrics = EvalMetrics.empty()
-        for t in range(T):
-            if rk is not None:
-                p.setJointMotorControl2(robot, rk, p.POSITION_CONTROL, targetPosition=-_rad(pred[t]), force=900, physicsClientId=self.client)
-            if lk is not None:
-                p.setJointMotorControl2(robot, lk, p.POSITION_CONTROL, targetPosition=-_rad(knee_l[t]), force=900, physicsClientId=self.client)
-            for idx, val in ((hr, hip_r[t]), (hl, hip_l[t]), (ar, ankle_r[t]), (al, ankle_l[t])):
-                if idx is not None:
-                    h = 0.5 * _rad(val)
-                    p.setJointMotorControlMultiDof(
-                        robot,
-                        idx,
-                        p.POSITION_CONTROL,
-                        targetPosition=[0.0, 0.0, math.sin(h), math.cos(h)],
-                        force=[700, 700, 700],
-                        physicsClientId=self.client,
-                    )
-
-            p.stepSimulation(physicsClientId=self.client)
-            if self.use_gui:
-                time.sleep(self.dt)
-
-            z = p.getBasePositionAndOrientation(robot, physicsClientId=self.client)[0][2]
-            metrics.com_height.append(float(z))
-            metrics.pred_knee.append(float(pred[t]))
-            metrics.ref_knee.append(float(ref[t]))
-            if (not metrics.fall_detected) and z < fall_threshold:
-                metrics.fall_detected = True
-                metrics.fall_frame = t
-
-        out = metrics.to_dict()
-        out["mode"] = "pybullet_physics" + ("+gui" if self.use_gui else "")
-        return out
-
-
 def simulate_prosthetic_walking(
     mocap_segment: dict,
     predicted_knee: np.ndarray,
@@ -461,7 +350,7 @@ def simulate_prosthetic_walking(
     fps: float = SIM_FPS_DEFAULT,
     gif_output_pred: Optional[str] = None,
     gif_output_gt: Optional[str] = None,
-    backend: str = "pybullet",
+    backend: str = "mujoco",
     sample_thigh_right: Optional[np.ndarray] = None,
 ) -> dict:
     """Run prosthetic gait simulation.
@@ -478,54 +367,30 @@ def simulate_prosthetic_walking(
     if gif_output_pred or gif_output_gt:
         warnings.warn("GIF export is not implemented in this backend rewrite.", RuntimeWarning, stacklevel=2)
 
-    if backend not in {"mujoco", "pybullet"}:
-        raise ValueError("backend must be one of {'mujoco','pybullet'}")
-
     if not use_physics:
         raise RuntimeError(
             "Physics simulation is required (use_physics=False is no longer supported). "
             "Use --sim-backend mujoco (default) to run with MuJoCo physics."
         )
 
-    if backend == "mujoco":
-        if not _MUJOCO_AVAILABLE:
-            raise RuntimeError(
-                "MuJoCo is required but not installed.\n"
-                "Install it with:  pip install mujoco\n"
-                "MuJoCo is the only supported simulation backend; "
-                "kinematic fallback has been removed."
-            )
-        if use_gui and not os.environ.get("DISPLAY"):
-            raise RuntimeError(
-                "MuJoCo GUI requested but DISPLAY environment variable is not set.\n"
-                "Either:\n"
-                "  1. Run on a machine with a display (set DISPLAY=:0 or similar)\n"
-                "  2. Use --no-gui to run headless"
-            )
-        return _MuJoCoRunner(use_gui=use_gui, fps=fps).run(
-            mocap_segment, predicted_knee, FALL_HEIGHT_THRESHOLD,
-            sample_thigh_right=sample_thigh_right,
-        )
-
-    # backend == "pybullet"
-    if not _PYBULLET_AVAILABLE:
+    if not _MUJOCO_AVAILABLE:
         raise RuntimeError(
-            "PyBullet is required but not installed.\n"
-            "Install it with:  pip install pybullet\n"
-            "Or switch to MuJoCo:  --sim-backend mujoco"
+            "MuJoCo is required but not installed.\n"
+            "Install it with:  pip install mujoco\n"
+            "MuJoCo is the only supported simulation backend; "
+            "kinematic fallback has been removed."
         )
     if use_gui and not os.environ.get("DISPLAY"):
         raise RuntimeError(
-            "PyBullet GUI requested but DISPLAY environment variable is not set.\n"
+            "MuJoCo GUI requested but DISPLAY environment variable is not set.\n"
             "Either:\n"
             "  1. Run on a machine with a display (set DISPLAY=:0 or similar)\n"
             "  2. Use --no-gui to run headless"
         )
-    with _PyBulletRunner(use_gui=use_gui, fps=fps) as runner:
-        return runner.run(
-            mocap_segment, predicted_knee, FALL_HEIGHT_THRESHOLD,
-            sample_thigh_right=sample_thigh_right,
-        )
+    return _MuJoCoRunner(use_gui=use_gui, fps=fps).run(
+        mocap_segment, predicted_knee, FALL_HEIGHT_THRESHOLD,
+        sample_thigh_right=sample_thigh_right,
+    )
 
 
 def run_visual_demo(use_full_db: bool = False):
@@ -538,8 +403,7 @@ def run_visual_demo(use_full_db: bool = False):
     qt = db["hip_right"][:T]
     _, _, seg = find_best_match(qk, qt, db)
 
-    backend = "mujoco" if _MUJOCO_AVAILABLE else "pybullet"
-    out = simulate_prosthetic_walking(seg, qk, use_physics=True, use_gui=True, backend=backend)
+    out = simulate_prosthetic_walking(seg, qk, use_physics=True, use_gui=True)
     print("Demo metrics:", out)
 
 
