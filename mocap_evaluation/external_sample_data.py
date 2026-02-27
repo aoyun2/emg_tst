@@ -114,12 +114,16 @@ def extract_external_sample_curves(
     raw, url = _read_external_text(source_url)
     time_s, table = _load_opensim_table(raw)
 
-    # OpenSim IK conventions: hip_flexion_r and knee_angle_r are flexion-like.
+    # OpenSim IK conventions:
+    #   hip_flexion_r: positive = forward flexion → included = 180 - value
+    #   knee_angle_r:  negative = flexion (gait2354) → included = 180 + value
+    #                  (or positive = flexion in some models → included = 180 - value)
+    # We use abs() so both sign conventions map flexion → reduced included angle.
     hip_flex = _pick_col(table, ("hip_flexion_r", "hip_flexion_right", "hip_flex_r"))
-    knee_flex = _pick_col(table, ("knee_angle_r", "knee_flexion_r", "knee_angle_right"))
+    knee_raw = _pick_col(table, ("knee_angle_r", "knee_flexion_r", "knee_angle_right"))
 
     hip_inc = np.clip(180.0 - hip_flex, 0.0, 180.0)
-    knee_inc = np.clip(180.0 - knee_flex, 0.0, 180.0)
+    knee_inc = np.clip(180.0 - np.abs(knee_raw), 0.0, 180.0)
 
     hip_rs = _resample_to_target_fps(time_s, hip_inc, TARGET_FPS)
     knee_rs = _resample_to_target_fps(time_s, knee_inc, TARGET_FPS)

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Sequence
 
 import numpy as np
 
@@ -25,15 +24,10 @@ class SampleCurves:
     source_file: str
 
 
-def _select_walk_boundary(db: dict, categories: Sequence[str]) -> tuple[int, int, str, str]:
+def _select_walk_boundary(db: dict) -> tuple[int, int, str, str]:
     if "file_boundaries" not in db:
         n = len(db["knee_right"])
         return 0, n, "aggregated", "unknown"
-
-    wanted = set(categories)
-    for start, end, fname, cat in db["file_boundaries"]:
-        if cat in wanted:
-            return int(start), int(end), str(fname), str(cat)
 
     start, end, fname, cat = db["file_boundaries"][0]
     return int(start), int(end), str(fname), str(cat)
@@ -42,7 +36,6 @@ def _select_walk_boundary(db: dict, categories: Sequence[str]) -> tuple[int, int
 def extract_real_sample_curves(
     mocap_dir: str | Path = "mocap_data",
     seconds: float = 4.0,
-    categories: Sequence[str] = ("walk",),
     full_database: bool = True,
     seed: int = 13,
     pred_noise_std: float = 2.0,
@@ -54,7 +47,7 @@ def extract_real_sample_curves(
     """
     db = load_aggregated_database(mocap_root=mocap_dir)
 
-    start, end, source_file, cat = _select_walk_boundary(db, categories)
+    start, end, source_file, cat = _select_walk_boundary(db)
     seg_len = end - start
 
     target_len = max(1, int(round(seconds * TARGET_FPS)))
