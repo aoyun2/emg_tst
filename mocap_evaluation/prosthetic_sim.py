@@ -124,6 +124,12 @@ class EvalMetrics:
             "step_count": int(sr + sl),
             "gait_symmetry": float(sym),
             "stability_score": float(stability),
+            # Raw time series for visualization
+            "com_height_series": com.tolist(),
+            "pred_knee_series": pred.tolist(),
+            "ref_knee_series": ref.tolist(),
+            "right_contact_frames": list(self.right_contact_frames),
+            "left_contact_frames": list(self.left_contact_frames),
         }
 
 

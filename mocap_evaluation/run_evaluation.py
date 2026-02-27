@@ -47,10 +47,84 @@ from mocap_evaluation.mocap_loader import (
     load_aggregated_database,
 )
 from mocap_evaluation.motion_matching import find_best_match, find_top_k_matches
-from mocap_evaluation.prosthetic_sim import simulate_prosthetic_walking
+from mocap_evaluation.prosthetic_sim import simulate_prosthetic_walking, FALL_HEIGHT_THRESHOLD
 from mocap_evaluation.mock_data import generate_mock_curves, save_mock_curves
 from mocap_evaluation.sample_data import extract_real_sample_curves, save_sample_curves
 from mocap_evaluation.external_sample_data import extract_external_sample_curves
+
+
+# ── Simulation visualization ─────────────────────────────────────────────────
+
+
+def plot_simulation(
+    metrics: dict,
+    title: str,
+    out_path: str | Path,
+    fps: float = 200.0,
+) -> None:
+    """Save a 3-panel plot of simulation results (knee angles, CoM, contacts)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    com = np.asarray(metrics.get("com_height_series", []))
+    pred = np.asarray(metrics.get("pred_knee_series", []))
+    ref = np.asarray(metrics.get("ref_knee_series", []))
+    rc = metrics.get("right_contact_frames", [])
+    lc = metrics.get("left_contact_frames", [])
+
+    if pred.size == 0:
+        return
+
+    T = len(pred)
+    t = np.arange(T) / fps
+
+    fig, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
+
+    # Panel 1: Knee angles (flexion convention as stored)
+    ax = axes[0]
+    ax.plot(t, ref, label="Reference (mocap)", linewidth=1.5, alpha=0.8)
+    ax.plot(t, pred, label="Predicted (model)", linewidth=1.5)
+    if metrics.get("fall_detected") and metrics["fall_frame"] >= 0:
+        ff = metrics["fall_frame"] / fps
+        ax.axvline(ff, color="red", linestyle="--", alpha=0.6, label=f"Fall @ {ff:.2f}s")
+    ax.set_ylabel("Knee flexion (deg)")
+    ax.set_title(f"{title}  |  RMSE={metrics.get('knee_rmse_deg', 0):.2f}°  "
+                 f"Stability={metrics.get('stability_score', 0):.2f}")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    # Panel 2: CoM height
+    ax = axes[1]
+    if com.size > 0:
+        ax.plot(t[:len(com)], com, linewidth=1.2, color="steelblue")
+        ax.axhline(FALL_HEIGHT_THRESHOLD, color="red", linestyle="--",
+                    alpha=0.5, label=f"Fall threshold ({FALL_HEIGHT_THRESHOLD}m)")
+        ax.set_ylabel("CoM height (m)")
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+    # Panel 3: Foot contacts
+    ax = axes[2]
+    if rc:
+        rc_t = np.asarray(rc) / fps
+        ax.scatter(rc_t, np.ones(len(rc_t)), marker="|", s=30, color="tab:orange", label="Right foot")
+    if lc:
+        lc_t = np.asarray(lc) / fps
+        ax.scatter(lc_t, np.zeros(len(lc_t)), marker="|", s=30, color="tab:blue", label="Left foot")
+    ax.set_yticks([0, 1])
+    ax.set_yticklabels(["Left", "Right"])
+    ax.set_ylabel("Foot contacts")
+    ax.set_xlabel("Time (s)")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=140)
+    plt.close(fig)
+    print(f"[viz] Simulation plot saved -> {out_path}")
 
 
 # ── Window-length helper ──────────────────────────────────────────────────────
@@ -345,6 +419,12 @@ def evaluate(
         metrics["elapsed_s"]   = float(time.time() - t0)
         per_window.append(metrics)
 
+        # Save plots for first 5 windows
+        if i < 5:
+            plot_dir = Path(out_path).with_suffix("") / "plots"
+            plot_simulation(metrics, f"Window {i}",
+                            plot_dir / f"window_{i:04d}_sim.png")
+
     # ── Aggregate summary ────────────────────────────────────────────────────
     def _agg(key):
         vals = [w[key] for w in per_window if key in w]
@@ -426,12 +506,21 @@ def evaluate_from_curves(
             pred_knee_inc,
             sample_thigh_right=thigh_angle,
         )
+        cat = segment.get("category", "unknown")
+
+        # Save simulation plots
+        plot_dir = Path(out_path).with_suffix("") / f"match_{rank:02d}_{cat}"
+        plot_simulation(gt_metrics, f"Ground Truth — match #{rank} [{cat}]",
+                        plot_dir / "ground_truth_sim.png", fps=mocap_db["fps"])
+        plot_simulation(pred_metrics, f"Prediction — match #{rank} [{cat}]",
+                        plot_dir / "prediction_sim.png", fps=mocap_db["fps"])
+
         per_match.append(
             {
                 "match_rank": rank,
                 "start_idx": int(start),
                 "dtw_dist": float(dist),
-                "category": segment.get("category", "unknown"),
+                "category": cat,
                 "ground_truth_replaced_right_knee": gt_metrics,
                 "prediction_replaced_right_knee": pred_metrics,
                 "pred_vs_label_rmse_deg": float(
