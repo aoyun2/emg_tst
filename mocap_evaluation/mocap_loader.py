@@ -239,14 +239,22 @@ def _category_for_file(filename: str) -> str:
 
 
 def _auto_download_cmu(dest_dir: Path) -> None:
-    if sorted(dest_dir.glob("*.bvh")):
-        return
-    try:
-        from mocap_evaluation.cmu_downloader import download_all
-        print(f"[mocap_loader] Downloading CMU data to {dest_dir} …")
-        download_all(dest_dir=dest_dir)
-    except Exception as exc:
-        print(f"  CMU download failed: {exc}")
+    existing = sorted(dest_dir.glob("*.bvh"))
+    if not existing:
+        # No files at all — full download
+        try:
+            from mocap_evaluation.cmu_downloader import download_all
+            print(f"[mocap_loader] Downloading CMU data to {dest_dir} …")
+            download_all(dest_dir=dest_dir)
+        except Exception as exc:
+            print(f"  CMU download failed: {exc}")
+    else:
+        # Files exist — verify completeness and download missing
+        try:
+            from mocap_evaluation.cmu_downloader import verify_and_download_missing
+            verify_and_download_missing(dest_dir=dest_dir)
+        except Exception as exc:
+            print(f"  CMU verification failed: {exc}")
 
 
 
@@ -388,8 +396,8 @@ def load_aggregated_database(
     ----------
     mocap_root   : root directory containing per-dataset sub-folders
     try_download : auto-download missing datasets
-    datasets     : which datasets to include, e.g. ``["cmu"]`` or
-                   ``["cmu", "bandai"]``.  ``None`` defaults to ``["cmu"]``.
+    datasets     : which datasets to include, e.g. ``["cmu"]``.
+                   ``None`` defaults to ``["cmu"]``.
     use_cache    : if True, cache the parsed database to a ``.npz`` file
                    inside *mocap_root* and reload from cache on subsequent
                    calls.  The cache is invalidated automatically when the
@@ -475,11 +483,6 @@ def load_aggregated_database(
 
 
 # ── Backward-compatible aliases ───────────────────────────────────────────────
-# All three old entry points now delegate to the single aggregated loader so
-# that callers always get the full multi-source database regardless of which
-# function they call.
-
-load_aggregated_bandai_cmu_database = load_aggregated_database
 
 
 def load_or_generate_mocap_database(

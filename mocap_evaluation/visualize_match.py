@@ -25,16 +25,16 @@ def _derive_window_seconds(data_path: str | Path) -> float:
 
     Reads the ``window`` field written by split_to_samples.py and divides by
     TARGET_FPS so the query length always matches the model's sequence length.
-    Falls back to the architecture default (200 samples @ 200 Hz = 1 s).
+    Falls back to the architecture default (1000 samples @ 200 Hz = 5 s).
     """
     p = Path(data_path)
     if p.exists():
         d = np.load(p, allow_pickle=True)
         if isinstance(d, np.ndarray):
             d = d.item()
-        window = int(d.get("window", 200))
+        window = int(d.get("window", 1000))
         return window / TARGET_FPS
-    return 200 / TARGET_FPS
+    return 1000 / TARGET_FPS
 
 
 def _parse_args():

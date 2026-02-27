@@ -134,20 +134,28 @@ def _derive_window_seconds(
     data_path: str | Path | None,
     checkpoint_path: str | Path | None = None,
 ) -> float:
-    """Derive sample window duration (in seconds) from the model architecture.
+    """Derive sample window duration (in seconds) from the dataset or model.
 
-    When both *checkpoint_path* and *data_path* are provided the two sources
-    must agree on the window length — the checkpoint's ``seq_len`` must equal
-    the dataset's ``window`` field.  A mismatch indicates that the wrong
-    checkpoint/dataset pair is being used and raises ``ValueError``.
+    When both *checkpoint_path* and *data_path* are provided, the dataset
+    ``window`` field determines the evaluation window length.  If the
+    checkpoint ``seq_len`` differs, that is fine — the prediction function
+    uses sliding-window inference to cover the full evaluation window.
 
     Priority (when only one source is available):
-    1. Checkpoint ``model_cfg["seq_len"]`` (exact model sequence length).
-    2. Dataset ``window`` field from *samples_dataset.npy*.
-    3. Architecture default: 200 samples @ 200 Hz = 1.0 s.
+    1. Dataset ``window`` field from *samples_dataset.npy*.
+    2. Checkpoint ``model_cfg["seq_len"]`` (exact model sequence length).
+    3. Architecture default: 1000 samples @ 200 Hz = 5.0 s.
     """
-    ckpt_seq_len: int | None = None
     dataset_window: int | None = None
+    ckpt_seq_len: int | None = None
+
+    if data_path is not None:
+        p = Path(data_path)
+        if p.exists():
+            d = np.load(p, allow_pickle=True)
+            if isinstance(d, np.ndarray):
+                d = d.item()
+            dataset_window = int(d.get("window", 1000))
 
     if checkpoint_path is not None:
         p = Path(checkpoint_path)
@@ -158,30 +166,15 @@ def _derive_window_seconds(
             except Exception:
                 pass
 
-    if data_path is not None:
-        p = Path(data_path)
-        if p.exists():
-            d = np.load(p, allow_pickle=True)
-            if isinstance(d, np.ndarray):
-                d = d.item()
-            dataset_window = int(d.get("window", 200))
-
-    if ckpt_seq_len is not None and dataset_window is not None:
-        if ckpt_seq_len != dataset_window:
-            raise ValueError(
-                f"Length mismatch: checkpoint seq_len={ckpt_seq_len} "
-                f"!= dataset window={dataset_window}. "
-                "Ensure the checkpoint and dataset were produced with the same window size."
-            )
-        return ckpt_seq_len / TARGET_FPS
+    # Dataset window determines evaluation length; checkpoint seq_len may
+    # differ — the prediction function handles this via sliding window.
+    if dataset_window is not None:
+        return dataset_window / TARGET_FPS
 
     if ckpt_seq_len is not None:
         return ckpt_seq_len / TARGET_FPS
 
-    if dataset_window is not None:
-        return dataset_window / TARGET_FPS
-
-    return 200 / TARGET_FPS
+    return 1000 / TARGET_FPS
 
 
 # ── Checkpoint loader ─────────────────────────────────────────────────────────
@@ -265,7 +258,12 @@ def predict_knee_sequence(
     device: torch.device,
 ) -> np.ndarray:
     """
-    Run one 1-second window through the model.
+    Run a window through the model, handling length mismatches.
+
+    If the input window is longer than the model's ``seq_len``, a sliding
+    window with 50% overlap is used and overlapping predictions are averaged.
+    If shorter, the input is right-padded (replicated last frame) and the
+    extra predictions are discarded.
 
     Returns
     -------
@@ -274,9 +272,47 @@ def predict_knee_sequence(
     x = (x_window - scaler.mean_) / scaler.std_    # (W, F)
     if feature_cols is not None:
         x = x[:, feature_cols]
-    x_t = torch.from_numpy(x).unsqueeze(0).float().to(device)  # (1, W, n_vars)
-    out = model(x_t)   # (1, W, 1)
-    return out[0, :, 0].cpu().numpy()
+
+    W = x.shape[0]
+    model_seq_len = model.encoder.seq_len
+
+    if W == model_seq_len:
+        # Exact match — single forward pass
+        x_t = torch.from_numpy(x).unsqueeze(0).float().to(device)
+        out = model(x_t)   # (1, W, 1)
+        return out[0, :, 0].cpu().numpy()
+
+    if W < model_seq_len:
+        # Pad to model_seq_len, run, trim back
+        pad = np.tile(x[-1:], (model_seq_len - W, 1))
+        x_padded = np.concatenate([x, pad], axis=0)
+        x_t = torch.from_numpy(x_padded).unsqueeze(0).float().to(device)
+        out = model(x_t)
+        return out[0, :W, 0].cpu().numpy()
+
+    # W > model_seq_len — sliding window with 50 % overlap
+    stride = model_seq_len // 2
+    pred_sum = np.zeros(W, dtype=np.float64)
+    pred_cnt = np.zeros(W, dtype=np.float64)
+
+    start = 0
+    while start < W:
+        end = start + model_seq_len
+        if end > W:
+            # Last chunk: align to the end
+            start = W - model_seq_len
+            end = W
+        chunk = x[start:end]
+        x_t = torch.from_numpy(chunk).unsqueeze(0).float().to(device)
+        out = model(x_t)  # (1, model_seq_len, 1)
+        preds = out[0, :, 0].cpu().numpy()
+        pred_sum[start:end] += preds
+        pred_cnt[start:end] += 1.0
+        if end >= W:
+            break
+        start += stride
+
+    return (pred_sum / np.maximum(pred_cnt, 1.0)).astype(np.float32)
 
 
 # ── Test sample evaluation ───────────────────────────────────────────────────

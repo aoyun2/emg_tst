@@ -9,7 +9,7 @@ Hardware (uMyo EMG + BWT901CL IMU)
     ↓ uMyo_python_tools/rigtest.py
 Raw .npy recordings
     ↓ split_to_samples.py
-samples_dataset.npy  (1s fixed windows, 100 Hz)
+samples_dataset.npy  (5s fixed windows, 200 Hz)
     ↓ emg_tst/run_experiment.py
 Trained checkpoints  (5-fold CV)
     ↓ emg_tst/visualize.py / mocap_evaluation/run_evaluation.py
@@ -29,11 +29,7 @@ emg_tst/
 ├── mocap_evaluation/                # Motion capture evaluation pipeline
 │   ├── bvh_parser.py               # BVH motion capture file parser
 │   ├── cmu_catalog.py              # CMU mocap database index (curated subjects/trials)
-│   ├── cmu_downloader.py           # CMU database batch downloader
-│   ├── bandai_namco_downloader.py  # Bandai Namco dataset downloader
-│   ├── lafan1_downloader.py        # Ubisoft LAFAN1 dataset downloader
-│   ├── sfu_downloader.py           # SFU Motion Capture database downloader
-│   ├── download_all.py             # Download all mocap datasets at once
+│   ├── cmu_downloader.py           # CMU database batch downloader (with verification)
 │   ├── mocap_loader.py             # Load BVH files with standardized joint angles
 │   ├── motion_matching.py          # DTW-based mocap-to-IMU signal matching
 │   ├── prosthetic_sim.py           # MuJoCo physics simulation
@@ -80,11 +76,11 @@ python plotdata.py
 
 ```bash
 # Slice all .npy recordings in the current directory into
-# non-overlapping 1-second windows → samples_dataset.npy
+# non-overlapping 5-second windows → samples_dataset.npy
 python split_to_samples.py
 ```
 
-Output shape: `[N_samples, seq_len=200, n_vars+1]` where the last column is the target knee angle.
+Output shape: `[N_samples, seq_len=1000, n_vars+1]` where the last column is the target knee angle.
 
 ### 3. Train
 
@@ -126,7 +122,7 @@ Edit `CKPT_PATH` inside `visualize.py` to point to a specific `reg_best.pt` chec
 | `d_ff` | 256 |
 | `n_layers` | 3 |
 | `dropout` | 0.1 |
-| `batch_size` | 64 |
+| `batch_size` | 16 |
 | `lr` | 3e-4 |
 | Pretraining epochs | 40 |
 | Fine-tuning epochs | 20 (cosine annealing LR) |
@@ -149,7 +145,7 @@ Pretraining uses **stateful 2-state Markov masking**:
 
 ### Training Strategy
 
-- **5-fold cross-validation** at the sample level (no temporal leakage between 1s windows)
+- **5-fold cross-validation** at the sample level (no temporal leakage between 5s windows)
 - Phase 1: masked reconstruction pretraining (`TSTPretrainDenoiser`)
 - Phase 2: regression fine-tuning (`TSTRegressor`), encoder weights transferred
 - **Full-sequence supervision**: the model predicts the knee angle at every timestep, not just the final one
@@ -172,26 +168,13 @@ The `mocap_evaluation` package matches recorded (or synthetic) knee/thigh curves
 
 ### Download Mocap Data
 
-Four datasets are supported. Download any combination:
-
 ```bash
-# Recommended: Bandai Namco Motiondataset-2 (~2,900 BVH files, CC BY 4.0)
-python -m mocap_evaluation.bandai_namco_downloader --dest mocap_data/bandai
-
-# CMU Graphics Lab mocap database (~300 BVH files, free)
+# Download CMU Graphics Lab mocap database (~2,435 BVH files, free)
 python -m mocap_evaluation.cmu_downloader --dest mocap_data/cmu
 
-# Ubisoft LAFAN1 (~135 BVH files, CC BY-NC-ND 4.0)
-python -m mocap_evaluation.lafan1_downloader --dest mocap_data/lafan1
-
-# SFU Motion Capture Lab (~38 BVH files, free for academic use)
-python -m mocap_evaluation.sfu_downloader --dest mocap_data/sfu
-
-# Or download everything at once
-python -m mocap_evaluation.download_all --root mocap_data
+# Verify completeness and download any missing files
+python -m mocap_evaluation.cmu_downloader --verify --dest mocap_data/cmu
 ```
-
-Keep all dataset subdirectories under `mocap_data/`; the evaluator aggregates them automatically.
 
 ### Run Evaluation
 

@@ -607,21 +607,52 @@ class _MuJoCoRunner:
                     metrics.fall_frame = t
 
         def _replay_loop(viewer_obj, qpos_hist):
-            """Loop the recorded trajectory until the viewer is closed."""
+            """Loop the recorded trajectory until the viewer is closed.
+
+            Keyboard controls (active during replay):
+              Space  — pause / resume
+              ]      — speed up (2×)
+              [      — slow down (0.5×)
+              R      — reset to frame 0
+            """
+            paused = [False]
+            speed = [1.0]
+
+            def _key_cb(key):
+                if key == 32:             # Space
+                    paused[0] = not paused[0]
+                elif key == 93:           # ]
+                    speed[0] = min(speed[0] * 2.0, 16.0)
+                    print(f"[replay] speed {speed[0]:.1f}×")
+                elif key == 91:           # [
+                    speed[0] = max(speed[0] * 0.5, 0.125)
+                    print(f"[replay] speed {speed[0]:.1f}×")
+
+            print("[MuJoCo] Replay controls: SPACE=pause  ]/[=speed up/down")
+
             while viewer_obj.is_running():
                 for t in range(len(qpos_hist)):
+                    if not viewer_obj.is_running():
+                        return
+                    while paused[0] and viewer_obj.is_running():
+                        viewer_obj.sync()
+                        time.sleep(0.05)
                     if not viewer_obj.is_running():
                         return
                     data.qpos[:] = qpos_hist[t]
                     mujoco.mj_forward(model, data)
                     viewer_obj.sync()
-                    time.sleep(self.dt)
+                    time.sleep(self.dt / max(speed[0], 0.01))
 
         # ── Run simulation (GUI or headless) ─────────────────────────────
         gui_worked = False
         if self.use_gui and _VIEWER_AVAILABLE:
             try:
-                ctx = mujoco.viewer.launch_passive(model, data)
+                ctx = mujoco.viewer.launch_passive(
+                    model, data,
+                    show_left_ui=True,
+                    show_right_ui=True,
+                )
                 with ctx as viewer_obj:
                     # Camera: side-tracking view
                     torso_id = mujoco.mj_name2id(
@@ -631,6 +662,15 @@ class _MuJoCoRunner:
                     viewer_obj.cam.distance = 4.5 if self.show_reference else 3.5
                     viewer_obj.cam.elevation = -15.0
                     viewer_obj.cam.azimuth = 90.0
+
+                    # Enable useful visualisation flags so rendering
+                    # options in the viewer are active, not greyed out.
+                    try:
+                        viewer_obj.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = True
+                        viewer_obj.opt.flags[mujoco.mjtVisFlag.mjVIS_JOINT] = True
+                        viewer_obj.opt.flags[mujoco.mjtVisFlag.mjVIS_COM] = True
+                    except Exception:
+                        pass  # older MuJoCo versions may not have all flags
 
                     if self.show_reference:
                         print("[MuJoCo] Reference model (blue) = ground-truth mocap")
@@ -868,9 +908,28 @@ def replay_trajectory(
 
     print(f"[replay] {T} frames @ {traj.fps:.0f} Hz "
           f"(speed {speed:.1f}x, duration {T / traj.fps:.1f}s)")
-    print("[replay] Close the viewer window to stop.")
+    print("[replay] Controls: SPACE=pause  ]/[=speed up/down  "
+          "Close the viewer window to stop.")
 
-    with mujoco.viewer.launch_passive(model, data) as viewer:
+    paused = [False]
+    cur_speed = [speed]
+
+    def _key_cb(key):
+        if key == 32:             # Space
+            paused[0] = not paused[0]
+        elif key == 93:           # ]
+            cur_speed[0] = min(cur_speed[0] * 2.0, 16.0)
+            print(f"[replay] speed {cur_speed[0]:.1f}×")
+        elif key == 91:           # [
+            cur_speed[0] = max(cur_speed[0] * 0.5, 0.125)
+            print(f"[replay] speed {cur_speed[0]:.1f}×")
+
+    with mujoco.viewer.launch_passive(
+        model, data,
+        show_left_ui=True,
+        show_right_ui=True,
+        key_callback=_key_cb,
+    ) as viewer:
         # Side-tracking camera
         torso_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "torso")
         viewer.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
@@ -879,14 +938,27 @@ def replay_trajectory(
         viewer.cam.elevation = -15.0
         viewer.cam.azimuth = 90.0
 
+        # Enable useful visualisation options
+        try:
+            viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = True
+            viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_JOINT] = True
+            viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_COM] = True
+        except Exception:
+            pass
+
         while viewer.is_running():
             for t in range(T):
+                if not viewer.is_running():
+                    return
+                while paused[0] and viewer.is_running():
+                    viewer.sync()
+                    time.sleep(0.05)
                 if not viewer.is_running():
                     return
                 data.qpos[:] = traj.qpos_history[t]
                 mujoco.mj_forward(model, data)
                 viewer.sync()
-                time.sleep(dt)
+                time.sleep(dt / max(cur_speed[0] / speed, 0.01))
 
 
 # ── GIF rendering ────────────────────────────────────────────────────────────
