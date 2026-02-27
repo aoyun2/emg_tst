@@ -15,12 +15,12 @@ A research system that reads multi-channel surface EMG from wearable hardware, t
 
 ```mermaid
 flowchart TD
-    A["🦾 Hardware\nuMyo EMG × 3\nBWT901CL IMU"] -->|"rigtest.py"| B["📁 Raw .npy recordings\nEMG spectra + raw waveforms\nKnee angle label"]
-    B -->|"split_to_samples.py"| C["🗂 samples_dataset.npy\n1-second windows @ 200 Hz\nShape: [N, 200, 41]"]
-    C -->|"run_experiment.py"| D["🧠 Trained TST\n5-fold cross-validation\ncheckpoints/tst_*/fold_*/reg_best.pt"]
-    D -->|"visualize.py"| E["📊 Prediction Plots\nAngle trajectory overlay\nPer-channel features"]
-    D -->|"run_evaluation.py"| F["🏃 MuJoCo Simulation\nGait quality metrics\nCoM height · Step count · Symmetry"]
-    G["📹 CMU Mocap DB\n2,435 BVH files"] -->|"DTW motion matching"| F
+    A["🦾 Hardware<br/>uMyo EMG × 3<br/>BWT901CL IMU"] -->|"rigtest.py"| B["📁 Raw .npy recordings<br/>EMG spectra + raw waveforms<br/>Knee angle label"]
+    B -->|"split_to_samples.py"| C["🗂 samples_dataset.npy<br/>1-second windows @ 200 Hz<br/>Shape: [N, 200, 41]"]
+    C -->|"run_experiment.py"| D["🧠 Trained TST<br/>5-fold cross-validation<br/>checkpoints/tst_*/fold_*/reg_best.pt"]
+    D -->|"visualize.py"| E["📊 Prediction Plots<br/>Angle trajectory overlay<br/>Per-channel features"]
+    D -->|"run_evaluation.py"| F["🏃 MuJoCo Simulation<br/>Gait quality metrics<br/>CoM height · Step count · Symmetry"]
+    G["📹 CMU Mocap DB<br/>2,435 BVH files"] -->|"DTW motion matching"| F
 
     style A fill:#f0f4ff,stroke:#4a6cf7
     style D fill:#fff4e6,stroke:#f59e0b
@@ -37,27 +37,27 @@ The model is a three-level stack where each class wraps the previous:
 ```mermaid
 graph LR
     subgraph Input
-        X["Input\n[B, T, 40]"]
+        X["Input<br/>[B, T, 40]"]
     end
 
     subgraph TSTEncoder
         direction TB
-        PROJ["Linear projection\n40 → d_model=128"]
-        PE["Learnable positional\nembedding [1, T, 128]"]
-        L1["TransformerLayer 1\n8 heads · FFN=256 · BN"]
-        L2["TransformerLayer 2\n8 heads · FFN=256 · BN"]
-        L3["TransformerLayer 3\n8 heads · FFN=256 · BN"]
+        PROJ["Linear projection<br/>40 → d_model=128"]
+        PE["Learnable positional<br/>embedding [1, T, 128]"]
+        L1["TransformerLayer 1<br/>8 heads · FFN=256 · BN"]
+        L2["TransformerLayer 2<br/>8 heads · FFN=256 · BN"]
+        L3["TransformerLayer 3<br/>8 heads · FFN=256 · BN"]
         PROJ --> PE --> L1 --> L2 --> L3
     end
 
     subgraph Heads
-        PRE["Pretrain head\nLinear 128→40\nReconstructed features"]
-        REG["Regressor head\nLinear 128→1\nKnee angle °"]
+        PRE["Pretrain head<br/>Linear 128→40<br/>Reconstructed features"]
+        REG["Regressor head<br/>Linear 128→1<br/>Knee angle °"]
     end
 
     X --> PROJ
-    L3 -->|"Phase 1\nPretraining"| PRE
-    L3 -->|"Phase 2\nFine-tuning"| REG
+    L3 -->|"Phase 1<br/>Pretraining"| PRE
+    L3 -->|"Phase 2<br/>Fine-tuning"| REG
 
     style TSTEncoder fill:#fff8e6,stroke:#f59e0b
     style Heads fill:#f0fff4,stroke:#10b981
@@ -176,26 +176,26 @@ This convention is used consistently in hardware recording (`rigtest.py`), BVH p
 ```mermaid
 flowchart LR
     subgraph Query
-        Q1["Model prediction\n(knee angle sequence)"]
-        Q2["Thigh angle\n(from IMU)"]
+        Q1["Model prediction<br/>(knee angle sequence)"]
+        Q2["Thigh angle<br/>(from IMU)"]
     end
 
     subgraph MotionMatching["DTW Motion Matching"]
-        F1["Build feature vector\n[knee, hip, Δknee, Δhip]"]
-        F2["L2 pre-filter\nshortlist candidates"]
-        F3["DTW with\nSakoe-Chiba band=40"]
+        F1["Build feature vector<br/>[knee, hip, Δknee, Δhip]"]
+        F2["L2 pre-filter<br/>shortlist candidates"]
+        F3["DTW with<br/>Sakoe-Chiba band=40"]
         F4["Top-K matches"]
         F1 --> F2 --> F3 --> F4
     end
 
     subgraph DB["CMU Mocap Database"]
-        BVH["2,435 BVH files\n~140 subjects\nWalk · Run · Jump · …"]
+        BVH["2,435 BVH files<br/>~140 subjects<br/>Walk · Run · Jump · …"]
     end
 
     subgraph Sim["MuJoCo Simulation"]
         S1["All joints → mocap reference"]
         S2["Right knee → model prediction"]
-        S3["CoM height · fall threshold 0.55m\nGait symmetry · Step count\nStability score"]
+        S3["CoM height · fall threshold 0.55m<br/>Gait symmetry · Step count<br/>Stability score"]
         S1 --> S3
         S2 --> S3
     end
