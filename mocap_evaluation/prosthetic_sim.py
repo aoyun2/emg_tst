@@ -330,27 +330,32 @@ class _MuJoCoRunner:
                     metrics.fall_detected = True
                     metrics.fall_frame = t
 
+        gui_worked = False
         if self.use_gui:
-            with mujoco.viewer.launch_passive(model, data) as viewer_obj:
-                _step_loop(viewer_obj)
-                # Keep the viewer window open so the user can inspect the
-                # final pose and replay camera angles.  The window stays
-                # until the user closes it manually.
-                print("[MuJoCo] Simulation complete — close the viewer window to continue.")
-                while viewer_obj.is_running():
-                    time.sleep(0.05)
+            try:
+                with mujoco.viewer.launch_passive(model, data) as viewer_obj:
+                    _step_loop(viewer_obj)
+                    print("[MuJoCo] Simulation complete — close the viewer window to continue.")
+                    while viewer_obj.is_running():
+                        time.sleep(0.05)
+                gui_worked = True
+            except Exception as exc:
+                print(f"[MuJoCo] Viewer failed ({exc}), falling back to headless.")
+                mujoco.mj_resetData(model, data)
+                metrics = EvalMetrics.empty()
+                _step_loop(None)
         else:
             _step_loop(None)
 
         out = metrics.to_dict()
-        out["mode"] = "mujoco_physics" + ("+gui" if self.use_gui else "")
+        out["mode"] = "mujoco_physics" + ("+gui" if gui_worked else "")
         return out
 
 
 def simulate_prosthetic_walking(
     mocap_segment: dict,
     predicted_knee: np.ndarray,
-    use_gui: bool = False,
+    use_gui: bool = True,
     fps: float = SIM_FPS_DEFAULT,
     sample_thigh_right: Optional[np.ndarray] = None,
 ) -> dict:

@@ -408,6 +408,7 @@ def evaluate(
         # both the right knee and right thigh come from the sample, not mocap.
         metrics = simulate_prosthetic_walking(
             segment, pred_knee_inc,
+            use_gui=False,
             sample_thigh_right=thigh_sig,
         )
 
