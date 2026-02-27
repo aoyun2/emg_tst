@@ -130,7 +130,7 @@ def _download_one(
 
 
 def download_locomotion(
-    dest_dir: str | Path = "mocap_data",
+    dest_dir: str | Path = "mocap_data/bandai",
     styles: Optional[Sequence[str]] = None,
     verbose: bool = True,
 ) -> List[Path]:
@@ -160,7 +160,7 @@ def download_locomotion(
 
 
 def download_all(
-    dest_dir: str | Path = "mocap_data",
+    dest_dir: str | Path = "mocap_data/bandai",
     motions: Optional[Sequence[str]] = None,
     styles: Optional[Sequence[str]] = None,
     verbose: bool = True,
@@ -235,8 +235,8 @@ def main():
         )
     )
     ap.add_argument(
-        "--dest", "-d", default="mocap_data",
-        help="Destination directory (default: mocap_data/)",
+        "--dest", "-d", default="mocap_data/bandai",
+        help="Destination directory (default: mocap_data/bandai/)",
     )
     ap.add_argument(
         "--motions", "-m", nargs="*", default=None,

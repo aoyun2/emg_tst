@@ -2,8 +2,7 @@
 
 Usage:
   python -m mocap_evaluation.visualize_match \
-    --out test_sample_vs_match.png \
-    --aggregate-datasets
+    --out test_sample_vs_match.png
 """
 from __future__ import annotations
 
@@ -17,9 +16,7 @@ from mocap_evaluation.external_sample_data import extract_external_sample_curves
 from mocap_evaluation.motion_matching import find_best_match
 from mocap_evaluation.mocap_loader import (
     TARGET_FPS,
-    load_or_generate_mocap_database,
-    load_full_cmu_database,
-    load_aggregated_bandai_cmu_database,
+    load_aggregated_database,
 )
 
 
@@ -49,10 +46,6 @@ def _parse_args():
                          "(used to derive window length)")
     ap.add_argument("--sample-source", choices=["external", "mocap"], default="external")
     ap.add_argument("--external-sample-url", default=None)
-    ap.add_argument("--full-db", action="store_true")
-    ap.add_argument("--aggregate-datasets", action="store_true")
-    ap.add_argument("--bandai-dir", default=None)
-    ap.add_argument("--cmu-dir", default=None)
     return ap.parse_args()
 
 
@@ -72,19 +65,11 @@ def main():
             mocap_dir=args.mocap_dir,
             seconds=seconds,
             categories=("walk",),
-            full_database=args.full_db or args.aggregate_datasets,
         )
     knee_included = curves.knee_label_included_deg.astype(np.float32)
     thigh = curves.thigh_angle_deg.astype(np.float32)
 
-    if args.aggregate_datasets:
-        bandai = Path(args.bandai_dir) if args.bandai_dir else Path(args.mocap_dir) / "bandai"
-        cmu = Path(args.cmu_dir) if args.cmu_dir else Path(args.mocap_dir) / "cmu"
-        db = load_aggregated_bandai_cmu_database(bandai_dir=bandai, cmu_dir=cmu, try_download=True)
-    elif args.full_db:
-        db = load_full_cmu_database(bvh_dir=args.mocap_dir)
-    else:
-        db = load_or_generate_mocap_database(bvh_dir=args.mocap_dir)
+    db = load_aggregated_database(mocap_root=args.mocap_dir, try_download=True)
 
     start, dist, seg = find_best_match(knee_included, thigh, db)
     print(f"Matched start={start}, dtw={dist:.4f}, category={seg.get('category','unknown')}")

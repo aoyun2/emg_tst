@@ -43,9 +43,7 @@ from emg_tst.model import TSTEncoder, TSTRegressor
 from emg_tst.data import StandardScaler
 from mocap_evaluation.mocap_loader import (
     TARGET_FPS,
-    load_or_generate_mocap_database,
-    load_full_cmu_database,
-    load_aggregated_bandai_cmu_database,
+    load_aggregated_database,
 )
 from mocap_evaluation.motion_matching import find_best_match, find_top_k_matches
 from mocap_evaluation.prosthetic_sim import simulate_prosthetic_walking
@@ -215,11 +213,7 @@ def run_test_sample(
     top_k: int = 3,
     use_gui: bool = False,
     use_physics: bool = True,
-    full_database: bool = True,
     sim_backend: str = "mujoco",
-    aggregate_datasets: bool = False,
-    bandai_dir: Optional[str | Path] = None,
-    cmu_dir: Optional[str | Path] = None,
     match_categories: Optional[List[str]] = None,
     seconds: float = 4.0,
     sample_source: str = "external",
@@ -241,7 +235,6 @@ def run_test_sample(
             mocap_dir=mocap_dir,
             seconds=seconds,
             categories=categories,
-            full_database=full_database or aggregate_datasets,
         )
     model_rmse = float(np.sqrt(np.mean(
         (curves.predicted_knee_included_deg - curves.knee_label_included_deg) ** 2
@@ -262,11 +255,7 @@ def run_test_sample(
         use_gui=use_gui,
         use_physics=use_physics,
         out_path=out_path,
-        full_database=full_database,
         sim_backend=sim_backend,
-        aggregate_datasets=aggregate_datasets,
-        bandai_dir=bandai_dir,
-        cmu_dir=cmu_dir,
         match_categories=match_categories,
     )
     result["test_sample_pred_vs_label_rmse_deg"] = model_rmse
@@ -287,11 +276,7 @@ def evaluate(
     use_gui: bool = True,
     use_physics: bool = True,
     device_str: str = "cpu",
-    full_database: bool = False,
     sim_backend: str = "mujoco",
-    aggregate_datasets: bool = False,
-    bandai_dir: Optional[str | Path] = None,
-    cmu_dir: Optional[str | Path] = None,
     match_categories: Optional[List[str]] = None,
 ) -> dict:
     """
@@ -318,18 +303,7 @@ def evaluate(
 
     # ── Load / generate mocap database ──────────────────────────────────────
     print(f"[eval] Loading mocap database from: {mocap_dir}")
-    if aggregate_datasets:
-        bandai_path = Path(bandai_dir) if bandai_dir else Path(mocap_dir) / "bandai"
-        cmu_path = Path(cmu_dir) if cmu_dir else Path(mocap_dir) / "cmu"
-        mocap_db = load_aggregated_bandai_cmu_database(
-            bandai_dir=bandai_path,
-            cmu_dir=cmu_path,
-            try_download=True,
-        )
-    elif full_database:
-        mocap_db = load_full_cmu_database(bvh_dir=mocap_dir)
-    else:
-        mocap_db = load_or_generate_mocap_database(bvh_dir=mocap_dir)
+    mocap_db = load_aggregated_database(mocap_root=mocap_dir, try_download=True)
     db_dur   = len(mocap_db["knee_right"]) / mocap_db["fps"]
     n_files = len(mocap_db.get("file_boundaries", []))
     extra = f", {n_files} files" if n_files else ""
@@ -439,11 +413,7 @@ def evaluate_from_curves(
     use_gui: bool = True,
     use_physics: bool = True,
     out_path: str | Path = "eval_mock_results.json",
-    full_database: bool = True,
     sim_backend: str = "mujoco",
-    aggregate_datasets: bool = False,
-    bandai_dir: Optional[str | Path] = None,
-    cmu_dir: Optional[str | Path] = None,
     match_categories: Optional[List[str]] = None,
 ) -> dict:
     """Evaluate motion matching directly from label/thigh curves.
@@ -454,18 +424,7 @@ def evaluate_from_curves(
     knee_label_inc = knee_label_included.astype(np.float32)
     pred_knee_inc = predicted_knee_included.astype(np.float32)
 
-    if aggregate_datasets:
-        bandai_path = Path(bandai_dir) if bandai_dir else Path(mocap_dir) / "bandai"
-        cmu_path = Path(cmu_dir) if cmu_dir else Path(mocap_dir) / "cmu"
-        mocap_db = load_aggregated_bandai_cmu_database(
-            bandai_dir=bandai_path,
-            cmu_dir=cmu_path,
-            try_download=True,
-        )
-    elif full_database:
-        mocap_db = load_full_cmu_database(bvh_dir=mocap_dir)
-    else:
-        mocap_db = load_or_generate_mocap_database(bvh_dir=mocap_dir)
+    mocap_db = load_aggregated_database(mocap_root=mocap_dir, try_download=True)
 
     matches = find_top_k_matches(
         imu_knee=knee_label_inc,
@@ -551,9 +510,6 @@ def _parse_args():
                     help="Use kinematic evaluation only (no physics backend)")
     ap.add_argument("--test-sample",  action="store_true",
                     help="Run quick evaluation with real test sample curves (no checkpoint needed)")
-    ap.add_argument("--full-db",     action="store_true",
-                    help="Use the full local mocap database with category metadata "
-                         "(auto-downloads Bandai locomotion first, CMU fallback)")
     ap.add_argument("--mock-data", action="store_true",
                     help="Run with generated mock knee/thigh curves (no checkpoint needed)")
     ap.add_argument("--top-k", type=int, default=3,
@@ -572,12 +528,6 @@ def _parse_args():
                     help="Comma-separated category filter for motion matching (e.g. walk,run)")
     ap.add_argument("--sim-backend", default="mujoco", choices=["pybullet", "mujoco"],
                     help="Physics backend preference")
-    ap.add_argument("--aggregate-datasets", action="store_true",
-                    help="Aggregate Bandai + CMU datasets (separate dirs under mocap-dir by default)")
-    ap.add_argument("--bandai-dir", default=None,
-                    help="Bandai BVH directory (default: <mocap-dir>/bandai when aggregating)")
-    ap.add_argument("--cmu-dir", default=None,
-                    help="CMU BVH directory (default: <mocap-dir>/cmu when aggregating)")
     return ap.parse_args()
 
 
@@ -598,11 +548,7 @@ def main():
             top_k=args.top_k,
             use_gui=not args.no_gui,
             use_physics=not args.no_physics,
-            full_database=args.full_db,
             sim_backend=args.sim_backend,
-            aggregate_datasets=args.aggregate_datasets,
-            bandai_dir=args.bandai_dir,
-            cmu_dir=args.cmu_dir,
             match_categories=match_categories,
             seconds=seconds,
             sample_source=args.test_sample_source,
@@ -615,7 +561,6 @@ def main():
             mocap_dir=args.mocap_dir,
             seconds=seconds,
             categories=match_categories,
-            full_database=args.full_db or args.aggregate_datasets,
         )
         if args.save_real:
             save_sample_curves(args.save_real, curves)
@@ -630,11 +575,7 @@ def main():
             use_gui=not args.no_gui,
             use_physics=not args.no_physics,
             out_path=args.out,
-            full_database=args.full_db,
             sim_backend=args.sim_backend,
-            aggregate_datasets=args.aggregate_datasets,
-            bandai_dir=args.bandai_dir,
-            cmu_dir=args.cmu_dir,
             match_categories=match_categories,
         )
         return
@@ -653,11 +594,7 @@ def main():
             use_gui=not args.no_gui,
             use_physics=not args.no_physics,
             out_path=args.out,
-            full_database=args.full_db,
             sim_backend=args.sim_backend,
-            aggregate_datasets=args.aggregate_datasets,
-            bandai_dir=args.bandai_dir,
-            cmu_dir=args.cmu_dir,
             match_categories=match_categories,
         )
         return
@@ -695,11 +632,7 @@ def main():
         use_gui         = not args.no_gui,
         use_physics     = not args.no_physics,
         device_str      = args.device,
-        full_database   = args.full_db,
         sim_backend      = args.sim_backend,
-        aggregate_datasets = args.aggregate_datasets,
-        bandai_dir        = args.bandai_dir,
-        cmu_dir           = args.cmu_dir,
         match_categories   = match_categories,
     )
 

@@ -512,10 +512,10 @@ def simulate_prosthetic_walking(
 
 
 def run_visual_demo(use_full_db: bool = False):
-    from mocap_evaluation.mocap_loader import load_full_cmu_database, load_or_generate_mocap_database
+    from mocap_evaluation.mocap_loader import load_aggregated_database
     from mocap_evaluation.motion_matching import find_best_match
 
-    db = load_full_cmu_database() if use_full_db else load_or_generate_mocap_database()
+    db = load_aggregated_database()
     T = int(min(600, len(db["knee_right"])))
     qk = db["knee_right"][:T]
     qt = db["hip_right"][:T]
