@@ -1,24 +1,26 @@
 """
 Mocap data loader.
 
-Source : Bandai Namco Research Motiondataset-2, CMU Graphics Lab Motion
-         Capture Database, LAFAN1 (Ubisoft La Forge), and SFU Motion Capture
-         Database — all in BVH format with per-file category metadata.
+Source : Bandai Namco Research Motiondataset-1 & -2, CMU Graphics Lab
+         Motion Capture Database, LAFAN1 (Ubisoft La Forge), and SFU Motion
+         Capture Database — all in BVH format with per-file category metadata.
 
 All sources are stored in per-dataset sub-folders under a common root
 (default ``mocap_data/``):
 
     mocap_data/
-        bandai/   — Bandai Namco Motiondataset-2
-        cmu/      — CMU Graphics Lab
-        lafan1/   — Ubisoft LAFAN1
-        sfu/      — SFU (Simon Fraser University)
+        bandai/      — Bandai Namco Motiondataset-2
+        bandai_ds1/  — Bandai Namco Motiondataset-1
+        cmu/         — CMU Graphics Lab
+        lafan1/      — Ubisoft LAFAN1
+        sfu/         — SFU (Simon Fraser University)
 
 Download all sources at once:
     python -m mocap_evaluation.download_all
 
 Or individually:
     python -m mocap_evaluation.bandai_namco_downloader
+    python -m mocap_evaluation.bandai_namco_ds1_downloader
     python -m mocap_evaluation.cmu_downloader
     python -m mocap_evaluation.lafan1_downloader
     python -m mocap_evaluation.sfu_downloader
@@ -247,12 +249,18 @@ def _category_for_file(filename: str) -> str:
     SFU filenames (``{subject}_{trial}.bvh``),
     and CMU catalog format (``07_01.bvh``).
     """
-    # ── Bandai Namco filenames ─────────────────────────────────────────────
+    # ── Bandai Namco filenames (Dataset-1 and Dataset-2) ──────────────────
     if filename.startswith("dataset-"):
-        if "_walk" in filename:
+        if "_walk" in filename or "_dash" in filename:
             return "walk"
         if "_run" in filename:
             return "run"
+        if "_dance" in filename:
+            return "dance"
+        if "_kick" in filename or "_punch" in filename or "_slash" in filename:
+            return "sport"
+        if "_bow" in filename or "_bye" in filename or "_guide" in filename:
+            return "misc"
         return "misc"
 
     # ── LAFAN1 filenames (e.g. "aiming1_subject1.bvh", "walk1_subject2.bvh") ──
@@ -269,26 +277,43 @@ def _category_for_file(filename: str) -> str:
             return "jump"
         if action_base in ("dance", "dancing"):
             return "dance"
-        if action_base in ("fight", "fighting", "punch", "kick"):
+        if action_base in ("fight", "fighting", "fightandsports",
+                            "punch", "kick"):
             return "sport"
         if action_base in ("aim", "aiming"):
             return "misc"
-        if action_base in ("ground", "obstacle", "push", "fallandgetup"):
+        if action_base in ("ground", "obstacle", "obstacles",
+                            "push", "pushandfall", "pushandstumble",
+                            "fallandgetup", "multipleactions"):
             return "misc"
         return action_base if action_base else "misc"
 
-    # ── SFU filenames (e.g. "0005_Walking001.bvh", "0007_Running002.bvh") ──
+    # ── SFU filenames (e.g. "0005_Walking001.bvh", "0017_SpeedVault001.bvh") ──
     # Pattern: 4-digit subject ID + underscore + MotionNameNNN.bvh
     if len(lower) > 5 and lower[:4].isdigit() and lower[4] == "_":
         motion = lower[5:].split(".")[0].rstrip("0123456789")
-        if motion in ("walking",):
+        if motion in ("walking", "backwardswalk", "catwalk", "tiptoe", "moonwalk"):
             return "walk"
-        if motion in ("running", "jogging"):
+        if motion in ("running", "jogging", "slowtrot", "runningonbench"):
             return "run"
-        if motion in ("jumping",):
+        if motion in ("jumping", "2feetjump", "jumprope", "jumpandroll",
+                       "jumpoverobstacle", "hopoverobstacle", "jumpingonbench"):
             return "jump"
-        if motion in ("kicking", "boxing", "punching"):
+        if motion in ("kicking", "boxing", "punching", "wushukicks"):
             return "sport"
+        if motion in ("cartwheel", "speedvault", "monkeyvault", "parkourroll"):
+            return "exercise"
+        if motion in ("chacha", "danceturns", "traditionalchinesedance",
+                       "xinjiang", "basicbollywooddance", "advancebollywooddance"):
+            return "dance"
+        if motion in ("basickendo", "kirikaeshi", "kendokata"):
+            return "sport"
+        if motion in ("yoga", "bridge"):
+            return "exercise"
+        if motion in ("skipping", "sideskip", "stomping", "crawling"):
+            return "misc"
+        if motion in ("balance",):
+            return "balance"
         return motion if motion else "misc"
 
     # ── CMU catalog lookup ─────────────────────────────────────────────────
@@ -337,6 +362,17 @@ def _auto_download_lafan1(dest_dir: Path) -> None:
         download_all(dest_dir=dest_dir)
     except Exception as exc:
         print(f"  LAFAN1 download failed: {exc}")
+
+
+def _auto_download_bandai_ds1(dest_dir: Path) -> None:
+    if sorted(dest_dir.glob("*.bvh")):
+        return
+    try:
+        from mocap_evaluation.bandai_namco_ds1_downloader import download_all
+        print(f"[mocap_loader] Downloading Bandai DS1 to {dest_dir} …")
+        download_all(dest_dir=dest_dir, verbose=True)
+    except Exception as exc:
+        print(f"  Bandai DS1 download failed: {exc}")
 
 
 def _auto_download_sfu(dest_dir: Path) -> None:
@@ -399,30 +435,33 @@ def load_aggregated_database(
     """Load an aggregated mocap database from **all** dataset sub-folders.
 
     Sub-folders searched (relative to *mocap_root*):
-        bandai/  — Bandai Namco Motiondataset-2
-        cmu/     — CMU Graphics Lab
-        lafan1/  — Ubisoft LAFAN1
-        sfu/     — SFU Motion Capture Database
+        bandai/      — Bandai Namco Motiondataset-2
+        bandai_ds1/  — Bandai Namco Motiondataset-1
+        cmu/         — CMU Graphics Lab
+        lafan1/      — Ubisoft LAFAN1
+        sfu/         — SFU Motion Capture Database
 
     If a sub-folder is empty and ``try_download`` is True the corresponding
     downloader is invoked automatically.
     """
     mocap_root = Path(mocap_root)
-    bandai_dir = mocap_root / "bandai"
-    cmu_dir    = mocap_root / "cmu"
-    lafan1_dir = mocap_root / "lafan1"
-    sfu_dir    = mocap_root / "sfu"
+    bandai_dir     = mocap_root / "bandai"
+    bandai_ds1_dir = mocap_root / "bandai_ds1"
+    cmu_dir        = mocap_root / "cmu"
+    lafan1_dir     = mocap_root / "lafan1"
+    sfu_dir        = mocap_root / "sfu"
 
     if try_download:
         _auto_download_bandai(bandai_dir)
+        _auto_download_bandai_ds1(bandai_ds1_dir)
         _auto_download_cmu(cmu_dir)
         _auto_download_lafan1(lafan1_dir)
         _auto_download_sfu(sfu_dir)
 
     all_segments: list = []
     all_meta: list = []
-    for label, d in [("bandai", bandai_dir), ("cmu", cmu_dir),
-                     ("lafan1", lafan1_dir), ("sfu", sfu_dir)]:
+    for label, d in [("bandai", bandai_dir), ("bandai_ds1", bandai_ds1_dir),
+                     ("cmu", cmu_dir), ("lafan1", lafan1_dir), ("sfu", sfu_dir)]:
         segs, meta = _load_local_bvh_segments(d)
         if segs:
             print(f"[mocap_loader] {label}: {len(segs)} files")
@@ -437,6 +476,7 @@ def load_aggregated_database(
             "  python -m mocap_evaluation.download_all\n"
             "Or individually:\n"
             "  python -m mocap_evaluation.bandai_namco_downloader\n"
+            "  python -m mocap_evaluation.bandai_namco_ds1_downloader\n"
             "  python -m mocap_evaluation.cmu_downloader\n"
             "  python -m mocap_evaluation.lafan1_downloader\n"
             "  python -m mocap_evaluation.sfu_downloader"
