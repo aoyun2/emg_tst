@@ -1,7 +1,6 @@
 """Download and prepare external gait curves for out-of-database matching tests."""
 from __future__ import annotations
 
-import math
 from typing import Iterable, Optional
 from urllib.error import HTTPError, URLError
 import urllib.request
@@ -106,7 +105,12 @@ def extract_external_sample_curves(
     pred_noise_std: float = 2.0,
     source_url: Optional[str] = None,
 ) -> SampleCurves:
-    """Build sample curves from an external online gait file (not mocap DB)."""
+    """Build sample curves from an external online gait file (not mocap DB).
+
+    Uses the natural length of the external data without tiling.  If the file
+    is shorter than *seconds*, all available frames are returned and motion
+    matching will use a correspondingly shorter query window.
+    """
     raw, url = _read_external_text(source_url)
     time_s, table = _load_opensim_table(raw)
 
@@ -121,22 +125,29 @@ def extract_external_sample_curves(
     knee_rs = _resample_to_target_fps(time_s, knee_inc, TARGET_FPS)
 
     target_len = max(1, int(round(seconds * TARGET_FPS)))
-
-    # All publicly available OpenSim walking IK files are single gait cycles
-    # (~1-2 s).  Walking is periodic, so tile the signal to reach the
-    # requested evaluation window length.
-    if len(knee_rs) < target_len:
-        reps = math.ceil(target_len / len(knee_rs))
-        knee_rs = np.tile(knee_rs, reps)
-        hip_rs = np.tile(hip_rs, reps)
+    available = len(knee_rs)
 
     rng = np.random.default_rng(seed)
-    start = int(rng.integers(0, len(knee_rs) - target_len + 1))
-    end = start + target_len
 
-    knee = knee_rs[start:end]
-    thigh = hip_rs[start:end]
-    pred = np.clip(knee + rng.normal(0.0, pred_noise_std, target_len).astype(np.float32), 0.0, 180.0)
+    if available >= target_len:
+        # Enough data: pick a random sub-window
+        start = int(rng.integers(0, available - target_len + 1))
+        knee = knee_rs[start : start + target_len]
+        thigh = hip_rs[start : start + target_len]
+    else:
+        # Use all available data (no tiling); motion matching will match
+        # a mocap segment of this shorter length.
+        knee = knee_rs
+        thigh = hip_rs
+        print(f"[external] Data shorter than {seconds:.1f}s "
+              f"({available} frames = {available / TARGET_FPS:.2f}s); "
+              f"using full available length for matching.")
+
+    n = len(knee)
+    pred = np.clip(
+        knee + rng.normal(0.0, pred_noise_std, n).astype(np.float32),
+        0.0, 180.0,
+    )
 
     return SampleCurves(
         knee_label_included_deg=knee.astype(np.float32),

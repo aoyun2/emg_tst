@@ -48,7 +48,7 @@ except Exception:  # pragma: no cover — headless environments
 # ── Constants ────────────────────────────────────────────────────────────────
 
 SIM_FPS_DEFAULT = 200.0
-HUMANOID_INIT_POS = np.array([0.0, 0.0, 1.0])
+HUMANOID_INIT_POS = np.array([0.0, 0.0, 1.05])
 HUMANOID_INIT_POS_Z = 1.05      # legacy value used by kinematic evaluator
 FALL_HEIGHT_THRESHOLD = 0.55
 REF_Y_OFFSET = 1.5              # lateral offset for reference humanoid
@@ -193,7 +193,7 @@ _MJCF = """
   <option timestep="0.001" gravity="0 0 -9.81" integrator="implicit"/>
 
   <default>
-    <joint damping="5" armature="0.01"/>
+    <joint damping="12" armature="0.02"/>
     <geom condim="3" friction="1 0.5 0.5" contype="1" conaffinity="2"/>
   </default>
 
@@ -203,7 +203,7 @@ _MJCF = """
 
   <equality>
     <weld body1="torso" body2="root_target"
-          solref="0.001 1" solimp="0.99 0.999 0.001 0.5 2"/>
+          solref="0.02 1" solimp="0.95 0.99 0.01 0.5 2"/>
   </equality>
 
   <worldbody>
@@ -213,12 +213,12 @@ _MJCF = """
     <light pos="3 3 4" dir="-0.5 -0.5 -1" diffuse="0.4 0.4 0.4"/>
 
     <!-- Invisible mocap target: driven by BVH root position each frame -->
-    <body name="root_target" mocap="true" pos="0 0 1.0">
+    <body name="root_target" mocap="true" pos="0 0 1.05">
       <geom type="sphere" size="0.001" contype="0" conaffinity="0"
             rgba="0 0 0 0"/>
     </body>
 
-    <body name="torso" pos="0 0 1.0">
+    <body name="torso" pos="0 0 1.05">
       <freejoint name="root"/>
       <geom type="capsule" fromto="0 0 -0.12 0 0 0.2" size="0.09"
             rgba="0.6 0.6 0.65 1"/>
@@ -321,17 +321,17 @@ def _build_dual_mjcf() -> str:
 
     ref_equality = (
         f'    <weld body1="ref_torso" body2="ref_root_target"\n'
-        f'          solref="0.001 1" solimp="0.99 0.999 0.001 0.5 2"/>'
+        f'          solref="0.02 1" solimp="0.95 0.99 0.01 0.5 2"/>'
     )
 
     ref_bodies = f"""
     <!-- ══ Reference humanoid (ground-truth mocap) ═══════════════════════ -->
-    <body name="ref_root_target" mocap="true" pos="0 {ref_y} 1.0">
+    <body name="ref_root_target" mocap="true" pos="0 {ref_y} 1.05">
       <geom type="sphere" size="0.001" contype="0" conaffinity="0"
             rgba="0 0 0 0"/>
     </body>
 
-    <body name="ref_torso" pos="0 {ref_y} 1.0">
+    <body name="ref_torso" pos="0 {ref_y} 1.05">
       <freejoint name="ref_root"/>
       <geom type="capsule" fromto="0 0 -0.12 0 0 0.2" size="0.09"
             rgba="0.3 0.5 0.8 0.5"/>
@@ -541,6 +541,15 @@ class _MuJoCoRunner:
         ridx = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "right_foot_geom")
         lidx = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "left_foot_geom")
 
+        # ── Body IDs for XY-only root tracking ───────────────────────────
+        # We track XY from BVH but let Z (height) be determined by physics
+        # so the weld constraint doesn't fight floor contact forces.
+        torso_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "torso")
+        ref_torso_id = None
+        if self.show_reference:
+            ref_torso_id = mujoco.mj_name2id(
+                model, mujoco.mjtObj.mjOBJ_BODY, "ref_torso")
+
         # ── Mocap body indices ───────────────────────────────────────────
         # mocap_pos[0] = prediction root, mocap_pos[1] = reference root
         ref_root_offset = np.array([0.0, REF_Y_OFFSET, 0.0])
@@ -549,11 +558,12 @@ class _MuJoCoRunner:
         qpos_history: List[np.ndarray] = []
 
         # ── Warmup: let actuators settle to frame-0 pose ────────────────
+        # 500 steps (0.5 s) to fully settle joints + body height.
         data.mocap_pos[0] = root_pos[0]
         if self.show_reference:
             data.mocap_pos[1] = root_pos[0] + ref_root_offset
         data.ctrl[:] = controls[0]
-        for _ in range(20):
+        for _ in range(500):
             mujoco.mj_step(model, data)
 
         # Reset metrics after warmup
@@ -564,10 +574,15 @@ class _MuJoCoRunner:
                 if viewer_obj is not None and not viewer_obj.is_running():
                     break
 
-                # Drive root position via mocap body
-                data.mocap_pos[0] = root_pos[t]
+                # Drive root position via mocap body.
+                # Track XY from BVH; let Z (height) float with physics
+                # so the weld doesn't fight floor contact forces.
+                data.mocap_pos[0, :2] = root_pos[t, :2]
+                data.mocap_pos[0, 2] = data.xpos[torso_id, 2]
                 if self.show_reference:
-                    data.mocap_pos[1] = root_pos[t] + ref_root_offset
+                    data.mocap_pos[1, 0] = root_pos[t, 0]
+                    data.mocap_pos[1, 1] = root_pos[t, 1] + REF_Y_OFFSET
+                    data.mocap_pos[1, 2] = data.xpos[ref_torso_id, 2]
 
                 # Drive joint actuators
                 data.ctrl[:] = controls[t]
@@ -584,7 +599,9 @@ class _MuJoCoRunner:
                 qpos_history.append(data.qpos.copy())
 
                 # ── Collect metrics ──────────────────────────────────────
-                com_h = float(data.subtree_com[0, 2])
+                # Use prediction model's subtree CoM (not world-body
+                # subtree which would include the reference humanoid).
+                com_h = float(data.subtree_com[torso_id, 2])
                 rc = False
                 lc = False
                 for c in range(data.ncon):
@@ -666,7 +683,6 @@ class _MuJoCoRunner:
                     # Enable useful visualisation flags so rendering
                     # options in the viewer are active, not greyed out.
                     try:
-                        viewer_obj.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = True
                         viewer_obj.opt.flags[mujoco.mjtVisFlag.mjVIS_JOINT] = True
                         viewer_obj.opt.flags[mujoco.mjtVisFlag.mjVIS_COM] = True
                     except Exception:
@@ -689,7 +705,7 @@ class _MuJoCoRunner:
                 if self.show_reference:
                     data.mocap_pos[1] = root_pos[0] + ref_root_offset
                 data.ctrl[:] = controls[0]
-                for _ in range(20):
+                for _ in range(500):
                     mujoco.mj_step(model, data)
                 metrics = EvalMetrics.empty()
                 qpos_history.clear()
@@ -940,7 +956,6 @@ def replay_trajectory(
 
         # Enable useful visualisation options
         try:
-            viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = True
             viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_JOINT] = True
             viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_COM] = True
         except Exception:

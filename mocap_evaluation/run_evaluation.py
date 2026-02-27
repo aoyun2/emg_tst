@@ -222,10 +222,12 @@ def load_samples(
 
     Returns
     -------
-    X         : (N, W, F) raw features
-    y_seq     : (N, W) knee angle labels per timestep (degrees)
-    thigh_col : int  column index of thigh_angle feature in X
-    file_ids  : (N,) int32  recording file index per window
+    X             : (N, W, F) raw features
+    y_seq         : (N, W) knee angle labels per timestep (degrees)
+    thigh_col     : int  column index of thigh_angle feature in X
+    file_ids      : (N,) int32  recording file index per window
+    start_indices : (N,) int32  absolute start index of each window within its
+                    recording file, or None if not available
     """
     data  = np.load(samples_path, allow_pickle=True)
     if isinstance(data, np.ndarray):
@@ -236,15 +238,21 @@ def load_samples(
     file_ids = data.get("file_id", np.zeros(len(X), dtype=np.int32))
     file_ids = np.asarray(file_ids, dtype=np.int32)
 
+    start_indices = data.get("start", None)
+    if start_indices is not None:
+        start_indices = np.asarray(start_indices, dtype=np.int32)
+
     if max_samples is not None:
         X        = X[:max_samples]
         y_seq    = y_seq[:max_samples]
         file_ids = file_ids[:max_samples]
+        if start_indices is not None:
+            start_indices = start_indices[:max_samples]
 
     # Thigh angle is the last feature column (from data.py load_recording)
     thigh_col = X.shape[2] - 1
 
-    return X, y_seq, thigh_col, file_ids
+    return X, y_seq, thigh_col, file_ids, start_indices
 
 
 # ── Per-window inference ──────────────────────────────────────────────────────
@@ -383,17 +391,43 @@ def run_test_sample(
 EVAL_SECONDS_DEFAULT = 5.0  # physics evaluation window (seconds)
 
 
+def _find_consecutive_runs(
+    start_indices: np.ndarray,
+    window_size: int,
+) -> list[tuple[int, int]]:
+    """Find sub-runs of truly consecutive windows based on start indices.
+
+    Each window is consecutive to the next if ``start[i+1] == start[i] + window_size``.
+
+    Returns list of ``(offset, length)`` within the input array.
+    """
+    n = len(start_indices)
+    if n <= 1:
+        return [(0, n)]
+
+    runs: list[tuple[int, int]] = []
+    run_begin = 0
+    for i in range(1, n):
+        if int(start_indices[i]) != int(start_indices[i - 1]) + window_size:
+            runs.append((run_begin, i - run_begin))
+            run_begin = i
+    runs.append((run_begin, n - run_begin))
+    return runs
+
+
 def _build_eval_segments(
     X: np.ndarray,
     y_seq: np.ndarray,
     file_ids: np.ndarray,
     windows_per_seg: int,
+    start_indices: Optional[np.ndarray] = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Concatenate consecutive training windows into longer eval segments.
 
-    Only windows from the **same recording file** are grouped together to
-    avoid discontinuities at file boundaries.  Leftover windows that don't
-    fill a complete segment are discarded.
+    Only windows from the **same recording file** that are **verified to be
+    temporally consecutive** are grouped together.  Verification uses the
+    ``start`` indices saved by ``split_to_samples.py``; if unavailable the
+    old heuristic (same file-id = consecutive) is used as a fallback.
 
     Parameters
     ----------
@@ -401,6 +435,8 @@ def _build_eval_segments(
     y_seq    : (N, W)    per-window knee angle labels
     file_ids : (N,)      recording file index per window
     windows_per_seg : number of consecutive windows to merge
+    start_indices : (N,) absolute start index of each window in its file,
+                    or None if not available (falls back to file-id grouping)
 
     Returns
     -------
@@ -410,9 +446,9 @@ def _build_eval_segments(
     N, W, F = X.shape
     k = windows_per_seg
 
-    # Group consecutive same-file runs, then chunk each run into segments
     seg_X: list[np.ndarray] = []
     seg_y: list[np.ndarray] = []
+    n_skipped = 0
 
     run_start = 0
     while run_start < N:
@@ -420,15 +456,31 @@ def _build_eval_segments(
         run_end = run_start + 1
         while run_end < N and file_ids[run_end] == fid:
             run_end += 1
-        run_len = run_end - run_start
-        n_segs = run_len // k
-        for s in range(n_segs):
-            base = run_start + s * k
-            x_parts = X[base : base + k]            # (k, W, F)
-            y_parts = y_seq[base : base + k]        # (k, W)
-            seg_X.append(x_parts.reshape(k * W, F))
-            seg_y.append(y_parts.reshape(k * W))
+
+        # Within this same-file run, find sub-runs that are truly consecutive
+        if start_indices is not None:
+            sub_runs = _find_consecutive_runs(
+                start_indices[run_start:run_end], W,
+            )
+        else:
+            # No start info — assume entire file run is consecutive
+            sub_runs = [(0, run_end - run_start)]
+
+        for cr_offset, cr_len in sub_runs:
+            base = run_start + cr_offset
+            n_segs = cr_len // k
+            for s in range(n_segs):
+                idx = base + s * k
+                x_parts = X[idx : idx + k]          # (k, W, F)
+                y_parts = y_seq[idx : idx + k]      # (k, W)
+                seg_X.append(x_parts.reshape(k * W, F))
+                seg_y.append(y_parts.reshape(k * W))
+            n_skipped += cr_len % k
+
         run_start = run_end
+
+    if n_skipped > 0:
+        print(f"[eval] Discarded {n_skipped} windows that didn't fill a segment")
 
     if not seg_X:
         # Not enough consecutive same-file windows — fall back to
@@ -474,7 +526,9 @@ def evaluate(
 
     # ── Load samples ────────────────────────────────────────────────────────
     print(f"[eval] Loading samples: {samples_path}")
-    X, y_seq, thigh_col, file_ids = load_samples(samples_path, max_samples=n_samples)
+    X, y_seq, thigh_col, file_ids, start_indices = load_samples(
+        samples_path, max_samples=n_samples,
+    )
     N, W, F = X.shape
     train_window_sec = W / TARGET_FPS
     print(f"       {N} windows  shape={X.shape}  ({train_window_sec:.1f}s each)")
@@ -482,7 +536,10 @@ def evaluate(
     # ── Concatenate into longer eval segments ───────────────────────────────
     windows_per_seg = max(1, int(round(eval_seconds / train_window_sec)))
     actual_eval_sec = windows_per_seg * train_window_sec
-    X_seg, y_seg = _build_eval_segments(X, y_seq, file_ids, windows_per_seg)
+    X_seg, y_seg = _build_eval_segments(
+        X, y_seq, file_ids, windows_per_seg,
+        start_indices=start_indices,
+    )
     M = len(X_seg)
     print(f"[eval] Eval segments: {M} × {windows_per_seg} windows "
           f"= {actual_eval_sec:.1f}s each  "
@@ -586,6 +643,107 @@ def evaluate(
         print(f"  {k:<22} {v}")
 
     return result
+
+
+def play_mocap_match(
+    mocap_dir: str | Path = "mocap_data",
+    seconds: float = 4.0,
+    sample_source: str = "external",
+    external_url: Optional[str] = None,
+    match_categories: Optional[List[str]] = None,
+    use_cache: bool = True,
+    save_trajectory: Optional[str | Path] = None,
+) -> None:
+    """Find the best mocap match for sample curves and play it in the viewer.
+
+    All joints (including right knee) are driven by the matched mocap segment
+    so the user can see exactly what motion was matched.
+    """
+    categories = tuple(match_categories) if match_categories else ("walk",)
+    if sample_source == "external":
+        curves = extract_external_sample_curves(
+            seconds=seconds,
+            source_url=external_url,
+        )
+    else:
+        curves = extract_real_sample_curves(
+            mocap_dir=mocap_dir,
+            seconds=seconds,
+            categories=categories,
+        )
+
+    knee = curves.knee_label_included_deg.astype(np.float32)
+    thigh = curves.thigh_angle_deg.astype(np.float32)
+
+    print(f"[play-match] Sample: {len(knee)} frames @ {curves.fps} Hz "
+          f"({len(knee)/curves.fps:.2f}s), source={curves.source_file}")
+
+    mocap_db = load_aggregated_database(
+        mocap_root=mocap_dir, try_download=True,
+        datasets=["cmu"], use_cache=use_cache,
+    )
+
+    _, dist, segment = find_best_match(
+        knee, thigh, mocap_db,
+        categories=match_categories,
+    )
+
+    cat = segment.get("category", "unknown")
+    print(f"[play-match] Best match: DTW={dist:.4f}, category={cat}")
+
+    # ── Save a comparison plot (query vs matched) ────────────────────────
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        T = len(knee)
+        t = np.arange(T) / curves.fps
+        fig, axes = plt.subplots(2, 1, figsize=(12, 7), sharex=True)
+
+        axes[0].plot(t, knee, label="Query knee (sample)", linewidth=2)
+        axes[0].plot(t, segment["knee_right"], label="Matched knee (mocap)",
+                     linewidth=2, alpha=0.8)
+        knee_rmse = float(np.sqrt(np.mean((knee - segment["knee_right"]) ** 2)))
+        axes[0].set_ylabel("Knee included angle (deg)")
+        axes[0].set_title(f"Query vs matched mocap  |  Knee RMSE={knee_rmse:.2f}°  "
+                          f"DTW={dist:.4f}  [{cat}]")
+        axes[0].legend()
+        axes[0].grid(True, alpha=0.3)
+
+        axes[1].plot(t, thigh, label="Query thigh (sample)", linewidth=2)
+        axes[1].plot(t, segment["hip_right"], label="Matched hip (mocap)",
+                     linewidth=2, alpha=0.8)
+        thigh_rmse = float(np.sqrt(np.mean((thigh - segment["hip_right"]) ** 2)))
+        axes[1].set_ylabel("Thigh included angle (deg)")
+        axes[1].set_title(f"Thigh RMSE={thigh_rmse:.2f}°")
+        axes[1].set_xlabel("Time (s)")
+        axes[1].legend()
+        axes[1].grid(True, alpha=0.3)
+
+        fig.tight_layout()
+        plot_path = Path("play_match_comparison.png")
+        fig.savefig(plot_path, dpi=140)
+        plt.close(fig)
+        print(f"[play-match] Comparison plot saved -> {plot_path}")
+    except Exception as exc:
+        print(f"[play-match] Could not save comparison plot: {exc}")
+
+    # ── Play in MuJoCo viewer ────────────────────────────────────────────
+    print(f"[play-match] Playing matched mocap motion in MuJoCo viewer...")
+    print(f"[play-match] All joints driven by mocap (including right knee).")
+
+    # Drive ALL joints from mocap — use mocap knee_right as the "prediction"
+    # so the viewer shows the pure matched motion.
+    traj_path = save_trajectory or "play_match_traj.npz"
+    simulate_prosthetic_walking(
+        segment,
+        segment["knee_right"],   # mocap knee → "prediction" slot
+        use_gui=True,
+        show_reference=False,
+        save_trajectory=traj_path,
+    )
+    print(f"[play-match] Trajectory saved -> {traj_path}")
 
 
 def evaluate_from_curves(
@@ -723,6 +881,10 @@ def _parse_args():
                     help="Comma-separated category filter for motion matching (e.g. walk,run)")
     ap.add_argument("--render-gifs", action="store_true",
                     help="Render animated GIFs of each simulation alongside plots")
+    ap.add_argument("--play-match", action="store_true",
+                    help="Find the best mocap match for sample curves and play "
+                         "the matched motion in the MuJoCo viewer (all joints "
+                         "driven by mocap, including right knee)")
     ap.add_argument("--replay", default=None, metavar="TRAJ.npz",
                     help="Replay a previously saved trajectory file in the MuJoCo viewer")
     ap.add_argument("--replay-speed", type=float, default=1.0,
@@ -751,6 +913,20 @@ def main():
         match_categories = [c.strip() for c in args.match_categories.split(",") if c.strip()]
 
     use_cache = not args.no_cache
+
+    if args.play_match:
+        # ── Play-match: visualise the matched mocap motion ───────────
+        seconds = args.eval_seconds
+        print(f"[eval] Play-match duration: {seconds:.1f} s")
+        play_mocap_match(
+            mocap_dir=args.mocap_dir,
+            seconds=seconds,
+            sample_source=args.test_sample_source,
+            external_url=args.external_sample_url,
+            match_categories=match_categories,
+            use_cache=use_cache,
+        )
+        return
 
     if args.test_sample:
         # ── Fallback: test sample mode (no trained model needed) ─────

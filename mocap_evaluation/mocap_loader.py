@@ -306,12 +306,16 @@ _CACHE_KEYS_1D = [
     "ankle_right", "ankle_left", "pelvis_tilt", "trunk_lean",
 ]
 
+# Bump this when angle extraction or resampling logic changes so that stale
+# caches are automatically invalidated (the fingerprint includes this string).
+_CACHE_VERSION = "v2"
+
 
 def _cache_fingerprint(bvh_dir: Path) -> str:
-    """Fast fingerprint of a BVH directory: sorted filenames + sizes."""
+    """Fast fingerprint of a BVH directory: sorted filenames + sizes + code version."""
     if not bvh_dir.exists():
         return ""
-    entries = []
+    entries = [f"_version={_CACHE_VERSION}"]
     for f in sorted(bvh_dir.glob("*.bvh")):
         entries.append(f"{f.name}:{f.stat().st_size}")
     return hashlib.md5("|".join(entries).encode()).hexdigest()
@@ -361,7 +365,9 @@ def _load_cache(path: Path) -> Optional[dict]:
     if "categories" in raw:
         db["categories"] = raw["categories"]
     if "file_boundaries" in raw:
-        db["file_boundaries"] = list(raw["file_boundaries"])
+        # Rows are stored as numpy object arrays; convert back to tuples
+        # so downstream code gets consistent (start, end, filename, cat).
+        db["file_boundaries"] = [tuple(row) for row in raw["file_boundaries"]]
     if "_fingerprints" in raw:
         db["_fingerprints"] = str(raw["_fingerprints"])
     return db
