@@ -9,8 +9,7 @@ import numpy as np
 
 from mocap_evaluation.mocap_loader import (
     TARGET_FPS,
-    load_full_cmu_database,
-    load_or_generate_mocap_database,
+    load_aggregated_database,
 )
 
 
@@ -53,10 +52,7 @@ def extract_real_sample_curves(
     The predicted curve is derived from the label curve + light noise so users can
     exercise the matching/simulation pipeline without synthetic Winter templates.
     """
-    if full_database:
-        db = load_full_cmu_database(bvh_dir=mocap_dir)
-    else:
-        db = load_or_generate_mocap_database(bvh_dir=mocap_dir)
+    db = load_aggregated_database(mocap_root=mocap_dir)
 
     start, end, source_file, cat = _select_walk_boundary(db, categories)
     seg_len = end - start

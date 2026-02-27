@@ -1,14 +1,27 @@
 """
 Mocap data loader.
 
-Source : Bandai Namco Research Motiondataset-2 (recommended) and
-         CMU Graphics Lab Motion Capture Database (fallback/extra coverage),
-         both in BVH format with per-file category metadata.
+Source : Bandai Namco Research Motiondataset-2, CMU Graphics Lab Motion
+         Capture Database, LAFAN1 (Ubisoft La Forge), and SFU Motion Capture
+         Database — all in BVH format with per-file category metadata.
 
-Recommended download:
+All sources are stored in per-dataset sub-folders under a common root
+(default ``mocap_data/``):
+
+    mocap_data/
+        bandai/   — Bandai Namco Motiondataset-2
+        cmu/      — CMU Graphics Lab
+        lafan1/   — Ubisoft LAFAN1
+        sfu/      — SFU (Simon Fraser University)
+
+Download all sources at once:
+    python -m mocap_evaluation.download_all
+
+Or individually:
     python -m mocap_evaluation.bandai_namco_downloader
-Optional additional source:
     python -m mocap_evaluation.cmu_downloader
+    python -m mocap_evaluation.lafan1_downloader
+    python -m mocap_evaluation.sfu_downloader
 
 Returned database dict (all angles in **degrees**, all arrays at TARGET_FPS):
     knee_right   : (N,)   right knee included angle (180 = straight)
@@ -21,7 +34,7 @@ Returned database dict (all angles in **degrees**, all arrays at TARGET_FPS):
     trunk_lean   : (N,)   trunk forward lean (+= forward)
     root_pos     : (N, 3) pelvis position in metres
     fps          : float  always TARGET_FPS after resampling
-    source       : str    "cmu_bvh"
+    source       : str    e.g. "bandai_bvh+cmu_bvh+lafan1_bvh+sfu_bvh+aggregated"
     categories   : (N,) str array — per-frame motion category label (optional)
     file_boundaries : list of (start, end, filename, category) tuples
 """
@@ -43,15 +56,8 @@ from mocap_evaluation.bvh_parser import BVHParser
 TARGET_FPS: int = 200          # match our IMU / EMG pipeline rate
 MOCAP_DATA_DIR = Path("mocap_data")
 
-# CMU mocap: subject 07 is a standard adult walking subject.
-# Trials 01-12 are different walking speeds / conditions.
-_CMU_BVH_URLS = [
-    # cgspeed BVH conversion (commonly mirrored on academic CDNs)
-    "https://mocap.cs.cmu.edu/subjects/07/07_01.bvh",
-    "http://mocap.cs.cmu.edu/subjects/07/07_01.bvh",
-]
-
-# Mapping from CMU BVH joint names → our semantic names
+# Mapping from CMU BVH joint names → our semantic names.
+# Also applies to LAFAN1 and SFU skeletons which use the same naming.
 _CMU_JOINT_MAP = {
     "RightLeg":   "knee_right",   # right knee
     "LeftLeg":    "knee_left",
@@ -119,31 +125,23 @@ def _resample(signal: np.ndarray, src_fps: float, tgt_fps: int = TARGET_FPS) -> 
     return resample_poly(signal, up, dn).astype(np.float32)
 
 
-# ── CMU BVH loader ────────────────────────────────────────────────────────────
+def _resample_2d(arr: np.ndarray, src_fps: float, tgt_fps: int) -> np.ndarray:
+    """Resample each column of a 2-D array independently."""
+    return np.stack([_resample(arr[:, c], src_fps, tgt_fps) for c in range(arr.shape[1])], axis=1)
 
 
-def _download_cmu_bvh(dest: Path) -> bool:
-    """Try to download one CMU BVH walking file. Returns True on success."""
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    for url in _CMU_BVH_URLS:
-        try:
-            print(f"  Trying {url} …")
-            urllib.request.urlretrieve(url, dest)
-            print(f"  Downloaded → {dest}")
-            return True
-        except (urllib.error.URLError, urllib.error.HTTPError, OSError) as exc:
-            print(f"  Failed ({exc})")
-    return False
+# ── BVH angle extraction ────────────────────────────────────────────────────
 
 
 def _extract_angles_from_bvh(parser: BVHParser) -> Optional[dict]:
     """
     Extract walking-relevant joint angles from a parsed BVH file.
 
-    Supports both the CMU cgspeed skeleton (joint names "RightLeg", etc.) and
-    the Bandai Namco Motiondataset-2 skeleton ("LowerLeg_R", etc.).  The
-    correct joint map is selected automatically based on joint names present
-    in the parsed file.
+    Supports the CMU cgspeed skeleton (joint names "RightLeg", etc.), the
+    Bandai Namco Motiondataset-2 skeleton ("LowerLeg_R", etc.), and any
+    skeleton using the MotionBuilder naming convention (LAFAN1, SFU, etc.).
+    The correct joint map is selected automatically based on joint names
+    present in the parsed file.
 
     Returns the database dict at TARGET_FPS, or None if key joints are missing.
     """
@@ -209,18 +207,17 @@ def _extract_angles_from_bvh(parser: BVHParser) -> Optional[dict]:
     return angles
 
 
-def _resample_2d(arr: np.ndarray, src_fps: float, tgt_fps: int) -> np.ndarray:
-    """Resample each column of a 2-D array independently."""
-    return np.stack([_resample(arr[:, c], src_fps, tgt_fps) for c in range(arr.shape[1])], axis=1)
-
-
 def load_cmu_bvh(bvh_path: str | Path) -> Optional[dict]:
-    """Parse a local CMU BVH file and return the database dict."""
+    """Parse a local BVH file and return the database dict."""
     bvh_path = Path(bvh_path)
     if not bvh_path.exists():
         return None
     parser = BVHParser().parse(bvh_path)
     return _extract_angles_from_bvh(parser)
+
+
+# Alias kept for backward compat — works for any skeleton, not just CMU.
+load_bvh = load_cmu_bvh
 
 
 def _load_local_bvh_segments(bvh_dir: Path) -> tuple[list, list]:
@@ -237,120 +234,108 @@ def _load_local_bvh_segments(bvh_dir: Path) -> tuple[list, list]:
     return segments, meta
 
 
-def load_aggregated_bandai_cmu_database(
-    bandai_dir: str | Path = MOCAP_DATA_DIR / "bandai",
-    cmu_dir: str | Path = MOCAP_DATA_DIR / "cmu",
-    try_download: bool = True,
-) -> dict:
-    """Load an aggregated mocap database from Bandai + CMU directories.
+# ── Category detection ────────────────────────────────────────────────────────
 
-    If directories are empty and ``try_download`` is True, Bandai locomotion
-    files are downloaded to ``bandai_dir`` and CMU files to ``cmu_dir``.
+
+def _category_for_file(filename: str) -> str:
     """
-    bandai_dir = Path(bandai_dir)
-    cmu_dir = Path(cmu_dir)
+    Look up the motion category for a BVH filename.
 
-    if try_download:
-        if not sorted(bandai_dir.glob("*.bvh")):
-            try:
-                from mocap_evaluation.bandai_namco_downloader import download_locomotion
-                print(f"[mocap_loader] Downloading Bandai locomotion to {bandai_dir} …")
-                download_locomotion(dest_dir=bandai_dir, verbose=True)
-            except Exception as exc:
-                print(f"  Bandai download failed: {exc}")
-
-        if not sorted(cmu_dir.glob("*.bvh")):
-            try:
-                from mocap_evaluation.cmu_downloader import download_all
-                print(f"[mocap_loader] Downloading CMU data to {cmu_dir} …")
-                download_all(dest_dir=cmu_dir)
-            except Exception as exc:
-                print(f"  CMU download failed: {exc}")
-
-    bandai_segments, bandai_meta = _load_local_bvh_segments(bandai_dir)
-    cmu_segments, cmu_meta = _load_local_bvh_segments(cmu_dir)
-
-    segments = bandai_segments + cmu_segments
-    meta = bandai_meta + cmu_meta
-    if not segments:
-        raise RuntimeError(
-            "No BVH mocap data available for aggregated loading.\n"
-            f"Expected Bandai files in: {bandai_dir}\n"
-            f"Expected CMU files in:    {cmu_dir}\n"
-            "Download Bandai first: python -m mocap_evaluation.bandai_namco_downloader --dest "
-            f"{bandai_dir}\n"
-            "Download CMU next:      python -m mocap_evaluation.cmu_downloader --dest "
-            f"{cmu_dir}"
-        )
-
-    combined = _concatenate_databases(segments, meta=meta)
-    total_dur = len(combined["knee_right"]) / TARGET_FPS
-    n_cats = len({m[1] for m in meta})
-    sources = {d.get("source", "unknown") for d in segments}
-    combined["source"] = "+".join(sorted(sources)) + "+aggregated"
-    print(f"[mocap_loader] Aggregated {len(segments)} files, {total_dur:.1f}s total, "
-          f"{n_cats} categories (sources: {combined['source']})")
-    return combined
-
-
-# ── main entry point ──────────────────────────────────────────────────────────
-
-
-def load_or_generate_mocap_database(
-    bvh_dir: str | Path = MOCAP_DATA_DIR,
-    try_download: bool = True,
-) -> dict:
+    Recognises Bandai Namco filenames (``dataset-2_{motion}_{style}_{id}.bvh``),
+    LAFAN1 filenames (``{action}{N}_subject{S}.bvh``),
+    SFU filenames (``{subject}_{trial}.bvh``),
+    and CMU catalog format (``07_01.bvh``).
     """
-    Load mocap database from BVH files found in `bvh_dir`.
-    If none found, optionally download Bandai Namco BVH data first (then CMU fallback).
+    # ── Bandai Namco filenames ─────────────────────────────────────────────
+    if filename.startswith("dataset-"):
+        if "_walk" in filename:
+            return "walk"
+        if "_run" in filename:
+            return "run"
+        return "misc"
 
-    Raises RuntimeError if no BVH data can be loaded.
+    # ── LAFAN1 filenames (e.g. "aiming1_subject1.bvh", "walk1_subject2.bvh") ──
+    lower = filename.lower()
+    if "_subject" in lower:
+        action = lower.split("_subject")[0]
+        # Strip trailing digits to get base action name
+        action_base = action.rstrip("0123456789")
+        if action_base in ("walk", "walking"):
+            return "walk"
+        if action_base in ("run", "running", "sprint"):
+            return "run"
+        if action_base in ("jump", "jumping"):
+            return "jump"
+        if action_base in ("dance", "dancing"):
+            return "dance"
+        if action_base in ("fight", "fighting", "punch", "kick"):
+            return "sport"
+        if action_base in ("aim", "aiming"):
+            return "misc"
+        if action_base in ("ground", "obstacle", "push", "fallandgetup"):
+            return "misc"
+        return action_base if action_base else "misc"
 
-    Parameters
-    ----------
-    bvh_dir      : directory to search (and download) BVH files
-    try_download : if True, attempt to download Bandai Namco BVH if directory empty
+    # ── CMU catalog lookup ─────────────────────────────────────────────────
+    try:
+        from mocap_evaluation.cmu_catalog import CATALOG
+    except ImportError:
+        return "unknown"
 
-    Returns
-    -------
-    database dict (see module docstring)
-    """
-    bvh_dir = Path(bvh_dir)
-    bvh_files = sorted(bvh_dir.glob("*.bvh")) if bvh_dir.exists() else []
+    for trial in CATALOG:
+        if trial.filename == filename:
+            return trial.category
+    return "unknown"
 
-    # ── try local files (delegate to load_full_cmu_database for category metadata) ──
-    if bvh_files:
-        try:
-            return load_full_cmu_database(bvh_dir=bvh_dir, try_download=False)
-        except Exception:
-            pass
 
-    # ── try download ───────────────────────────────────────────────────────
-    if try_download:
-        print("[mocap_loader] No local BVH files. Downloading Bandai Namco dataset-2 locomotion set …")
-        try:
-            from mocap_evaluation.bandai_namco_downloader import download_locomotion
-            downloaded = download_locomotion(dest_dir=bvh_dir, verbose=True)
-            if downloaded:
-                return load_full_cmu_database(bvh_dir=bvh_dir, try_download=False)
-        except Exception as exc:
-            print(f"  Bandai download failed: {exc}")
+# ── Auto-download helpers ─────────────────────────────────────────────────────
 
-        print("[mocap_loader] Falling back to CMU downloader …")
-        try:
-            from mocap_evaluation.cmu_downloader import download_all
-            downloaded = download_all(dest_dir=bvh_dir)
-            if downloaded:
-                return load_full_cmu_database(bvh_dir=bvh_dir, try_download=False)
-        except Exception:
-            pass
 
-    raise RuntimeError(
-        "No BVH mocap data available. Download Bandai Namco walking data first:\n"
-        "  python -m mocap_evaluation.bandai_namco_downloader\n"
-        "Optional additional source:\n"
-        "  python -m mocap_evaluation.cmu_downloader"
-    )
+def _auto_download_bandai(dest_dir: Path) -> None:
+    if sorted(dest_dir.glob("*.bvh")):
+        return
+    try:
+        from mocap_evaluation.bandai_namco_downloader import download_locomotion
+        print(f"[mocap_loader] Downloading Bandai locomotion to {dest_dir} …")
+        download_locomotion(dest_dir=dest_dir, verbose=True)
+    except Exception as exc:
+        print(f"  Bandai download failed: {exc}")
+
+
+def _auto_download_cmu(dest_dir: Path) -> None:
+    if sorted(dest_dir.glob("*.bvh")):
+        return
+    try:
+        from mocap_evaluation.cmu_downloader import download_all
+        print(f"[mocap_loader] Downloading CMU data to {dest_dir} …")
+        download_all(dest_dir=dest_dir)
+    except Exception as exc:
+        print(f"  CMU download failed: {exc}")
+
+
+def _auto_download_lafan1(dest_dir: Path) -> None:
+    if sorted(dest_dir.glob("*.bvh")):
+        return
+    try:
+        from mocap_evaluation.lafan1_downloader import download_all
+        print(f"[mocap_loader] Downloading LAFAN1 data to {dest_dir} …")
+        download_all(dest_dir=dest_dir)
+    except Exception as exc:
+        print(f"  LAFAN1 download failed: {exc}")
+
+
+def _auto_download_sfu(dest_dir: Path) -> None:
+    if sorted(dest_dir.glob("*.bvh")):
+        return
+    try:
+        from mocap_evaluation.sfu_downloader import download_all
+        print(f"[mocap_loader] Downloading SFU data to {dest_dir} …")
+        download_all(dest_dir=dest_dir)
+    except Exception as exc:
+        print(f"  SFU download failed: {exc}")
+
+
+# ── Concatenation ─────────────────────────────────────────────────────────────
 
 
 def _concatenate_databases(dbs: list, meta: Optional[list] = None) -> dict:
@@ -389,111 +374,88 @@ def _concatenate_databases(dbs: list, meta: Optional[list] = None) -> dict:
     return result
 
 
-# ── Full mocap dataset loader (Bandai + CMU compatible) ───────────────────────
+# ── Main entry point — always aggregated ──────────────────────────────────────
 
 
-def _category_for_file(filename: str) -> str:
+def load_aggregated_database(
+    mocap_root: str | Path = MOCAP_DATA_DIR,
+    try_download: bool = True,
+) -> dict:
+    """Load an aggregated mocap database from **all** dataset sub-folders.
+
+    Sub-folders searched (relative to *mocap_root*):
+        bandai/  — Bandai Namco Motiondataset-2
+        cmu/     — CMU Graphics Lab
+        lafan1/  — Ubisoft LAFAN1
+        sfu/     — SFU Motion Capture Database
+
+    If a sub-folder is empty and ``try_download`` is True the corresponding
+    downloader is invoked automatically.
     """
-    Look up the motion category for a BVH filename.
+    mocap_root = Path(mocap_root)
+    bandai_dir = mocap_root / "bandai"
+    cmu_dir    = mocap_root / "cmu"
+    lafan1_dir = mocap_root / "lafan1"
+    sfu_dir    = mocap_root / "sfu"
 
-    Recognises both the CMU catalog format (``07_01.bvh``) and Bandai Namco
-    filenames (``dataset-2_{motion}_{style}_{id}.bvh``).
-    """
-    # ── Bandai Namco filenames ─────────────────────────────────────────────
-    if filename.startswith("dataset-"):
-        if "_walk" in filename:
-            return "walk"
-        if "_run" in filename:
-            return "run"
-        return "misc"
+    if try_download:
+        _auto_download_bandai(bandai_dir)
+        _auto_download_cmu(cmu_dir)
+        _auto_download_lafan1(lafan1_dir)
+        _auto_download_sfu(sfu_dir)
 
-    # ── CMU catalog lookup ─────────────────────────────────────────────────
-    try:
-        from mocap_evaluation.cmu_catalog import CATALOG
-    except ImportError:
-        return "unknown"
+    all_segments: list = []
+    all_meta: list = []
+    for label, d in [("bandai", bandai_dir), ("cmu", cmu_dir),
+                     ("lafan1", lafan1_dir), ("sfu", sfu_dir)]:
+        segs, meta = _load_local_bvh_segments(d)
+        if segs:
+            print(f"[mocap_loader] {label}: {len(segs)} files")
+        all_segments.extend(segs)
+        all_meta.extend(meta)
 
-    for trial in CATALOG:
-        if trial.filename == filename:
-            return trial.category
-    return "unknown"
+    if not all_segments:
+        raise RuntimeError(
+            "No BVH mocap data available.\n"
+            f"Expected files in sub-folders of: {mocap_root}\n"
+            "Download everything at once:\n"
+            "  python -m mocap_evaluation.download_all\n"
+            "Or individually:\n"
+            "  python -m mocap_evaluation.bandai_namco_downloader\n"
+            "  python -m mocap_evaluation.cmu_downloader\n"
+            "  python -m mocap_evaluation.lafan1_downloader\n"
+            "  python -m mocap_evaluation.sfu_downloader"
+        )
+
+    combined = _concatenate_databases(all_segments, meta=all_meta)
+    total_dur = len(combined["knee_right"]) / TARGET_FPS
+    n_cats = len({m[1] for m in all_meta})
+    sources = {d.get("source", "unknown") for d in all_segments}
+    combined["source"] = "+".join(sorted(sources)) + "+aggregated"
+    print(f"[mocap_loader] Aggregated {len(all_segments)} files, {total_dur:.1f}s total, "
+          f"{n_cats} categories (sources: {combined['source']})")
+    return combined
+
+
+# ── Backward-compatible aliases ───────────────────────────────────────────────
+# All three old entry points now delegate to the single aggregated loader so
+# that callers always get the full multi-source database regardless of which
+# function they call.
+
+load_aggregated_bandai_cmu_database = load_aggregated_database
+
+
+def load_or_generate_mocap_database(
+    bvh_dir: str | Path = MOCAP_DATA_DIR,
+    try_download: bool = True,
+) -> dict:
+    """Backward-compatible entry point — delegates to :func:`load_aggregated_database`."""
+    return load_aggregated_database(mocap_root=bvh_dir, try_download=try_download)
 
 
 def load_full_cmu_database(
     bvh_dir: str | Path = MOCAP_DATA_DIR,
     try_download: bool = True,
 ) -> dict:
-    """
-    Load the full local mocap database with category metadata.
-
-    This loader supports both Bandai Namco Motiondataset and CMU BVH files.
-    All available BVH files are loaded — no category filtering.
-
-    Raises RuntimeError if no BVH data can be loaded.
-
-    Parameters
-    ----------
-    bvh_dir      : directory containing (or for downloading) BVH files
-    try_download : if True and directory is empty, download Bandai first (CMU fallback)
-
-    Returns
-    -------
-    database dict (see module docstring) with additional keys:
-        categories      : (N,) object array of per-frame category strings
-        file_boundaries : list of (start_idx, end_idx, filename, category)
-    """
-    bvh_dir = Path(bvh_dir)
-
-    # ── try download if directory empty ───────────────────────────────────
-    bvh_files = sorted(bvh_dir.glob("*.bvh")) if bvh_dir.exists() else []
-    if not bvh_files and try_download:
-        print("[mocap_loader] No local BVH files. Downloading Bandai Namco dataset-2 locomotion set …")
-        try:
-            from mocap_evaluation.bandai_namco_downloader import download_locomotion
-            downloaded = download_locomotion(dest_dir=bvh_dir, verbose=True)
-            if downloaded:
-                bvh_files = sorted(bvh_dir.glob("*.bvh"))
-        except Exception as exc:
-            print(f"  Bandai download failed: {exc}")
-
-        if not bvh_files:
-            print("[mocap_loader] Falling back to CMU downloader …")
-            try:
-                from mocap_evaluation.cmu_downloader import download_all
-                downloaded = download_all(dest_dir=bvh_dir)
-                if downloaded:
-                    bvh_files = sorted(bvh_dir.glob("*.bvh"))
-            except Exception as exc:
-                print(f"  Download failed: {exc}")
-
-    # ── load all local files with metadata ────────────────────────────────
-    if bvh_files:
-        segments = []
-        meta = []
-
-        for bf in bvh_files:
-            cat = _category_for_file(bf.name)
-            db = load_cmu_bvh(bf)
-            if db is not None:
-                dur = len(db["knee_right"]) / TARGET_FPS
-                print(f"  Loaded {bf.name}: {dur:.1f}s [{cat}]")
-                segments.append(db)
-                meta.append((bf.name, cat))
-
-        if segments:
-            combined = _concatenate_databases(segments, meta=meta)
-            total_dur = len(combined["knee_right"]) / TARGET_FPS
-            n_cats = len({m[1] for m in meta})
-            sources  = {d.get("source", "unknown") for d in segments}
-            combined["source"] = "+".join(sorted(sources))
-            print(f"[mocap_loader] Loaded {len(segments)} files, "
-                  f"{total_dur:.1f}s total, {n_cats} categories "
-                  f"(sources: {combined['source']})")
-            return combined
-
-    raise RuntimeError(
-        "No BVH mocap data available. Download Bandai Namco walking data first:\n"
-        "  python -m mocap_evaluation.bandai_namco_downloader\n"
-        "Optional additional source:\n"
-        "  python -m mocap_evaluation.cmu_downloader"
-    )
+    """Backward-compatible entry point — delegates to :func:`load_aggregated_database`."""
+    return load_aggregated_database(mocap_root=bvh_dir, try_download=try_download)

@@ -83,7 +83,7 @@ def _download_one(
 
 def download_trials(
     trials: List[TrialInfo],
-    dest_dir: str | Path = "mocap_data",
+    dest_dir: str | Path = "mocap_data/cmu",
     *,
     verbose: bool = True,
 ) -> List[Path]:
@@ -114,7 +114,7 @@ def download_trials(
 
 def download_by_category(
     categories: Optional[Sequence[str]] = None,
-    dest_dir: str | Path = "mocap_data",
+    dest_dir: str | Path = "mocap_data/cmu",
     max_per_category: Optional[int] = None,
     verbose: bool = True,
 ) -> List[Path]:
@@ -151,7 +151,7 @@ def download_by_category(
 
 
 def download_all(
-    dest_dir: str | Path = "mocap_data",
+    dest_dir: str | Path = "mocap_data/cmu",
     max_per_category: Optional[int] = None,
     verbose: bool = True,
 ) -> List[Path]:
@@ -181,8 +181,8 @@ def main():
              "Options: " + ", ".join(summary().keys()),
     )
     ap.add_argument(
-        "--dest", "-d", default="mocap_data",
-        help="Destination directory (default: mocap_data/)",
+        "--dest", "-d", default="mocap_data/cmu",
+        help="Destination directory (default: mocap_data/cmu/)",
     )
     ap.add_argument(
         "--max-per-category", "-m", type=int, default=None,
