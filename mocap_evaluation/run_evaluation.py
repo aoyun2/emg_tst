@@ -364,11 +364,14 @@ def evaluate(
         )
 
         # Simulation consumes the same included-angle convention.
+        # The sample's thigh angle drives the right hip actuator so that
+        # both the right knee and right thigh come from the sample, not mocap.
         metrics = simulate_prosthetic_walking(
             segment, pred_knee_inc,
             use_physics=use_physics,
             use_gui=use_gui,
             backend=sim_backend,
+            sample_thigh_right=thigh_sig,
         )
 
         metrics["window_idx"]  = i
@@ -474,12 +477,16 @@ def evaluate_from_curves(
 
     per_match = []
     for rank, (start, dist, segment) in enumerate(matches, start=1):
+        # Both simulations use the sample's own thigh angle for the right hip
+        # actuator so that the right leg (thigh + knee) is always driven by
+        # the sample being evaluated, not by the matched mocap reference.
         gt_metrics = simulate_prosthetic_walking(
             segment,
             knee_label_inc,
             use_physics=use_physics,
             use_gui=use_gui,
             backend=sim_backend,
+            sample_thigh_right=thigh_angle,
         )
         pred_metrics = simulate_prosthetic_walking(
             segment,
@@ -487,6 +494,7 @@ def evaluate_from_curves(
             use_physics=use_physics,
             use_gui=use_gui,
             backend=sim_backend,
+            sample_thigh_right=thigh_angle,
         )
         per_match.append(
             {
