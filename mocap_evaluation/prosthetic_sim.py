@@ -135,10 +135,16 @@ class EvalMetrics:
         }
 
 
-def run_kinematic_evaluation(mocap_segment: dict, predicted_knee: np.ndarray) -> dict:
+def run_kinematic_evaluation(
+    mocap_segment: dict,
+    predicted_knee: np.ndarray,
+    sample_thigh_right: Optional[np.ndarray] = None,
+) -> dict:
     ref = _included_to_flexion(np.asarray(mocap_segment["knee_right"], dtype=np.float64))
     pred = _included_to_flexion(np.asarray(predicted_knee, dtype=np.float64))
     T = min(len(ref), len(pred))
+    if sample_thigh_right is not None:
+        T = min(T, len(sample_thigh_right))
     if T <= 0:
         return {
             "com_height_mean": HUMANOID_INIT_POS_Z,
@@ -155,7 +161,10 @@ def run_kinematic_evaluation(mocap_segment: dict, predicted_knee: np.ndarray) ->
 
     ref = ref[:T]
     pred = pred[:T]
-    hip = _included_to_flexion(np.asarray(mocap_segment.get("hip_right", np.full(T, 180.0)), dtype=np.float64)[:T])
+    if sample_thigh_right is not None:
+        hip = _included_to_flexion(np.asarray(sample_thigh_right, dtype=np.float64)[:T])
+    else:
+        hip = _included_to_flexion(np.asarray(mocap_segment.get("hip_right", np.full(T, 180.0)), dtype=np.float64)[:T])
 
     dev = np.zeros(T, dtype=np.float64)
     L1 = L2 = 0.45
@@ -248,20 +257,31 @@ class _MuJoCoRunner:
         self.fps = float(fps)
         self.dt = 1.0 / max(self.fps, 1.0)
 
-    def run(self, mocap_segment: dict, predicted_knee: np.ndarray, fall_threshold: float) -> dict:
+    def run(
+        self,
+        mocap_segment: dict,
+        predicted_knee: np.ndarray,
+        fall_threshold: float,
+        sample_thigh_right: Optional[np.ndarray] = None,
+    ) -> dict:
         model = mujoco.MjModel.from_xml_string(_MJCF)
         model.opt.timestep = self.dt
         data = mujoco.MjData(model)
 
         T = int(min(len(predicted_knee), len(mocap_segment["knee_right"])))
+        if sample_thigh_right is not None:
+            T = int(min(T, len(sample_thigh_right)))
         if T <= 0:
-            out = run_kinematic_evaluation(mocap_segment, predicted_knee)
+            out = run_kinematic_evaluation(mocap_segment, predicted_knee, sample_thigh_right=sample_thigh_right)
             out["mode"] = "mujoco_physics_empty"
             return out
 
         pred = _included_to_flexion(np.asarray(predicted_knee, dtype=np.float64)[:T])
         ref = _included_to_flexion(np.asarray(mocap_segment["knee_right"], dtype=np.float64)[:T])
-        hip_r = _included_to_flexion(np.asarray(mocap_segment.get("hip_right", np.full(T, 180.0)), dtype=np.float64)[:T])
+        if sample_thigh_right is not None:
+            hip_r = _included_to_flexion(np.asarray(sample_thigh_right, dtype=np.float64)[:T])
+        else:
+            hip_r = _included_to_flexion(np.asarray(mocap_segment.get("hip_right", np.full(T, 180.0)), dtype=np.float64)[:T])
         hip_l = _included_to_flexion(np.asarray(mocap_segment.get("hip_left", np.full(T, 180.0)), dtype=np.float64)[:T])
         knee_l = _included_to_flexion(np.asarray(mocap_segment.get("knee_left", np.full(T, 180.0)), dtype=np.float64)[:T])
         ankle_r = _included_to_flexion(np.asarray(mocap_segment.get("ankle_right", np.full(T, 180.0)), dtype=np.float64)[:T])
@@ -351,7 +371,13 @@ class _PyBulletRunner:
                 return idx
         return None
 
-    def run(self, mocap_segment: dict, predicted_knee: np.ndarray, fall_threshold: float) -> dict:
+    def run(
+        self,
+        mocap_segment: dict,
+        predicted_knee: np.ndarray,
+        fall_threshold: float,
+        sample_thigh_right: Optional[np.ndarray] = None,
+    ) -> dict:
         robot = p.loadURDF(
             "humanoid/humanoid.urdf",
             [0.0, 0.0, 3.45],
@@ -373,9 +399,14 @@ class _PyBulletRunner:
         al = self._find_joint(joints, "leftankle")
 
         T = int(min(len(predicted_knee), len(mocap_segment["knee_right"])))
+        if sample_thigh_right is not None:
+            T = int(min(T, len(sample_thigh_right)))
         pred = _included_to_flexion(np.asarray(predicted_knee, dtype=np.float64)[:T])
         ref = _included_to_flexion(np.asarray(mocap_segment["knee_right"], dtype=np.float64)[:T])
-        hip_r = _included_to_flexion(np.asarray(mocap_segment.get("hip_right", np.full(T, 180.0)), dtype=np.float64)[:T])
+        if sample_thigh_right is not None:
+            hip_r = _included_to_flexion(np.asarray(sample_thigh_right, dtype=np.float64)[:T])
+        else:
+            hip_r = _included_to_flexion(np.asarray(mocap_segment.get("hip_right", np.full(T, 180.0)), dtype=np.float64)[:T])
         hip_l = _included_to_flexion(np.asarray(mocap_segment.get("hip_left", np.full(T, 180.0)), dtype=np.float64)[:T])
         knee_l = _included_to_flexion(np.asarray(mocap_segment.get("knee_left", np.full(T, 180.0)), dtype=np.float64)[:T])
         ankle_r = _included_to_flexion(np.asarray(mocap_segment.get("ankle_right", np.full(T, 180.0)), dtype=np.float64)[:T])
@@ -425,7 +456,19 @@ def simulate_prosthetic_walking(
     gif_output_pred: Optional[str] = None,
     gif_output_gt: Optional[str] = None,
     backend: str = "pybullet",
+    sample_thigh_right: Optional[np.ndarray] = None,
 ) -> dict:
+    """Run prosthetic gait simulation.
+
+    Parameters
+    ----------
+    sample_thigh_right:
+        If provided, the right hip/thigh actuator is driven by this signal
+        (in included-angle degrees, same convention as all other angles)
+        instead of the matched mocap segment's hip_right channel.  Use this
+        to keep the right-leg inputs (thigh + knee) anchored to the sample
+        being evaluated rather than the mocap reference.
+    """
     if gif_output_pred or gif_output_gt:
         warnings.warn("GIF export is not implemented in this backend rewrite.", RuntimeWarning, stacklevel=2)
 
@@ -433,33 +476,39 @@ def simulate_prosthetic_walking(
         raise ValueError("backend must be one of {'mujoco','pybullet'}")
 
     if not use_physics:
-        return run_kinematic_evaluation(mocap_segment, predicted_knee)
+        return run_kinematic_evaluation(mocap_segment, predicted_knee, sample_thigh_right=sample_thigh_right)
 
     if backend == "mujoco":
         if not _MUJOCO_AVAILABLE:
             warnings.warn("MuJoCo not installed; falling back to kinematic evaluation.", RuntimeWarning, stacklevel=2)
-            return run_kinematic_evaluation(mocap_segment, predicted_knee)
+            return run_kinematic_evaluation(mocap_segment, predicted_knee, sample_thigh_right=sample_thigh_right)
         if use_gui and not os.environ.get("DISPLAY"):
             warnings.warn("DISPLAY not set; MuJoCo running headless.", RuntimeWarning, stacklevel=2)
             use_gui = False
         try:
-            return _MuJoCoRunner(use_gui=use_gui, fps=fps).run(mocap_segment, predicted_knee, FALL_HEIGHT_THRESHOLD)
+            return _MuJoCoRunner(use_gui=use_gui, fps=fps).run(
+                mocap_segment, predicted_knee, FALL_HEIGHT_THRESHOLD,
+                sample_thigh_right=sample_thigh_right,
+            )
         except Exception as exc:
             warnings.warn(f"MuJoCo simulation failed ({exc}); falling back to kinematic.", RuntimeWarning, stacklevel=2)
-            return run_kinematic_evaluation(mocap_segment, predicted_knee)
+            return run_kinematic_evaluation(mocap_segment, predicted_knee, sample_thigh_right=sample_thigh_right)
 
     if not _PYBULLET_AVAILABLE:
         warnings.warn("PyBullet not installed; falling back to kinematic evaluation.", RuntimeWarning, stacklevel=2)
-        return run_kinematic_evaluation(mocap_segment, predicted_knee)
+        return run_kinematic_evaluation(mocap_segment, predicted_knee, sample_thigh_right=sample_thigh_right)
     if use_gui and not os.environ.get("DISPLAY"):
         warnings.warn("DISPLAY not set; PyBullet running headless.", RuntimeWarning, stacklevel=2)
         use_gui = False
     try:
         with _PyBulletRunner(use_gui=use_gui, fps=fps) as runner:
-            return runner.run(mocap_segment, predicted_knee, FALL_HEIGHT_THRESHOLD)
+            return runner.run(
+                mocap_segment, predicted_knee, FALL_HEIGHT_THRESHOLD,
+                sample_thigh_right=sample_thigh_right,
+            )
     except Exception as exc:
         warnings.warn(f"PyBullet simulation failed ({exc}); falling back to kinematic.", RuntimeWarning, stacklevel=2)
-        return run_kinematic_evaluation(mocap_segment, predicted_knee)
+        return run_kinematic_evaluation(mocap_segment, predicted_knee, sample_thigh_right=sample_thigh_right)
 
 
 def run_visual_demo(use_full_db: bool = False):
