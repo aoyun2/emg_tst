@@ -47,10 +47,84 @@ from mocap_evaluation.mocap_loader import (
     load_aggregated_database,
 )
 from mocap_evaluation.motion_matching import find_best_match, find_top_k_matches
-from mocap_evaluation.prosthetic_sim import simulate_prosthetic_walking
+from mocap_evaluation.prosthetic_sim import simulate_prosthetic_walking, FALL_HEIGHT_THRESHOLD
 from mocap_evaluation.mock_data import generate_mock_curves, save_mock_curves
 from mocap_evaluation.sample_data import extract_real_sample_curves, save_sample_curves
 from mocap_evaluation.external_sample_data import extract_external_sample_curves
+
+
+# ── Simulation visualization ─────────────────────────────────────────────────
+
+
+def plot_simulation(
+    metrics: dict,
+    title: str,
+    out_path: str | Path,
+    fps: float = 200.0,
+) -> None:
+    """Save a 3-panel plot of simulation results (knee angles, CoM, contacts)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    com = np.asarray(metrics.get("com_height_series", []))
+    pred = np.asarray(metrics.get("pred_knee_series", []))
+    ref = np.asarray(metrics.get("ref_knee_series", []))
+    rc = metrics.get("right_contact_frames", [])
+    lc = metrics.get("left_contact_frames", [])
+
+    if pred.size == 0:
+        return
+
+    T = len(pred)
+    t = np.arange(T) / fps
+
+    fig, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
+
+    # Panel 1: Knee angles (flexion convention as stored)
+    ax = axes[0]
+    ax.plot(t, ref, label="Reference (mocap)", linewidth=1.5, alpha=0.8)
+    ax.plot(t, pred, label="Predicted (model)", linewidth=1.5)
+    if metrics.get("fall_detected") and metrics["fall_frame"] >= 0:
+        ff = metrics["fall_frame"] / fps
+        ax.axvline(ff, color="red", linestyle="--", alpha=0.6, label=f"Fall @ {ff:.2f}s")
+    ax.set_ylabel("Knee flexion (deg)")
+    ax.set_title(f"{title}  |  RMSE={metrics.get('knee_rmse_deg', 0):.2f}°  "
+                 f"Stability={metrics.get('stability_score', 0):.2f}")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    # Panel 2: CoM height
+    ax = axes[1]
+    if com.size > 0:
+        ax.plot(t[:len(com)], com, linewidth=1.2, color="steelblue")
+        ax.axhline(FALL_HEIGHT_THRESHOLD, color="red", linestyle="--",
+                    alpha=0.5, label=f"Fall threshold ({FALL_HEIGHT_THRESHOLD}m)")
+        ax.set_ylabel("CoM height (m)")
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+    # Panel 3: Foot contacts
+    ax = axes[2]
+    if rc:
+        rc_t = np.asarray(rc) / fps
+        ax.scatter(rc_t, np.ones(len(rc_t)), marker="|", s=30, color="tab:orange", label="Right foot")
+    if lc:
+        lc_t = np.asarray(lc) / fps
+        ax.scatter(lc_t, np.zeros(len(lc_t)), marker="|", s=30, color="tab:blue", label="Left foot")
+    ax.set_yticks([0, 1])
+    ax.set_yticklabels(["Left", "Right"])
+    ax.set_ylabel("Foot contacts")
+    ax.set_xlabel("Time (s)")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=140)
+    plt.close(fig)
+    print(f"[viz] Simulation plot saved -> {out_path}")
 
 
 # ── Window-length helper ──────────────────────────────────────────────────────
@@ -212,9 +286,6 @@ def run_test_sample(
     mocap_dir: str | Path = "mocap_data",
     out_path: str | Path = "eval_test_sample_results.json",
     top_k: int = 3,
-    use_gui: bool = False,
-    use_physics: bool = True,
-    sim_backend: str = "mujoco",
     match_categories: Optional[List[str]] = None,
     seconds: float = 4.0,
     sample_source: str = "external",
@@ -253,10 +324,7 @@ def run_test_sample(
         predicted_knee_included=curves.predicted_knee_included_deg,
         mocap_dir=mocap_dir,
         top_k=top_k,
-        use_gui=use_gui,
-        use_physics=use_physics,
         out_path=out_path,
-        sim_backend=sim_backend,
         match_categories=match_categories,
     )
     result["test_sample_pred_vs_label_rmse_deg"] = model_rmse
@@ -274,10 +342,7 @@ def evaluate(
     mocap_dir: str | Path = "mocap_data",
     out_path: str | Path  = "eval_results.json",
     n_samples: Optional[int] = None,
-    use_gui: bool = False,
-    use_physics: bool = True,
     device_str: str = "cpu",
-    sim_backend: str = "mujoco",
     match_categories: Optional[List[str]] = None,
 ) -> dict:
     """
@@ -343,9 +408,7 @@ def evaluate(
         # both the right knee and right thigh come from the sample, not mocap.
         metrics = simulate_prosthetic_walking(
             segment, pred_knee_inc,
-            use_physics=use_physics,
-            use_gui=use_gui,
-            backend=sim_backend,
+            use_gui=False,
             sample_thigh_right=thigh_sig,
         )
 
@@ -356,6 +419,12 @@ def evaluate(
         )  # RMSE is invariant to the 180-x shift — compute in original convention
         metrics["elapsed_s"]   = float(time.time() - t0)
         per_window.append(metrics)
+
+        # Save plots for first 5 windows
+        if i < 5:
+            plot_dir = Path(out_path).with_suffix("") / "plots"
+            plot_simulation(metrics, f"Window {i}",
+                            plot_dir / f"window_{i:04d}_sim.png")
 
     # ── Aggregate summary ────────────────────────────────────────────────────
     def _agg(key):
@@ -402,10 +471,7 @@ def evaluate_from_curves(
     predicted_knee_included: np.ndarray,
     mocap_dir: str | Path = "mocap_data",
     top_k: int = 3,
-    use_gui: bool = False,
-    use_physics: bool = True,
     out_path: str | Path = "eval_mock_results.json",
-    sim_backend: str = "mujoco",
     match_categories: Optional[List[str]] = None,
 ) -> dict:
     """Evaluate motion matching directly from label/thigh curves.
@@ -434,25 +500,28 @@ def evaluate_from_curves(
         gt_metrics = simulate_prosthetic_walking(
             segment,
             knee_label_inc,
-            use_physics=use_physics,
-            use_gui=use_gui,
-            backend=sim_backend,
             sample_thigh_right=thigh_angle,
         )
         pred_metrics = simulate_prosthetic_walking(
             segment,
             pred_knee_inc,
-            use_physics=use_physics,
-            use_gui=use_gui,
-            backend=sim_backend,
             sample_thigh_right=thigh_angle,
         )
+        cat = segment.get("category", "unknown")
+
+        # Save simulation plots
+        plot_dir = Path(out_path).with_suffix("") / f"match_{rank:02d}_{cat}"
+        plot_simulation(gt_metrics, f"Ground Truth — match #{rank} [{cat}]",
+                        plot_dir / "ground_truth_sim.png", fps=mocap_db["fps"])
+        plot_simulation(pred_metrics, f"Prediction — match #{rank} [{cat}]",
+                        plot_dir / "prediction_sim.png", fps=mocap_db["fps"])
+
         per_match.append(
             {
                 "match_rank": rank,
                 "start_idx": int(start),
                 "dtw_dist": float(dist),
-                "category": segment.get("category", "unknown"),
+                "category": cat,
                 "ground_truth_replaced_right_knee": gt_metrics,
                 "prediction_replaced_right_knee": pred_metrics,
                 "pred_vs_label_rmse_deg": float(
@@ -496,10 +565,6 @@ def _parse_args():
                     help="Limit number of test windows (None = all)")
     ap.add_argument("--device",      default="cpu",
                     help="torch device (cpu / cuda)")
-    ap.add_argument("--gui",         action="store_true",
-                    help="Enable simulation GUI (headless by default)")
-    ap.add_argument("--no-physics",  action="store_true",
-                    help="(Deprecated — ignored. MuJoCo physics is always used.)")
     ap.add_argument("--test-sample",  action="store_true",
                     help="Run quick evaluation with real test sample curves (no checkpoint needed)")
     ap.add_argument("--mock-data", action="store_true",
@@ -518,8 +583,6 @@ def _parse_args():
                     help="Optional URL override for external gait sample file (.mot/.sto)")
     ap.add_argument("--match-categories", default=None,
                     help="Comma-separated category filter for motion matching (e.g. walk,run)")
-    ap.add_argument("--sim-backend", default="mujoco", choices=["mujoco"],
-                    help="Physics backend (MuJoCo)")
     return ap.parse_args()
 
 
@@ -530,15 +593,6 @@ def main():
     if args.match_categories:
         match_categories = [c.strip() for c in args.match_categories.split(",") if c.strip()]
 
-    if args.no_physics:
-        import warnings
-        warnings.warn(
-            "--no-physics is deprecated and ignored. "
-            "MuJoCo physics simulation is always used.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-
     seconds = _derive_window_seconds(args.data, args.checkpoint)
     print(f"[eval] Window duration derived from model architecture: {seconds:.3f} s")
 
@@ -547,9 +601,6 @@ def main():
             mocap_dir=args.mocap_dir,
             out_path=args.out,
             top_k=args.top_k,
-            use_gui=args.gui,
-            use_physics=True,
-            sim_backend=args.sim_backend,
             match_categories=match_categories,
             seconds=seconds,
             sample_source=args.test_sample_source,
@@ -573,10 +624,7 @@ def main():
             predicted_knee_included=curves.predicted_knee_included_deg,
             mocap_dir=args.mocap_dir,
             top_k=args.top_k,
-            use_gui=args.gui,
-            use_physics=True,
             out_path=args.out,
-            sim_backend=args.sim_backend,
             match_categories=match_categories,
         )
         return
@@ -592,10 +640,7 @@ def main():
             predicted_knee_included=curves.predicted_knee_included_deg,
             mocap_dir=args.mocap_dir,
             top_k=args.top_k,
-            use_gui=args.gui,
-            use_physics=True,
             out_path=args.out,
-            sim_backend=args.sim_backend,
             match_categories=match_categories,
         )
         return
@@ -630,11 +675,8 @@ def main():
         mocap_dir       = args.mocap_dir,
         out_path        = args.out,
         n_samples       = args.n_samples,
-        use_gui         = args.gui,
-        use_physics     = not args.no_physics,
         device_str      = args.device,
-        sim_backend      = args.sim_backend,
-        match_categories   = match_categories,
+        match_categories = match_categories,
     )
 
 

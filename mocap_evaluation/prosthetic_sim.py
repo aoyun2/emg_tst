@@ -13,9 +13,7 @@ Internally we convert to flexion convention for the physics backend.
 from __future__ import annotations
 
 import math
-import os
 import time
-import warnings
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -126,6 +124,12 @@ class EvalMetrics:
             "step_count": int(sr + sl),
             "gait_symmetry": float(sym),
             "stability_score": float(stability),
+            # Raw time series for visualization
+            "com_height_series": com.tolist(),
+            "pred_knee_series": pred.tolist(),
+            "ref_knee_series": ref.tolist(),
+            "right_contact_frames": list(self.right_contact_frames),
+            "left_contact_frames": list(self.left_contact_frames),
         }
 
 
@@ -326,35 +330,36 @@ class _MuJoCoRunner:
                     metrics.fall_detected = True
                     metrics.fall_frame = t
 
+        gui_worked = False
         if self.use_gui:
-            with mujoco.viewer.launch_passive(model, data) as viewer_obj:
-                _step_loop(viewer_obj)
-                # Keep the viewer window open so the user can inspect the
-                # final pose and replay camera angles.  The window stays
-                # until the user closes it manually.
-                print("[MuJoCo] Simulation complete — close the viewer window to continue.")
-                while viewer_obj.is_running():
-                    time.sleep(0.05)
+            try:
+                with mujoco.viewer.launch_passive(model, data) as viewer_obj:
+                    _step_loop(viewer_obj)
+                    print("[MuJoCo] Simulation complete — close the viewer window to continue.")
+                    while viewer_obj.is_running():
+                        time.sleep(0.05)
+                gui_worked = True
+            except Exception as exc:
+                print(f"[MuJoCo] Viewer failed ({exc}), falling back to headless.")
+                mujoco.mj_resetData(model, data)
+                metrics = EvalMetrics.empty()
+                _step_loop(None)
         else:
             _step_loop(None)
 
         out = metrics.to_dict()
-        out["mode"] = "mujoco_physics" + ("+gui" if self.use_gui else "")
+        out["mode"] = "mujoco_physics" + ("+gui" if gui_worked else "")
         return out
 
 
 def simulate_prosthetic_walking(
     mocap_segment: dict,
     predicted_knee: np.ndarray,
-    use_physics: bool = True,
-    use_gui: bool = False,
+    use_gui: bool = True,
     fps: float = SIM_FPS_DEFAULT,
-    gif_output_pred: Optional[str] = None,
-    gif_output_gt: Optional[str] = None,
-    backend: str = "mujoco",
     sample_thigh_right: Optional[np.ndarray] = None,
 ) -> dict:
-    """Run prosthetic gait simulation.
+    """Run prosthetic gait simulation via MuJoCo physics.
 
     Parameters
     ----------
@@ -365,28 +370,10 @@ def simulate_prosthetic_walking(
         to keep the right-leg inputs (thigh + knee) anchored to the sample
         being evaluated rather than the mocap reference.
     """
-    if gif_output_pred or gif_output_gt:
-        warnings.warn("GIF export is not implemented in this backend rewrite.", RuntimeWarning, stacklevel=2)
-
-    if not use_physics:
-        raise RuntimeError(
-            "Physics simulation is required (use_physics=False is no longer supported). "
-            "Use --sim-backend mujoco (default) to run with MuJoCo physics."
-        )
-
     if not _MUJOCO_AVAILABLE:
         raise RuntimeError(
             "MuJoCo is required but not installed.\n"
-            "Install it with:  pip install mujoco\n"
-            "MuJoCo is the only supported simulation backend; "
-            "kinematic fallback has been removed."
-        )
-    if use_gui and not os.environ.get("DISPLAY"):
-        raise RuntimeError(
-            "MuJoCo GUI requested but DISPLAY environment variable is not set.\n"
-            "Either:\n"
-            "  1. Run on a machine with a display (set DISPLAY=:0 or similar)\n"
-            "  2. Use --no-gui to run headless"
+            "Install it with:  pip install mujoco"
         )
     return _MuJoCoRunner(use_gui=use_gui, fps=fps).run(
         mocap_segment, predicted_knee, FALL_HEIGHT_THRESHOLD,
@@ -404,7 +391,7 @@ def run_visual_demo(use_full_db: bool = False):
     qt = db["hip_right"][:T]
     _, _, seg = find_best_match(qk, qt, db)
 
-    out = simulate_prosthetic_walking(seg, qk, use_physics=True, use_gui=True)
+    out = simulate_prosthetic_walking(seg, qk, use_gui=True)
     print("Demo metrics:", out)
 
 
