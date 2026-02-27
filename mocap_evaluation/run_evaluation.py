@@ -47,7 +47,12 @@ from mocap_evaluation.mocap_loader import (
     load_aggregated_database,
 )
 from mocap_evaluation.motion_matching import find_best_match, find_top_k_matches
-from mocap_evaluation.prosthetic_sim import simulate_prosthetic_walking, FALL_HEIGHT_THRESHOLD
+from mocap_evaluation.prosthetic_sim import (
+    simulate_prosthetic_walking,
+    FALL_HEIGHT_THRESHOLD,
+    replay_trajectory,
+    render_simulation_gif,
+)
 from mocap_evaluation.mock_data import generate_mock_curves, save_mock_curves
 from mocap_evaluation.sample_data import extract_real_sample_curves, save_sample_curves
 from mocap_evaluation.external_sample_data import extract_external_sample_curves
@@ -290,6 +295,7 @@ def run_test_sample(
     seconds: float = 4.0,
     sample_source: str = "external",
     external_url: Optional[str] = None,
+    render_gifs: bool = False,
 ) -> dict:
     """Run the motion-matching pipeline using real test sample curves."""
     print("=" * 60)
@@ -326,6 +332,7 @@ def run_test_sample(
         top_k=top_k,
         out_path=out_path,
         match_categories=match_categories,
+        render_gifs=render_gifs,
     )
     result["test_sample_pred_vs_label_rmse_deg"] = model_rmse
     with open(out_path, "w") as f:
@@ -473,6 +480,7 @@ def evaluate_from_curves(
     top_k: int = 3,
     out_path: str | Path = "eval_mock_results.json",
     match_categories: Optional[List[str]] = None,
+    render_gifs: bool = False,
 ) -> dict:
     """Evaluate motion matching directly from label/thigh curves.
 
@@ -494,6 +502,15 @@ def evaluate_from_curves(
 
     per_match = []
     for rank, (start, dist, segment) in enumerate(tqdm(matches, desc="Simulating matches", unit="match"), start=1):
+        cat = segment.get("category", "unknown")
+        plot_dir = Path(out_path).with_suffix("") / f"match_{rank:02d}_{cat}"
+
+        # Build optional GIF/trajectory paths
+        gt_gif = (plot_dir / "ground_truth_sim.gif") if render_gifs else None
+        pred_gif = (plot_dir / "prediction_sim.gif") if render_gifs else None
+        gt_traj = plot_dir / "ground_truth_sim.traj.npz"
+        pred_traj = plot_dir / "prediction_sim.traj.npz"
+
         # Both simulations use the sample's own thigh angle for the right hip
         # actuator so that the right leg (thigh + knee) is always driven by
         # the sample being evaluated, not by the matched mocap reference.
@@ -501,19 +518,21 @@ def evaluate_from_curves(
             segment,
             knee_label_inc,
             sample_thigh_right=thigh_angle,
+            save_trajectory=gt_traj,
+            render_gif=gt_gif,
         )
         pred_metrics = simulate_prosthetic_walking(
             segment,
             pred_knee_inc,
             sample_thigh_right=thigh_angle,
+            save_trajectory=pred_traj,
+            render_gif=pred_gif,
         )
-        cat = segment.get("category", "unknown")
 
         # Save simulation plots
-        plot_dir = Path(out_path).with_suffix("") / f"match_{rank:02d}_{cat}"
-        plot_simulation(gt_metrics, f"Ground Truth — match #{rank} [{cat}]",
+        plot_simulation(gt_metrics, f"Ground Truth -- match #{rank} [{cat}]",
                         plot_dir / "ground_truth_sim.png", fps=mocap_db["fps"])
-        plot_simulation(pred_metrics, f"Prediction — match #{rank} [{cat}]",
+        plot_simulation(pred_metrics, f"Prediction -- match #{rank} [{cat}]",
                         plot_dir / "prediction_sim.png", fps=mocap_db["fps"])
 
         per_match.append(
@@ -583,11 +602,23 @@ def _parse_args():
                     help="Optional URL override for external gait sample file (.mot/.sto)")
     ap.add_argument("--match-categories", default=None,
                     help="Comma-separated category filter for motion matching (e.g. walk,run)")
+    ap.add_argument("--render-gifs", action="store_true",
+                    help="Render animated GIFs of each simulation alongside plots")
+    ap.add_argument("--replay", default=None, metavar="TRAJ.npz",
+                    help="Replay a previously saved trajectory file in the MuJoCo viewer")
+    ap.add_argument("--replay-speed", type=float, default=1.0,
+                    help="Playback speed for --replay (default: 1.0)")
     return ap.parse_args()
 
 
 def main():
     args = _parse_args()
+
+    # ── Replay mode (standalone, no other logic needed) ──────────────
+    if args.replay:
+        print(f"[eval] Replaying trajectory: {args.replay}")
+        replay_trajectory(args.replay, speed=args.replay_speed)
+        return
 
     match_categories = None
     if args.match_categories:
@@ -605,6 +636,7 @@ def main():
             seconds=seconds,
             sample_source=args.test_sample_source,
             external_url=args.external_sample_url,
+            render_gifs=args.render_gifs,
         )
         return
 
@@ -626,6 +658,7 @@ def main():
             top_k=args.top_k,
             out_path=args.out,
             match_categories=match_categories,
+            render_gifs=args.render_gifs,
         )
         return
 
@@ -642,6 +675,7 @@ def main():
             top_k=args.top_k,
             out_path=args.out,
             match_categories=match_categories,
+            render_gifs=args.render_gifs,
         )
         return
 
