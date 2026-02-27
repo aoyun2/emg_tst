@@ -88,7 +88,7 @@ def plot_simulation(
     if metrics.get("fall_detected") and metrics["fall_frame"] >= 0:
         ff = metrics["fall_frame"] / fps
         ax.axvline(ff, color="red", linestyle="--", alpha=0.6, label=f"Fall @ {ff:.2f}s")
-    ax.set_ylabel("Knee flexion (deg)")
+    ax.set_ylabel("Knee angle (deg, 180=straight)")
     ax.set_title(f"{title}  |  RMSE={metrics.get('knee_rmse_deg', 0):.2f}°  "
                  f"Stability={metrics.get('stability_score', 0):.2f}")
     ax.legend(fontsize=8)
