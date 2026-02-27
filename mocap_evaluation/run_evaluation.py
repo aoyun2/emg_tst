@@ -1,13 +1,15 @@
 """
-Prosthetic evaluation pipeline — test sample mode using CMU mocap database.
+Prosthetic evaluation pipeline using CMU mocap database.
 
 Usage
 -----
-    # Default: external OpenSim gait sample → motion match against CMU → simulation
-    python -m mocap_evaluation.run_evaluation
+    # Primary: evaluate a trained model checkpoint against CMU mocap
+    python -m mocap_evaluation.run_evaluation \\
+        --checkpoint checkpoints/<run>/fold_01/reg_best.pt \\
+        --data samples_dataset.npy
 
-    # Use a walking segment from the CMU DB itself as the query
-    python -m mocap_evaluation.run_evaluation --test-sample-source mocap
+    # Fallback (no trained model): use test sample curves instead
+    python -m mocap_evaluation.run_evaluation --test-sample
 
     # Replay a saved trajectory in MuJoCo viewer
     python -m mocap_evaluation.run_evaluation --replay path/to/traj.npz
@@ -15,7 +17,7 @@ Usage
 Pipeline
 --------
 1.  Download CMU BVH database (cached after first parse)
-2.  Extract test sample curves (external gait data or from CMU DB)
+2.  Load trained model + dataset  (or extract test sample curves with --test-sample)
 3.  Motion-match query against CMU database (L2 pre-filter → DTW)
 4.  Simulate: mocap drives all joints except right knee (model prediction)
 5.  Collect metrics → JSON output
@@ -37,7 +39,6 @@ from tqdm import tqdm
 from emg_tst.model import TSTEncoder, TSTRegressor
 from emg_tst.data import StandardScaler
 from mocap_evaluation.mocap_loader import (
-    ALL_DATASETS,
     TARGET_FPS,
     load_aggregated_database,
 )
@@ -290,10 +291,12 @@ def run_test_sample(
     sample_source: str = "external",
     external_url: Optional[str] = None,
     render_gifs: bool = False,
-    datasets: Optional[List[str]] = None,
     use_cache: bool = True,
 ) -> dict:
-    """Run the motion-matching pipeline using real test sample curves."""
+    """Run the motion-matching pipeline using real test sample curves.
+
+    This is a fallback mode for when no trained model checkpoint is available.
+    """
     print("=" * 60)
     print("TEST SAMPLE -- real mocap query -> motion matching -> simulation")
     print("=" * 60)
@@ -329,7 +332,6 @@ def run_test_sample(
         out_path=out_path,
         match_categories=match_categories,
         render_gifs=render_gifs,
-        datasets=datasets,
         use_cache=use_cache,
     )
     result["test_sample_pred_vs_label_rmse_deg"] = model_rmse
@@ -349,7 +351,6 @@ def evaluate(
     n_samples: Optional[int] = None,
     device_str: str = "cpu",
     match_categories: Optional[List[str]] = None,
-    datasets: Optional[List[str]] = None,
     use_cache: bool = True,
 ) -> dict:
     """
@@ -375,11 +376,10 @@ def evaluate(
     print(f"       {N} windows  shape={X.shape}")
 
     # ── Load / generate mocap database ──────────────────────────────────────
-    ds_label = ", ".join(datasets) if datasets else "all"
-    print(f"[eval] Loading mocap database from: {mocap_dir} (datasets: {ds_label})")
+    print(f"[eval] Loading CMU mocap database from: {mocap_dir}")
     mocap_db = load_aggregated_database(
         mocap_root=mocap_dir, try_download=True,
-        datasets=datasets, use_cache=use_cache,
+        datasets=["cmu"], use_cache=use_cache,
     )
     db_dur   = len(mocap_db["knee_right"]) / mocap_db["fps"]
     n_files = len(mocap_db.get("file_boundaries", []))
@@ -485,7 +485,6 @@ def evaluate_from_curves(
     out_path: str | Path = "eval_mock_results.json",
     match_categories: Optional[List[str]] = None,
     render_gifs: bool = False,
-    datasets: Optional[List[str]] = None,
     use_cache: bool = True,
 ) -> dict:
     """Evaluate motion matching directly from label/thigh curves.
@@ -498,7 +497,7 @@ def evaluate_from_curves(
 
     mocap_db = load_aggregated_database(
         mocap_root=mocap_dir, try_download=True,
-        datasets=datasets, use_cache=use_cache,
+        datasets=["cmu"], use_cache=use_cache,
     )
 
     matches = find_top_k_matches(
@@ -581,16 +580,33 @@ def _parse_args():
     ap = argparse.ArgumentParser(
         description="Evaluate prosthetic knee via motion-capture simulation (CMU dataset)"
     )
-    ap.add_argument("--mocap-dir",   default="mocap_data",
-                    help="Directory containing BVH files (or where to download them)")
-    ap.add_argument("--out",         default="eval_test_sample_results.json",
-                    help="Output JSON file for metrics")
-    ap.add_argument("--top-k", type=int, default=3,
-                    help="Top-k motion matches to simulate")
+
+    # ── Primary mode: trained model evaluation ──
+    ap.add_argument("--checkpoint", default=None,
+                    help="Path to reg_best.pt checkpoint (required unless --test-sample)")
+    ap.add_argument("--data", default="samples_dataset.npy",
+                    help="Path to samples_dataset.npy produced by split_to_samples.py")
+    ap.add_argument("--n-samples", type=int, default=None,
+                    help="Limit the number of evaluation windows (default: all)")
+    ap.add_argument("--device", default="cpu",
+                    help="Torch device (cpu or cuda)")
+
+    # ── Fallback mode: test sample (no trained model needed) ──
+    ap.add_argument("--test-sample", action="store_true",
+                    help="Use test sample curves instead of a trained model "
+                         "(for when no checkpoint is available)")
     ap.add_argument("--test-sample-source", choices=["external", "mocap"], default="external",
-                    help="Source for test sample (external = out-of-db OpenSim, mocap = from CMU DB)")
+                    help="Source for test sample (external = online OpenSim, mocap = from CMU DB)")
     ap.add_argument("--external-sample-url", default=None,
                     help="Optional URL override for external gait sample file (.mot/.sto)")
+
+    # ── Shared options ──
+    ap.add_argument("--mocap-dir",   default="mocap_data",
+                    help="Directory containing BVH files (or where to download them)")
+    ap.add_argument("--out",         default=None,
+                    help="Output JSON file for metrics (auto-selected if omitted)")
+    ap.add_argument("--top-k", type=int, default=3,
+                    help="Top-k motion matches to simulate (test-sample mode)")
     ap.add_argument("--match-categories", default=None,
                     help="Comma-separated category filter for motion matching (e.g. walk,run)")
     ap.add_argument("--render-gifs", action="store_true",
@@ -617,23 +633,43 @@ def main():
     if args.match_categories:
         match_categories = [c.strip() for c in args.match_categories.split(",") if c.strip()]
 
-    seconds = _derive_window_seconds(None, None)
-    print(f"[eval] Window duration: {seconds:.3f} s")
-
     use_cache = not args.no_cache
 
-    run_test_sample(
-        mocap_dir=args.mocap_dir,
-        out_path=args.out,
-        top_k=args.top_k,
-        match_categories=match_categories,
-        seconds=seconds,
-        sample_source=args.test_sample_source,
-        external_url=args.external_sample_url,
-        render_gifs=args.render_gifs,
-        datasets=["cmu"],
-        use_cache=use_cache,
-    )
+    if args.test_sample:
+        # ── Fallback: test sample mode (no trained model needed) ─────
+        out_path = args.out or "eval_test_sample_results.json"
+        seconds = _derive_window_seconds(args.data, None)
+        print(f"[eval] Window duration: {seconds:.3f} s")
+
+        run_test_sample(
+            mocap_dir=args.mocap_dir,
+            out_path=out_path,
+            top_k=args.top_k,
+            match_categories=match_categories,
+            seconds=seconds,
+            sample_source=args.test_sample_source,
+            external_url=args.external_sample_url,
+            render_gifs=args.render_gifs,
+            use_cache=use_cache,
+        )
+    else:
+        # ── Primary: trained model evaluation ────────────────────────
+        if args.checkpoint is None:
+            print("Error: --checkpoint is required (or use --test-sample "
+                  "if no trained model is available).")
+            sys.exit(1)
+
+        out_path = args.out or "eval_results.json"
+        evaluate(
+            checkpoint_path=args.checkpoint,
+            samples_path=args.data,
+            mocap_dir=args.mocap_dir,
+            out_path=out_path,
+            n_samples=args.n_samples,
+            device_str=args.device,
+            match_categories=match_categories,
+            use_cache=use_cache,
+        )
 
 
 if __name__ == "__main__":

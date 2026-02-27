@@ -1,29 +1,16 @@
 """
 Mocap data loader.
 
-Source : Bandai Namco Research Motiondataset-1 & -2, CMU Graphics Lab
-         Motion Capture Database, LAFAN1 (Ubisoft La Forge), and SFU Motion
-         Capture Database — all in BVH format with per-file category metadata.
+Source : CMU Graphics Lab Motion Capture Database — BVH format with
+         per-file category metadata.
 
-All sources are stored in per-dataset sub-folders under a common root
-(default ``mocap_data/``):
+Data is stored under a common root (default ``mocap_data/``):
 
     mocap_data/
-        bandai/      — Bandai Namco Motiondataset-2
-        bandai_ds1/  — Bandai Namco Motiondataset-1
         cmu/         — CMU Graphics Lab
-        lafan1/      — Ubisoft LAFAN1
-        sfu/         — SFU (Simon Fraser University)
 
-Download all sources at once:
-    python -m mocap_evaluation.download_all
-
-Or individually:
-    python -m mocap_evaluation.bandai_namco_downloader
-    python -m mocap_evaluation.bandai_namco_ds1_downloader
+Download:
     python -m mocap_evaluation.cmu_downloader
-    python -m mocap_evaluation.lafan1_downloader
-    python -m mocap_evaluation.sfu_downloader
 
 Returned database dict (all angles in **degrees**, all arrays at TARGET_FPS):
     knee_right   : (N,)   right knee included angle (180 = straight)
@@ -36,7 +23,7 @@ Returned database dict (all angles in **degrees**, all arrays at TARGET_FPS):
     trunk_lean   : (N,)   trunk forward lean (+= forward)
     root_pos     : (N, 3) pelvis position in metres
     fps          : float  always TARGET_FPS after resampling
-    source       : str    e.g. "bandai_bvh+cmu_bvh+lafan1_bvh+sfu_bvh+aggregated"
+    source       : str    e.g. "cmu_bvh+aggregated"
     categories   : (N,) str array — per-frame motion category label (optional)
     file_boundaries : list of (start, end, filename, category) tuples
 """
@@ -61,7 +48,6 @@ TARGET_FPS: int = 200          # match our IMU / EMG pipeline rate
 MOCAP_DATA_DIR = Path("mocap_data")
 
 # Mapping from CMU BVH joint names → our semantic names.
-# Also applies to LAFAN1 and SFU skeletons which use the same naming.
 _CMU_JOINT_MAP = {
     "RightLeg":   "knee_right",   # right knee
     "LeftLeg":    "knee_left",
@@ -72,20 +58,6 @@ _CMU_JOINT_MAP = {
     "LowerBack":  "pelvis_tilt",
     "Spine":      "trunk_lean",
 }
-
-# Mapping for Bandai Namco Research Motiondataset-2 BVH files.
-# Joint names differ from CMU; root position is on "joint_Root" not "Hips".
-_BANDAI_JOINT_MAP = {
-    "LowerLeg_R": "knee_right",
-    "LowerLeg_L": "knee_left",
-    "UpperLeg_R": "hip_right",
-    "UpperLeg_L": "hip_left",
-    "Foot_R":     "ankle_right",
-    "Foot_L":     "ankle_left",
-    "Spine":      "trunk_lean",
-    "Hips":       "pelvis_tilt",
-}
-_BANDAI_ROOT_JOINT = "joint_Root"
 
 # ── Normal gait kinematics from Winter (2009) ─────────────────────────────────
 # Each dict maps gait-cycle percentage [0, 100] → angle in degrees.
@@ -141,25 +113,14 @@ def _extract_angles_from_bvh(parser: BVHParser) -> Optional[dict]:
     """
     Extract walking-relevant joint angles from a parsed BVH file.
 
-    Supports the CMU cgspeed skeleton (joint names "RightLeg", etc.), the
-    Bandai Namco Motiondataset-2 skeleton ("LowerLeg_R", etc.), and any
-    skeleton using the MotionBuilder naming convention (LAFAN1, SFU, etc.).
-    The correct joint map is selected automatically based on joint names
-    present in the parsed file.
+    Supports the CMU cgspeed skeleton (joint names "RightLeg", etc.).
 
     Returns the database dict at TARGET_FPS, or None if key joints are missing.
     """
     src_fps = parser.fps
-
-    # ── Auto-detect skeleton ───────────────────────────────────────────────
-    if "LowerLeg_R" in parser.joints and "LowerLeg_L" in parser.joints:
-        joint_map       = _BANDAI_JOINT_MAP
-        root_joint_name = _BANDAI_ROOT_JOINT
-        source_tag      = "bandai_bvh"
-    else:
-        joint_map       = _CMU_JOINT_MAP
-        root_joint_name = "Hips"
-        source_tag      = "cmu_bvh"
+    joint_map       = _CMU_JOINT_MAP
+    root_joint_name = "Hips"
+    source_tag      = "cmu_bvh"
 
     angles: dict = {}
     for bvh_joint, key in joint_map.items():
@@ -261,79 +222,8 @@ def _category_for_file(filename: str) -> str:
     """
     Look up the motion category for a BVH filename.
 
-    Recognises Bandai Namco filenames (``dataset-2_{motion}_{style}_{id}.bvh``),
-    LAFAN1 filenames (``{action}{N}_subject{S}.bvh``),
-    SFU filenames (``{subject}_{trial}.bvh``),
-    and CMU catalog format (``07_01.bvh``).
+    Recognises CMU catalog format (``07_01.bvh``).
     """
-    # ── Bandai Namco filenames (Dataset-1 and Dataset-2) ──────────────────
-    if filename.startswith("dataset-"):
-        if "_walk" in filename or "_dash" in filename:
-            return "walk"
-        if "_run" in filename:
-            return "run"
-        if "_dance" in filename:
-            return "dance"
-        if "_kick" in filename or "_punch" in filename or "_slash" in filename:
-            return "sport"
-        if "_bow" in filename or "_bye" in filename or "_guide" in filename:
-            return "misc"
-        return "misc"
-
-    # ── LAFAN1 filenames (e.g. "aiming1_subject1.bvh", "walk1_subject2.bvh") ──
-    lower = filename.lower()
-    if "_subject" in lower:
-        action = lower.split("_subject")[0]
-        # Strip trailing digits to get base action name
-        action_base = action.rstrip("0123456789")
-        if action_base in ("walk", "walking"):
-            return "walk"
-        if action_base in ("run", "running", "sprint"):
-            return "run"
-        if action_base in ("jump", "jumping"):
-            return "jump"
-        if action_base in ("dance", "dancing"):
-            return "dance"
-        if action_base in ("fight", "fighting", "fightandsports",
-                            "punch", "kick"):
-            return "sport"
-        if action_base in ("aim", "aiming"):
-            return "misc"
-        if action_base in ("ground", "obstacle", "obstacles",
-                            "push", "pushandfall", "pushandstumble",
-                            "fallandgetup", "multipleactions"):
-            return "misc"
-        return action_base if action_base else "misc"
-
-    # ── SFU filenames (e.g. "0005_Walking001.bvh", "0017_SpeedVault001.bvh") ──
-    # Pattern: 4-digit subject ID + underscore + MotionNameNNN.bvh
-    if len(lower) > 5 and lower[:4].isdigit() and lower[4] == "_":
-        motion = lower[5:].split(".")[0].rstrip("0123456789")
-        if motion in ("walking", "backwardswalk", "catwalk", "tiptoe", "moonwalk"):
-            return "walk"
-        if motion in ("running", "jogging", "slowtrot", "runningonbench"):
-            return "run"
-        if motion in ("jumping", "2feetjump", "jumprope", "jumpandroll",
-                       "jumpoverobstacle", "hopoverobstacle", "jumpingonbench"):
-            return "jump"
-        if motion in ("kicking", "boxing", "punching", "wushukicks"):
-            return "sport"
-        if motion in ("cartwheel", "speedvault", "monkeyvault", "parkourroll"):
-            return "exercise"
-        if motion in ("chacha", "danceturns", "traditionalchinesedance",
-                       "xinjiang", "basicbollywooddance", "advancebollywooddance"):
-            return "dance"
-        if motion in ("basickendo", "kirikaeshi", "kendokata"):
-            return "sport"
-        if motion in ("yoga", "bridge"):
-            return "exercise"
-        if motion in ("skipping", "sideskip", "stomping", "crawling"):
-            return "misc"
-        if motion in ("balance",):
-            return "balance"
-        return motion if motion else "misc"
-
-    # ── CMU catalog lookup ─────────────────────────────────────────────────
     try:
         from mocap_evaluation.cmu_catalog import CATALOG
     except ImportError:
@@ -348,17 +238,6 @@ def _category_for_file(filename: str) -> str:
 # ── Auto-download helpers ─────────────────────────────────────────────────────
 
 
-def _auto_download_bandai(dest_dir: Path) -> None:
-    if sorted(dest_dir.glob("*.bvh")):
-        return
-    try:
-        from mocap_evaluation.bandai_namco_downloader import download_locomotion
-        print(f"[mocap_loader] Downloading Bandai locomotion to {dest_dir} …")
-        download_locomotion(dest_dir=dest_dir, verbose=True)
-    except Exception as exc:
-        print(f"  Bandai download failed: {exc}")
-
-
 def _auto_download_cmu(dest_dir: Path) -> None:
     if sorted(dest_dir.glob("*.bvh")):
         return
@@ -370,37 +249,6 @@ def _auto_download_cmu(dest_dir: Path) -> None:
         print(f"  CMU download failed: {exc}")
 
 
-def _auto_download_lafan1(dest_dir: Path) -> None:
-    if sorted(dest_dir.glob("*.bvh")):
-        return
-    try:
-        from mocap_evaluation.lafan1_downloader import download_all
-        print(f"[mocap_loader] Downloading LAFAN1 data to {dest_dir} …")
-        download_all(dest_dir=dest_dir)
-    except Exception as exc:
-        print(f"  LAFAN1 download failed: {exc}")
-
-
-def _auto_download_bandai_ds1(dest_dir: Path) -> None:
-    if sorted(dest_dir.glob("*.bvh")):
-        return
-    try:
-        from mocap_evaluation.bandai_namco_ds1_downloader import download_all
-        print(f"[mocap_loader] Downloading Bandai DS1 to {dest_dir} …")
-        download_all(dest_dir=dest_dir, verbose=True)
-    except Exception as exc:
-        print(f"  Bandai DS1 download failed: {exc}")
-
-
-def _auto_download_sfu(dest_dir: Path) -> None:
-    if sorted(dest_dir.glob("*.bvh")):
-        return
-    try:
-        from mocap_evaluation.sfu_downloader import download_all
-        print(f"[mocap_loader] Downloading SFU data to {dest_dir} …")
-        download_all(dest_dir=dest_dir)
-    except Exception as exc:
-        print(f"  SFU download failed: {exc}")
 
 
 # ── Concatenation ─────────────────────────────────────────────────────────────
@@ -519,14 +367,10 @@ _DATASET_REGISTRY: Dict[str, tuple] = {}
 
 def _register_datasets():
     """Populate the dataset registry (called once at import time)."""
-    _DATASET_REGISTRY["bandai"] = ("bandai", _auto_download_bandai)
-    _DATASET_REGISTRY["bandai_ds1"] = ("bandai_ds1", _auto_download_bandai_ds1)
     _DATASET_REGISTRY["cmu"] = ("cmu", _auto_download_cmu)
-    _DATASET_REGISTRY["lafan1"] = ("lafan1", _auto_download_lafan1)
-    _DATASET_REGISTRY["sfu"] = ("sfu", _auto_download_sfu)
 
 
-ALL_DATASETS = ("bandai", "bandai_ds1", "cmu", "lafan1", "sfu")
+ALL_DATASETS = ("cmu",)
 
 
 # ── Main entry point — always aggregated ──────────────────────────────────────
@@ -552,11 +396,7 @@ def load_aggregated_database(
                    BVH file listing changes (new/removed files).
 
     Sub-folders searched (relative to *mocap_root*):
-        bandai/      — Bandai Namco Motiondataset-2
-        bandai_ds1/  — Bandai Namco Motiondataset-1
         cmu/         — CMU Graphics Lab
-        lafan1/      — Ubisoft LAFAN1
-        sfu/         — SFU Motion Capture Database
     """
     _register_datasets()
     mocap_root = Path(mocap_root)
@@ -612,13 +452,8 @@ def load_aggregated_database(
         raise RuntimeError(
             f"No BVH mocap data available for datasets: {ds_list}.\n"
             f"Expected files in sub-folders of: {mocap_root}\n"
-            "Download everything at once:\n"
-            "  python -m mocap_evaluation.download_all\n"
-            "Or individually:\n"
-            "  python -m mocap_evaluation.cmu_downloader\n"
-            "  python -m mocap_evaluation.bandai_namco_downloader\n"
-            "  python -m mocap_evaluation.lafan1_downloader\n"
-            "  python -m mocap_evaluation.sfu_downloader"
+            "Download with:\n"
+            "  python -m mocap_evaluation.cmu_downloader"
         )
 
     combined = _concatenate_databases(all_segments, meta=all_meta)
