@@ -335,6 +335,12 @@ class _MuJoCoRunner:
         if self.use_gui:
             with mujoco.viewer.launch_passive(model, data) as viewer_obj:
                 _step_loop(viewer_obj)
+                # Keep the viewer window open so the user can inspect the
+                # final pose and replay camera angles.  The window stays
+                # until the user closes it manually.
+                print("[MuJoCo] Simulation complete — close the viewer window to continue.")
+                while viewer_obj.is_running():
+                    time.sleep(0.05)
         else:
             _step_loop(None)
 
@@ -476,39 +482,50 @@ def simulate_prosthetic_walking(
         raise ValueError("backend must be one of {'mujoco','pybullet'}")
 
     if not use_physics:
-        return run_kinematic_evaluation(mocap_segment, predicted_knee, sample_thigh_right=sample_thigh_right)
+        raise RuntimeError(
+            "Physics simulation is required (use_physics=False is no longer supported). "
+            "Use --sim-backend mujoco (default) to run with MuJoCo physics."
+        )
 
     if backend == "mujoco":
         if not _MUJOCO_AVAILABLE:
-            warnings.warn("MuJoCo not installed; falling back to kinematic evaluation.", RuntimeWarning, stacklevel=2)
-            return run_kinematic_evaluation(mocap_segment, predicted_knee, sample_thigh_right=sample_thigh_right)
+            raise RuntimeError(
+                "MuJoCo is required but not installed.\n"
+                "Install it with:  pip install mujoco\n"
+                "MuJoCo is the only supported simulation backend; "
+                "kinematic fallback has been removed."
+            )
         if use_gui and not os.environ.get("DISPLAY"):
-            warnings.warn("DISPLAY not set; MuJoCo running headless.", RuntimeWarning, stacklevel=2)
-            use_gui = False
-        try:
-            return _MuJoCoRunner(use_gui=use_gui, fps=fps).run(
-                mocap_segment, predicted_knee, FALL_HEIGHT_THRESHOLD,
-                sample_thigh_right=sample_thigh_right,
+            raise RuntimeError(
+                "MuJoCo GUI requested but DISPLAY environment variable is not set.\n"
+                "Either:\n"
+                "  1. Run on a machine with a display (set DISPLAY=:0 or similar)\n"
+                "  2. Use --no-gui to run headless"
             )
-        except Exception as exc:
-            warnings.warn(f"MuJoCo simulation failed ({exc}); falling back to kinematic.", RuntimeWarning, stacklevel=2)
-            return run_kinematic_evaluation(mocap_segment, predicted_knee, sample_thigh_right=sample_thigh_right)
+        return _MuJoCoRunner(use_gui=use_gui, fps=fps).run(
+            mocap_segment, predicted_knee, FALL_HEIGHT_THRESHOLD,
+            sample_thigh_right=sample_thigh_right,
+        )
 
+    # backend == "pybullet"
     if not _PYBULLET_AVAILABLE:
-        warnings.warn("PyBullet not installed; falling back to kinematic evaluation.", RuntimeWarning, stacklevel=2)
-        return run_kinematic_evaluation(mocap_segment, predicted_knee, sample_thigh_right=sample_thigh_right)
+        raise RuntimeError(
+            "PyBullet is required but not installed.\n"
+            "Install it with:  pip install pybullet\n"
+            "Or switch to MuJoCo:  --sim-backend mujoco"
+        )
     if use_gui and not os.environ.get("DISPLAY"):
-        warnings.warn("DISPLAY not set; PyBullet running headless.", RuntimeWarning, stacklevel=2)
-        use_gui = False
-    try:
-        with _PyBulletRunner(use_gui=use_gui, fps=fps) as runner:
-            return runner.run(
-                mocap_segment, predicted_knee, FALL_HEIGHT_THRESHOLD,
-                sample_thigh_right=sample_thigh_right,
-            )
-    except Exception as exc:
-        warnings.warn(f"PyBullet simulation failed ({exc}); falling back to kinematic.", RuntimeWarning, stacklevel=2)
-        return run_kinematic_evaluation(mocap_segment, predicted_knee, sample_thigh_right=sample_thigh_right)
+        raise RuntimeError(
+            "PyBullet GUI requested but DISPLAY environment variable is not set.\n"
+            "Either:\n"
+            "  1. Run on a machine with a display (set DISPLAY=:0 or similar)\n"
+            "  2. Use --no-gui to run headless"
+        )
+    with _PyBulletRunner(use_gui=use_gui, fps=fps) as runner:
+        return runner.run(
+            mocap_segment, predicted_knee, FALL_HEIGHT_THRESHOLD,
+            sample_thigh_right=sample_thigh_right,
+        )
 
 
 def run_visual_demo(use_full_db: bool = False):
