@@ -134,17 +134,16 @@ def _derive_window_seconds(
     data_path: str | Path | None,
     checkpoint_path: str | Path | None = None,
 ) -> float:
-    """Derive sample window duration (in seconds) from the dataset or model.
+    """Derive the per-sample window duration (in seconds) from the dataset or model.
 
-    When both *checkpoint_path* and *data_path* are provided, the dataset
-    ``window`` field determines the evaluation window length.  If the
-    checkpoint ``seq_len`` differs, that is fine — the prediction function
-    uses sliding-window inference to cover the full evaluation window.
+    This returns the **training** window size (e.g. 1 second), not the
+    evaluation segment length.  The evaluation script concatenates multiple
+    training windows to form longer segments for physics simulation.
 
-    Priority (when only one source is available):
+    Priority:
     1. Dataset ``window`` field from *samples_dataset.npy*.
-    2. Checkpoint ``model_cfg["seq_len"]`` (exact model sequence length).
-    3. Architecture default: 1000 samples @ 200 Hz = 5.0 s.
+    2. Checkpoint ``model_cfg["seq_len"]``.
+    3. Architecture default: 200 samples @ 200 Hz = 1.0 s.
     """
     dataset_window: int | None = None
     ckpt_seq_len: int | None = None
@@ -155,7 +154,7 @@ def _derive_window_seconds(
             d = np.load(p, allow_pickle=True)
             if isinstance(d, np.ndarray):
                 d = d.item()
-            dataset_window = int(d.get("window", 1000))
+            dataset_window = int(d.get("window", 200))
 
     if checkpoint_path is not None:
         p = Path(checkpoint_path)
@@ -166,15 +165,13 @@ def _derive_window_seconds(
             except Exception:
                 pass
 
-    # Dataset window determines evaluation length; checkpoint seq_len may
-    # differ — the prediction function handles this via sliding window.
     if dataset_window is not None:
         return dataset_window / TARGET_FPS
 
     if ckpt_seq_len is not None:
         return ckpt_seq_len / TARGET_FPS
 
-    return 1000 / TARGET_FPS
+    return 200 / TARGET_FPS
 
 
 # ── Checkpoint loader ─────────────────────────────────────────────────────────
@@ -379,6 +376,52 @@ def run_test_sample(
 # ── Main evaluation loop ──────────────────────────────────────────────────────
 
 
+EVAL_SECONDS_DEFAULT = 5.0  # physics evaluation window (seconds)
+
+
+def _build_eval_segments(
+    X: np.ndarray,
+    y_seq: np.ndarray,
+    windows_per_seg: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Concatenate consecutive training windows into longer eval segments.
+
+    Parameters
+    ----------
+    X        : (N, W, F) per-window features
+    y_seq    : (N, W)    per-window knee angle labels
+    windows_per_seg : number of consecutive windows to merge
+
+    Returns
+    -------
+    X_seg   : (M, W*windows_per_seg, F)
+    y_seg   : (M, W*windows_per_seg)
+    """
+    N, W, F = X.shape
+    k = windows_per_seg
+    M = N // k  # drop leftover windows that don't fill a full segment
+    if M == 0:
+        # Not enough windows — use all of them as a single segment
+        X_cat = np.concatenate(X, axis=0)[np.newaxis]  # (1, N*W, F)
+        y_cat = np.concatenate(y_seq, axis=0)[np.newaxis]  # (1, N*W)
+        return X_cat, y_cat
+
+    X_seg = np.concatenate(
+        [X[i * k : (i + 1) * k] for i in range(M)], axis=1
+    ).reshape(M, W * k, F)
+    # np.concatenate along axis=0 for each group doesn't give us (M, W*k, F)
+    # directly, so build explicitly:
+    X_seg = np.zeros((M, W * k, F), dtype=X.dtype)
+    y_seg = np.zeros((M, W * k), dtype=y_seq.dtype)
+    for i in range(M):
+        for j in range(k):
+            idx = i * k + j
+            X_seg[i, j * W : (j + 1) * W, :] = X[idx]
+            y_seg[i, j * W : (j + 1) * W] = y_seq[idx]
+
+    return X_seg, y_seg
+
+
 def evaluate(
     checkpoint_path: str | Path,
     samples_path: str | Path,
@@ -388,13 +431,19 @@ def evaluate(
     device_str: str = "cpu",
     match_categories: Optional[List[str]] = None,
     use_cache: bool = True,
+    eval_seconds: float = EVAL_SECONDS_DEFAULT,
 ) -> dict:
     """
     Full prosthetic evaluation pipeline.
 
+    Training windows (e.g. 1 s) are concatenated into longer evaluation
+    segments (default 5 s) so the physics simulation runs long enough to
+    reveal falls.  The model predicts over each segment using sliding-window
+    inference.
+
     Returns
     -------
-    dict  with keys 'per_window' (list) and 'summary' (aggregated stats)
+    dict  with keys 'per_segment' (list) and 'summary' (aggregated stats)
     """
     device = torch.device(device_str)
     print(f"[eval] Device: {device}")
@@ -408,8 +457,18 @@ def evaluate(
     # ── Load samples ────────────────────────────────────────────────────────
     print(f"[eval] Loading samples: {samples_path}")
     X, y_seq, thigh_col = load_samples(samples_path, max_samples=n_samples)
-    N = len(X)
-    print(f"       {N} windows  shape={X.shape}")
+    N, W, F = X.shape
+    train_window_sec = W / TARGET_FPS
+    print(f"       {N} windows  shape={X.shape}  ({train_window_sec:.1f}s each)")
+
+    # ── Concatenate into longer eval segments ───────────────────────────────
+    windows_per_seg = max(1, int(round(eval_seconds / train_window_sec)))
+    actual_eval_sec = windows_per_seg * train_window_sec
+    X_seg, y_seg = _build_eval_segments(X, y_seq, windows_per_seg)
+    M = len(X_seg)
+    print(f"[eval] Eval segments: {M} × {windows_per_seg} windows "
+          f"= {actual_eval_sec:.1f}s each  "
+          f"(model seq_len={model_cfg['seq_len']})")
 
     # ── Load / generate mocap database ──────────────────────────────────────
     print(f"[eval] Loading CMU mocap database from: {mocap_dir}")
@@ -423,26 +482,24 @@ def evaluate(
     print(f"       {db_dur:.1f} s @ {mocap_db['fps']:.0f} Hz  "
           f"(source: {mocap_db['source']}{extra})")
 
-    # ── Per-window loop ──────────────────────────────────────────────────────
-    per_window = []
-    for i in tqdm(range(N), desc="Evaluating windows", unit="win"):
+    # ── Per-segment loop ────────────────────────────────────────────────────
+    per_segment = []
+    for i in tqdm(range(M), desc="Evaluating segments", unit="seg"):
         t0 = time.time()
 
-        x_win      = X[i]                    # (W, F)
-        knee_label = y_seq[i]                # (W,) ground-truth knee angle (deg)
-        thigh_sig  = x_win[:, thigh_col]     # (W,) raw thigh angle feature
+        x_seg_i    = X_seg[i]                    # (S, F)  S = W * windows_per_seg
+        knee_label = y_seg[i]                     # (S,)
+        thigh_sig  = x_seg_i[:, thigh_col]        # (S,)
 
-        # Model prediction
+        # Model prediction (sliding window handles S > model seq_len)
         pred_knee = predict_knee_sequence(
-            model, scaler, x_win, feature_cols, device
+            model, scaler, x_seg_i, feature_cols, device
         )
 
-        # Standardized convention: 180° = straight (rigtest enclosed angle).
-        # BVH-derived database angles are normalized to the same convention.
         knee_label_inc = knee_label.astype(np.float32)
         pred_knee_inc = pred_knee.astype(np.float32)
 
-        # Motion matching (included-angle convention)
+        # Motion matching on the full eval segment
         _, dtw_dist, segment = find_best_match(
             knee_label_inc,
             thigh_sig,
@@ -450,42 +507,43 @@ def evaluate(
             categories=match_categories,
         )
 
-        # Simulation consumes the same included-angle convention.
-        # The sample's thigh angle drives the right hip actuator so that
-        # both the right knee and right thigh come from the sample, not mocap.
+        # Physics simulation over the full segment length
         metrics = simulate_prosthetic_walking(
             segment, pred_knee_inc,
             use_gui=False,
             sample_thigh_right=thigh_sig,
         )
 
-        metrics["window_idx"]  = i
-        metrics["dtw_dist"]    = float(dtw_dist)
-        metrics["pred_rmse"]   = float(
+        metrics["segment_idx"]  = i
+        metrics["dtw_dist"]     = float(dtw_dist)
+        metrics["pred_rmse"]    = float(
             np.sqrt(np.mean((pred_knee - knee_label) ** 2))
-        )  # RMSE is invariant to the 180-x shift — compute in original convention
-        metrics["elapsed_s"]   = float(time.time() - t0)
-        per_window.append(metrics)
+        )
+        metrics["elapsed_s"]    = float(time.time() - t0)
+        metrics["segment_seconds"] = actual_eval_sec
+        per_segment.append(metrics)
 
-        # Save plots for first 5 windows
+        # Save plots for first 5 segments
         if i < 5:
             plot_dir = Path(out_path).with_suffix("") / "plots"
-            plot_simulation(metrics, f"Window {i}",
-                            plot_dir / f"window_{i:04d}_sim.png")
+            plot_simulation(metrics, f"Segment {i} ({actual_eval_sec:.0f}s)",
+                            plot_dir / f"segment_{i:04d}_sim.png")
 
     # ── Aggregate summary ────────────────────────────────────────────────────
     def _agg(key):
-        vals = [w[key] for w in per_window if key in w]
+        vals = [w[key] for w in per_segment if key in w]
         if not vals:
             return {}
         arr = np.array(vals, dtype=np.float64)
         return {"mean": float(arr.mean()), "std": float(arr.std()),
                 "min": float(arr.min()), "max": float(arr.max())}
 
-    fall_rate = float(np.mean([w["fall_detected"] for w in per_window]))
+    fall_rate = float(np.mean([w["fall_detected"] for w in per_segment]))
 
     summary = {
-        "n_windows":       N,
+        "n_segments":      M,
+        "eval_seconds":    actual_eval_sec,
+        "windows_per_seg": windows_per_seg,
         "fall_rate":       fall_rate,
         "pred_rmse":       _agg("pred_rmse"),
         "knee_rmse_deg":   _agg("knee_rmse_deg"),
@@ -493,11 +551,11 @@ def evaluate(
         "dtw_dist":        _agg("dtw_dist"),
         "com_height_std":  _agg("com_height_std"),
         "gait_symmetry":   _agg("gait_symmetry"),
-        "mode":            per_window[0].get("mode", "unknown") if per_window else "unknown",
+        "mode":            per_segment[0].get("mode", "unknown") if per_segment else "unknown",
         "mocap_source":    mocap_db["source"],
     }
 
-    result = {"per_window": per_window, "summary": summary}
+    result = {"per_segment": per_segment, "summary": summary}
 
     # ── Save JSON ────────────────────────────────────────────────────────────
     out_path = Path(out_path)
@@ -651,6 +709,11 @@ def _parse_args():
                     help="Replay a previously saved trajectory file in the MuJoCo viewer")
     ap.add_argument("--replay-speed", type=float, default=1.0,
                     help="Playback speed for --replay (default: 1.0)")
+    ap.add_argument("--eval-seconds", type=float, default=EVAL_SECONDS_DEFAULT,
+                    help=f"Duration of each evaluation segment in seconds "
+                         f"(default: {EVAL_SECONDS_DEFAULT}). Consecutive "
+                         f"training windows are concatenated to reach this "
+                         f"length for physics simulation.")
     ap.add_argument("--no-cache", action="store_true",
                     help="Disable .npz caching of parsed BVH databases")
     return ap.parse_args()
@@ -674,8 +737,8 @@ def main():
     if args.test_sample:
         # ── Fallback: test sample mode (no trained model needed) ─────
         out_path = args.out or "eval_test_sample_results.json"
-        seconds = _derive_window_seconds(args.data, None)
-        print(f"[eval] Window duration: {seconds:.3f} s")
+        seconds = args.eval_seconds
+        print(f"[eval] Test sample duration: {seconds:.1f} s")
 
         run_test_sample(
             mocap_dir=args.mocap_dir,
@@ -705,6 +768,7 @@ def main():
             device_str=args.device,
             match_categories=match_categories,
             use_cache=use_cache,
+            eval_seconds=args.eval_seconds,
         )
 
 

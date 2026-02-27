@@ -12,11 +12,10 @@ DATA_GLOB = "data*.npy"
 OUT_FILE = Path("samples_dataset.npy")
 
 # At ~200Hz effective sample rate (BWT901CL at 200Hz):
-#   WINDOW=1000 -> 5.0s windows
-#   WINDOW=200  -> 1.0s windows
-#   WINDOW=100  -> 0.5s windows
-#   WINDOW=40   -> 0.2s windows
-WINDOW = 1000        # ← 5 seconds at 200Hz
+#   WINDOW=200 -> 1.0s windows
+#   WINDOW=100 -> 0.5s windows
+#   WINDOW=40  -> 0.2s windows
+WINDOW = 200         # ← 1 second at 200Hz
 LABEL_SHIFT = 0      # samples of lookahead
 
 

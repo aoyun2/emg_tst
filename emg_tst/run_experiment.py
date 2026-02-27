@@ -32,7 +32,7 @@ N_LAYERS = 3
 DROPOUT = 0.1
 
 # Training
-BATCH_SIZE = 16       # reduced for 5-second (1000-step) windows to fit in GPU memory
+BATCH_SIZE = 64
 LR = 3e-4
 EPOCHS_PRETRAIN = 40
 EPOCHS_FINETUNE = 20

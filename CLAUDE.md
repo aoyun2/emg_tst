@@ -73,7 +73,7 @@ python plotdata.py
 
 ### 2. Data Preparation
 ```bash
-# Convert variable-length recordings into fixed 5-second windows
+# Convert variable-length recordings into fixed 1-second windows
 # Reads all .npy files in current directory, outputs samples_dataset.npy
 python split_to_samples.py
 ```
@@ -127,7 +127,7 @@ Three classes, each wrapping the previous:
 
 **Default hyperparameters** (all hardcoded in `run_experiment.py`):
 - `d_model=128`, `n_heads=8`, `d_ff=256`, `n_layers=3`
-- `dropout=0.1`, `batch_size=16`, `lr=3e-4`
+- `dropout=0.1`, `batch_size=64`, `lr=3e-4`
 - Pretraining: 40 epochs; Fine-tuning: 20 epochs with cosine annealing LR
 
 ### Feature Engineering (`emg_tst/data.py`)
@@ -147,7 +147,7 @@ Recordings saved by `rigtest.py` are NumPy dictionaries with keys:
 - `thigh_angle`: secondary angle input feature
 - `effective_hz`: actual sampling rate
 
-After `split_to_samples.py`: `samples_dataset.npy` array of shape `[N_samples, seq_len=1000, n_vars+1]` (last column is target knee angle). Each window covers 5 seconds at 200 Hz.
+After `split_to_samples.py`: `samples_dataset.npy` array of shape `[N_samples, seq_len=200, n_vars+1]` (last column is target knee angle). Each window covers 1 second at 200 Hz. During evaluation, consecutive windows are concatenated into 5-second segments for physics simulation.
 
 ### Angle Convention
 
@@ -167,7 +167,7 @@ Pretraining uses **stateful 2-state Markov masking** (not i.i.d.):
 
 ### Training Strategy (`emg_tst/run_experiment.py`)
 
-- **5-fold cross-validation** at the sample level (no temporal leakage between 5s windows)
+- **5-fold cross-validation** at the sample level (no temporal leakage between 1s windows)
 - Phase 1: Pretraining with masked reconstruction (`TSTPretrainDenoiser`)
 - Phase 2: Fine-tuning for regression (`TSTRegressor`), encoder weights transferred
 - Metrics reported: last-step RMSE, last-step MAE, full-sequence RMSE, full-sequence MAE

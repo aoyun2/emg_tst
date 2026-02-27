@@ -9,7 +9,7 @@ Hardware (uMyo EMG + BWT901CL IMU)
     ↓ uMyo_python_tools/rigtest.py
 Raw .npy recordings
     ↓ split_to_samples.py
-samples_dataset.npy  (5s fixed windows, 200 Hz)
+samples_dataset.npy  (1s fixed windows, 200 Hz)
     ↓ emg_tst/run_experiment.py
 Trained checkpoints  (5-fold CV)
     ↓ emg_tst/visualize.py / mocap_evaluation/run_evaluation.py
@@ -76,11 +76,11 @@ python plotdata.py
 
 ```bash
 # Slice all .npy recordings in the current directory into
-# non-overlapping 5-second windows → samples_dataset.npy
+# non-overlapping 1-second windows → samples_dataset.npy
 python split_to_samples.py
 ```
 
-Output shape: `[N_samples, seq_len=1000, n_vars+1]` where the last column is the target knee angle.
+Output shape: `[N_samples, seq_len=200, n_vars+1]` where the last column is the target knee angle.
 
 ### 3. Train
 
@@ -122,7 +122,7 @@ Edit `CKPT_PATH` inside `visualize.py` to point to a specific `reg_best.pt` chec
 | `d_ff` | 256 |
 | `n_layers` | 3 |
 | `dropout` | 0.1 |
-| `batch_size` | 16 |
+| `batch_size` | 64 |
 | `lr` | 3e-4 |
 | Pretraining epochs | 40 |
 | Fine-tuning epochs | 20 (cosine annealing LR) |
@@ -145,7 +145,7 @@ Pretraining uses **stateful 2-state Markov masking**:
 
 ### Training Strategy
 
-- **5-fold cross-validation** at the sample level (no temporal leakage between 5s windows)
+- **5-fold cross-validation** at the sample level (no temporal leakage between 1s windows)
 - Phase 1: masked reconstruction pretraining (`TSTPretrainDenoiser`)
 - Phase 2: regression fine-tuning (`TSTRegressor`), encoder weights transferred
 - **Full-sequence supervision**: the model predicts the knee angle at every timestep, not just the final one
