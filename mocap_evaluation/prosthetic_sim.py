@@ -12,7 +12,6 @@ while still allowing physics interactions (foot contacts, balance effects).
 Supports:
 - MuJoCo physics backend with full-body mocap-driven humanoid
 - Optional reference humanoid (semi-transparent) showing ground-truth mocap
-- Pause / resume with Space key in the interactive viewer
 - Trajectory recording for replay and GIF rendering
 - Deterministic kinematic evaluator (dependency fallback)
 
@@ -233,15 +232,15 @@ _MJCF = """
 
       <!-- ── Right leg ── -->
       <body name="right_thigh" pos="0 -0.10 -0.12">
-        <joint name="right_hip" type="hinge" axis="0 1 0" range="-70 70"/>
+        <joint name="right_hip" type="hinge" axis="0 -1 0" range="-70 70"/>
         <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.05"/>
         <body name="right_shank" pos="0 0 -0.42">
           <joint name="right_knee" type="hinge" axis="0 1 0" range="0 130"/>
           <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.045"
                 rgba="1 0.5 0.1 1"/>
           <body name="right_foot" pos="0 0 -0.42">
-            <joint name="right_ankle" type="hinge" axis="0 1 0"
-                   range="-40 50"/>
+            <joint name="right_ankle" type="hinge" axis="0 -1 0"
+                   range="-50 40"/>
             <geom name="right_foot_geom" type="box"
                   size="0.11 0.05 0.03" pos="0.07 0 -0.02"
                   rgba="1 0.5 0.1 1"/>
@@ -251,14 +250,14 @@ _MJCF = """
 
       <!-- ── Left leg ── -->
       <body name="left_thigh" pos="0 0.10 -0.12">
-        <joint name="left_hip" type="hinge" axis="0 1 0" range="-70 70"/>
+        <joint name="left_hip" type="hinge" axis="0 -1 0" range="-70 70"/>
         <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.05"/>
         <body name="left_shank" pos="0 0 -0.42">
           <joint name="left_knee" type="hinge" axis="0 1 0" range="0 130"/>
           <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.045"/>
           <body name="left_foot" pos="0 0 -0.42">
-            <joint name="left_ankle" type="hinge" axis="0 1 0"
-                   range="-40 50"/>
+            <joint name="left_ankle" type="hinge" axis="0 -1 0"
+                   range="-50 40"/>
             <geom name="left_foot_geom" type="box"
                   size="0.11 0.05 0.03" pos="0.07 0 -0.02"/>
           </body>
@@ -267,11 +266,11 @@ _MJCF = """
 
       <!-- ── Right arm (upper + forearm) ── -->
       <body name="right_upper_arm" pos="0 -0.22 0.16">
-        <joint name="right_shoulder" type="hinge" axis="0 1 0"
+        <joint name="right_shoulder" type="hinge" axis="0 -1 0"
                range="-90 90" damping="2"/>
         <geom type="capsule" fromto="0 0 0 0 0 -0.28" size="0.03"/>
         <body name="right_forearm" pos="0 0 -0.28">
-          <joint name="right_elbow" type="hinge" axis="0 1 0"
+          <joint name="right_elbow" type="hinge" axis="0 -1 0"
                  range="0 130" damping="1"/>
           <geom type="capsule" fromto="0 0 0 0 0 -0.25" size="0.025"
                 rgba="0.85 0.75 0.65 1"/>
@@ -280,11 +279,11 @@ _MJCF = """
 
       <!-- ── Left arm (upper + forearm) ── -->
       <body name="left_upper_arm" pos="0 0.22 0.16">
-        <joint name="left_shoulder" type="hinge" axis="0 1 0"
+        <joint name="left_shoulder" type="hinge" axis="0 -1 0"
                range="-90 90" damping="2"/>
         <geom type="capsule" fromto="0 0 0 0 0 -0.28" size="0.03"/>
         <body name="left_forearm" pos="0 0 -0.28">
-          <joint name="left_elbow" type="hinge" axis="0 1 0"
+          <joint name="left_elbow" type="hinge" axis="0 -1 0"
                  range="0 130" damping="1"/>
           <geom type="capsule" fromto="0 0 0 0 0 -0.25" size="0.025"
                 rgba="0.85 0.75 0.65 1"/>
@@ -344,7 +343,7 @@ def _build_dual_mjcf() -> str:
       </body>
 
       <body name="ref_right_thigh" pos="0 -0.10 -0.12">
-        <joint name="ref_right_hip" type="hinge" axis="0 1 0" range="-70 70"/>
+        <joint name="ref_right_hip" type="hinge" axis="0 -1 0" range="-70 70"/>
         <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.05"
               rgba="0.3 0.5 0.8 0.5"/>
         <body name="ref_right_shank" pos="0 0 -0.42">
@@ -352,8 +351,8 @@ def _build_dual_mjcf() -> str:
           <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.045"
                 rgba="0.2 0.7 0.3 0.5"/>
           <body name="ref_right_foot" pos="0 0 -0.42">
-            <joint name="ref_right_ankle" type="hinge" axis="0 1 0"
-                   range="-40 50"/>
+            <joint name="ref_right_ankle" type="hinge" axis="0 -1 0"
+                   range="-50 40"/>
             <geom name="ref_right_foot_geom" type="box"
                   size="0.11 0.05 0.03" pos="0.07 0 -0.02"
                   rgba="0.2 0.7 0.3 0.5"/>
@@ -362,7 +361,7 @@ def _build_dual_mjcf() -> str:
       </body>
 
       <body name="ref_left_thigh" pos="0 0.10 -0.12">
-        <joint name="ref_left_hip" type="hinge" axis="0 1 0" range="-70 70"/>
+        <joint name="ref_left_hip" type="hinge" axis="0 -1 0" range="-70 70"/>
         <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.05"
               rgba="0.3 0.5 0.8 0.5"/>
         <body name="ref_left_shank" pos="0 0 -0.42">
@@ -370,8 +369,8 @@ def _build_dual_mjcf() -> str:
           <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.045"
                 rgba="0.3 0.5 0.8 0.5"/>
           <body name="ref_left_foot" pos="0 0 -0.42">
-            <joint name="ref_left_ankle" type="hinge" axis="0 1 0"
-                   range="-40 50"/>
+            <joint name="ref_left_ankle" type="hinge" axis="0 -1 0"
+                   range="-50 40"/>
             <geom name="ref_left_foot_geom" type="box"
                   size="0.11 0.05 0.03" pos="0.07 0 -0.02"
                   rgba="0.3 0.5 0.8 0.5"/>
@@ -380,12 +379,12 @@ def _build_dual_mjcf() -> str:
       </body>
 
       <body name="ref_right_upper_arm" pos="0 -0.22 0.16">
-        <joint name="ref_right_shoulder" type="hinge" axis="0 1 0"
+        <joint name="ref_right_shoulder" type="hinge" axis="0 -1 0"
                range="-90 90" damping="2"/>
         <geom type="capsule" fromto="0 0 0 0 0 -0.28" size="0.03"
               rgba="0.3 0.5 0.8 0.5"/>
         <body name="ref_right_forearm" pos="0 0 -0.28">
-          <joint name="ref_right_elbow" type="hinge" axis="0 1 0"
+          <joint name="ref_right_elbow" type="hinge" axis="0 -1 0"
                  range="0 130" damping="1"/>
           <geom type="capsule" fromto="0 0 0 0 0 -0.25" size="0.025"
                 rgba="0.3 0.5 0.8 0.5"/>
@@ -393,12 +392,12 @@ def _build_dual_mjcf() -> str:
       </body>
 
       <body name="ref_left_upper_arm" pos="0 0.22 0.16">
-        <joint name="ref_left_shoulder" type="hinge" axis="0 1 0"
+        <joint name="ref_left_shoulder" type="hinge" axis="0 -1 0"
                range="-90 90" damping="2"/>
         <geom type="capsule" fromto="0 0 0 0 0 -0.28" size="0.03"
               rgba="0.3 0.5 0.8 0.5"/>
         <body name="ref_left_forearm" pos="0 0 -0.28">
-          <joint name="ref_left_elbow" type="hinge" axis="0 1 0"
+          <joint name="ref_left_elbow" type="hinge" axis="0 -1 0"
                  range="0 130" damping="1"/>
           <geom type="capsule" fromto="0 0 0 0 0 -0.25" size="0.025"
                 rgba="0.3 0.5 0.8 0.5"/>
@@ -560,18 +559,10 @@ class _MuJoCoRunner:
         # Reset metrics after warmup
         metrics = EvalMetrics.empty()
 
-        # ── Pause state for interactive viewer ───────────────────────────
-        paused = [False]
-
         def _step_loop(viewer_obj=None):
             for t in tqdm(range(T), desc="Simulating", unit="step", leave=False):
-                # Handle pause (Space key toggles in key_callback)
-                if viewer_obj is not None:
-                    while paused[0] and viewer_obj.is_running():
-                        viewer_obj.sync()
-                        time.sleep(0.05)
-                    if not viewer_obj.is_running():
-                        break
+                if viewer_obj is not None and not viewer_obj.is_running():
+                    break
 
                 # Drive root position via mocap body
                 data.mocap_pos[0] = root_pos[t]
@@ -615,23 +606,22 @@ class _MuJoCoRunner:
                     metrics.fall_detected = True
                     metrics.fall_frame = t
 
-        # ── Key callback for pause / resume ──────────────────────────────
-        def _key_callback(keycode):
-            if keycode == 32:  # Space bar
-                paused[0] = not paused[0]
-                state = "PAUSED" if paused[0] else "RUNNING"
-                print(f"[MuJoCo] {state}")
+        def _replay_loop(viewer_obj, qpos_hist):
+            """Loop the recorded trajectory until the viewer is closed."""
+            while viewer_obj.is_running():
+                for t in range(len(qpos_hist)):
+                    if not viewer_obj.is_running():
+                        return
+                    data.qpos[:] = qpos_hist[t]
+                    mujoco.mj_forward(model, data)
+                    viewer_obj.sync()
+                    time.sleep(self.dt)
 
         # ── Run simulation (GUI or headless) ─────────────────────────────
         gui_worked = False
         if self.use_gui and _VIEWER_AVAILABLE:
             try:
-                try:
-                    ctx = mujoco.viewer.launch_passive(
-                        model, data, key_callback=_key_callback)
-                except TypeError:
-                    # Older mujoco without key_callback support
-                    ctx = mujoco.viewer.launch_passive(model, data)
+                ctx = mujoco.viewer.launch_passive(model, data)
                 with ctx as viewer_obj:
                     # Camera: side-tracking view
                     torso_id = mujoco.mj_name2id(
@@ -645,13 +635,11 @@ class _MuJoCoRunner:
                     if self.show_reference:
                         print("[MuJoCo] Reference model (blue) = ground-truth mocap")
                         print("[MuJoCo] Prediction model (grey/orange) = model output")
-                    print("[MuJoCo] Press SPACE to pause / resume")
 
                     _step_loop(viewer_obj)
-                    print("[MuJoCo] Simulation complete "
-                          "-- close the viewer window to continue.")
-                    while viewer_obj.is_running():
-                        time.sleep(0.05)
+                    print("[MuJoCo] Simulation complete -- looping replay. "
+                          "Close the viewer window to continue.")
+                    _replay_loop(viewer_obj, qpos_history)
                 gui_worked = True
             except Exception as exc:
                 print(f"[MuJoCo] Viewer failed ({exc}), falling back to headless.")
@@ -856,7 +844,7 @@ def replay_trajectory(
 ) -> None:
     """Replay a recorded simulation trajectory in the MuJoCo viewer.
 
-    Press SPACE to pause / resume playback.
+    Loops continuously until the viewer window is closed.
 
     Parameters
     ----------
@@ -880,23 +868,9 @@ def replay_trajectory(
 
     print(f"[replay] {T} frames @ {traj.fps:.0f} Hz "
           f"(speed {speed:.1f}x, duration {T / traj.fps:.1f}s)")
-    print("[replay] Press SPACE to pause / resume")
+    print("[replay] Close the viewer window to stop.")
 
-    paused = [False]
-
-    def _key_callback(keycode):
-        if keycode == 32:  # Space bar
-            paused[0] = not paused[0]
-            state = "PAUSED" if paused[0] else "RUNNING"
-            print(f"[replay] {state}")
-
-    try:
-        ctx = mujoco.viewer.launch_passive(
-            model, data, key_callback=_key_callback)
-    except TypeError:
-        ctx = mujoco.viewer.launch_passive(model, data)
-
-    with ctx as viewer:
+    with mujoco.viewer.launch_passive(model, data) as viewer:
         # Side-tracking camera
         torso_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "torso")
         viewer.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
@@ -905,31 +879,14 @@ def replay_trajectory(
         viewer.cam.elevation = -15.0
         viewer.cam.azimuth = 90.0
 
-        playing = True
-        while playing and viewer.is_running():
+        while viewer.is_running():
             for t in range(T):
                 if not viewer.is_running():
                     return
-                # Handle pause
-                while paused[0] and viewer.is_running():
-                    viewer.sync()
-                    time.sleep(0.05)
-                if not viewer.is_running():
-                    return
-
                 data.qpos[:] = traj.qpos_history[t]
                 mujoco.mj_forward(model, data)
                 viewer.sync()
                 time.sleep(dt)
-
-            # Prompt: loop or close
-            print("[replay] Playback complete. "
-                  "Close the viewer to exit, or it will loop.")
-            # Auto-loop: replay again until viewer is closed
-
-        # Keep viewer open after final loop
-        while viewer.is_running():
-            time.sleep(0.05)
 
 
 # ── GIF rendering ────────────────────────────────────────────────────────────
