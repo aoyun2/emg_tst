@@ -4,18 +4,20 @@
 
 **emg_tst** is a research project for predicting **knee joint angle from surface EMG (electromyography) signals** using a Time Series Transformer (TST) model. The system records EMG + IMU data from wearable hardware, trains a transformer for knee angle regression, and evaluates predictions via motion-capture-driven physics simulation.
 
-### Architecture at a Glance
+### Pipeline at a Glance
 
 ```
-Hardware (uMyo EMG + BWT901CL IMU)
-    ↓ rigtest.py
-Raw .npy recordings
-    ↓ split_to_samples.py
-samples_dataset.npy (1s fixed windows)
-    ↓ emg_tst/run_experiment.py
-Trained checkpoints (5-fold CV)
-    ↓ emg_tst/visualize.py / mocap_evaluation/run_evaluation.py
-Predictions + physics simulation results
+Hardware (uMyo EMG × 3 + BWT901CL IMU)
+    ↓  uMyo_python_tools/rigtest.py
+Raw .npy recordings  (EMG spectra, raw waveforms, knee angle, thigh angle)
+    ↓  split_to_samples.py
+samples_dataset.npy  (1s windows, 200 Hz, shape [N, 200, 41])
+    ↓  emg_tst/run_experiment.py
+Trained checkpoints  (5-fold CV, checkpoints/tst_*/fold_*/reg_best.pt)
+    ↓  emg_tst/visualize.py
+Prediction plots     (angle trajectory, per-channel features)
+    ↓  mocap_evaluation/run_evaluation.py  +  CMU mocap DB (2,435 BVH files)
+Physics simulation results  (CoM height, gait symmetry, step count, stability)
 ```
 
 ---
@@ -32,15 +34,15 @@ emg_tst/
 │   └── visualize.py           # Prediction visualization
 ├── mocap_evaluation/           # Motion capture evaluation pipeline
 │   ├── bvh_parser.py          # BVH motion capture file parser
-│   ├── cmu_catalog.py         # CMU mocap database index (curated subjects/trials)
+│   ├── cmu_catalog.py         # CMU mocap database index (2,435 files)
 │   ├── cmu_downloader.py      # CMU database batch downloader (with verification)
 │   ├── mocap_loader.py        # Load BVH files with standardized joint angles
 │   ├── motion_matching.py     # DTW-based mocap-to-IMU signal matching
 │   ├── prosthetic_sim.py      # MuJoCo physics simulation
-│   ├── run_evaluation.py      # End-to-end evaluation orchestrator
+│   ├── run_evaluation.py      # End-to-end evaluation orchestrator (argparse)
 │   ├── visualize_match.py     # Plot matched mocap vs query curves
 │   ├── sample_data.py         # Extract real walking segment curves from recordings
-│   ├── external_sample_data.py # External gait data handling
+│   ├── external_sample_data.py # External gait data (OpenSim) handling
 │   └── mock_data.py           # Generate synthetic knee/thigh curves for testing
 ├── uMyo_python_tools/          # Hardware sensor utilities (EMG device SDK)
 │   ├── rigtest.py             # Main data recording script (EMG + IMU)
@@ -50,12 +52,12 @@ emg_tst/
 │   ├── quat_math.py           # Quaternion math for IMU orientation
 │   ├── display_stuff.py       # Real-time multichannel plotting
 │   └── ...                    # Other hardware utility scripts
+├── run_quick_sim.py           # Standalone gait simulation demo (no hardware needed)
 ├── split_to_samples.py        # Convert recordings to fixed-length sample windows
 ├── plotdata.py                # Visualize raw recordings
 ├── imutest.py                 # IMU streaming/visualization test
 ├── requirements_tst.txt       # Python dependencies
-├── README_TST.md              # Comprehensive workflow documentation
-└── README.md                  # Minimal project marker
+└── README.md                  # Project documentation with diagrams
 ```
 
 ---
@@ -74,7 +76,7 @@ python plotdata.py
 ### 2. Data Preparation
 ```bash
 # Convert variable-length recordings into fixed 1-second windows
-# Reads all .npy files in current directory, outputs samples_dataset.npy
+# Reads all data*.npy files in current directory, outputs samples_dataset.npy
 python split_to_samples.py
 ```
 
@@ -89,20 +91,23 @@ Output: `checkpoints/tst_YYYYMMDD_HHMMSS/fold_XX/reg_best.pt`
 ### 4. Visualization
 ```bash
 # Visualize predictions from the latest checkpoint
-python emg_tst/visualize.py
+python -m emg_tst.visualize
 ```
 
 ### 5. Mocap Evaluation
 ```bash
 # Download CMU mocap database (with completeness verification)
-python -m mocap_evaluation.cmu_downloader
-python -m mocap_evaluation.cmu_downloader --verify
+python -m mocap_evaluation.cmu_downloader --dest mocap_data/cmu
+python -m mocap_evaluation.cmu_downloader --verify --dest mocap_data/cmu
 
 # Evaluate with synthetic mock data (no external data needed)
 python -m mocap_evaluation.run_evaluation --mock-data --full-db
 
-# Evaluate with real data
-python -m mocap_evaluation.run_evaluation --full-db
+# Evaluate with external OpenSim walking data
+python -m mocap_evaluation.run_evaluation --real-walk-data --full-db
+
+# Quick standalone demo (downloads external data, runs simulation, saves plot)
+python run_quick_sim.py
 ```
 
 ### 6. IMU Testing
@@ -129,10 +134,11 @@ Three classes, each wrapping the previous:
 - `d_model=128`, `n_heads=8`, `d_ff=256`, `n_layers=3`
 - `dropout=0.1`, `batch_size=64`, `lr=3e-4`
 - Pretraining: 40 epochs; Fine-tuning: 20 epochs with cosine annealing LR
+- `seq_len=200` (1 second at 200 Hz), `n_vars=40`
 
 ### Feature Engineering (`emg_tst/data.py`)
 
-Per 100Hz timestep, 13 features are extracted per EMG sensor from the 200Hz raw waveform:
+Per timestep, 13 features are extracted per EMG sensor from the raw waveform:
 - **Time-domain (5)**: RMS, MAV (mean absolute value), WL (waveform length), ZC (zero crossings), SSC (slope sign changes)
 - **Spectral (8)**: power in 8 frequency bands via FFT
 
@@ -141,13 +147,13 @@ With 3 sensors + 1 thigh angle: **40 total input features** (`n_vars=40`).
 ### Data Format (`.npy` files)
 
 Recordings saved by `rigtest.py` are NumPy dictionaries with keys:
-- `emg_sensor{1,2,3}`: spectrum-based EMG features at ~200Hz
+- `emg_sensor{1,2,3}`: spectrum-based EMG features
 - `raw_emg_sensor{1,2,3}`: raw waveforms at higher native rate
 - `imu`: knee angle label (degrees, included-angle convention)
 - `thigh_angle`: secondary angle input feature
 - `effective_hz`: actual sampling rate
 
-After `split_to_samples.py`: `samples_dataset.npy` array of shape `[N_samples, seq_len=200, n_vars+1]` (last column is target knee angle). Each window covers 1 second at 200 Hz. During evaluation, consecutive windows are concatenated into 5-second segments for physics simulation.
+After `split_to_samples.py`: `samples_dataset.npy` dict with keys `X [N, 200, 40]`, `y [N]`, `y_seq [N, 200]`, `file_id [N]`. Each window covers 1 second at 200 Hz. During evaluation, consecutive windows are concatenated into 5-second segments for physics simulation.
 
 ### Angle Convention
 
@@ -156,7 +162,7 @@ After `split_to_samples.py`: `samples_dataset.npy` array of shape `[N_samples, s
 - Smaller values = more flexion
 - Conversion from flexion angle: `included = 180 - flexion`
 
-This convention is consistent across: hardware recording (`rigtest.py`), BVH parsing (`bvh_parser.py`), motion matching (`motion_matching.py`), and simulation (`prosthetic_sim.py`).
+This convention is consistent across: hardware recording (`rigtest.py`), BVH parsing (`bvh_parser.py`), motion matching (`motion_matching.py`), and simulation (`prosthetic_sim.py`). `prosthetic_sim.py` internally converts to flexion convention for the physics backend.
 
 ### Masking Strategy (`emg_tst/masking.py`)
 
@@ -164,30 +170,38 @@ Pretraining uses **stateful 2-state Markov masking** (not i.i.d.):
 - ~14% of timesteps masked (target `MASK_R=0.14`)
 - Mean masked segment length: ~3 timesteps
 - State machine ensures contiguous masked segments for realistic pretraining
+- Each variable (feature channel) has an independent state
 
 ### Training Strategy (`emg_tst/run_experiment.py`)
 
-- **5-fold cross-validation** at the sample level (no temporal leakage between 1s windows)
+- **5-fold cross-validation** using **Leave-One-File-Out** (LOFO) splits at the recording level — prevents temporal leakage between consecutive 1s windows from the same session
 - Phase 1: Pretraining with masked reconstruction (`TSTPretrainDenoiser`)
 - Phase 2: Fine-tuning for regression (`TSTRegressor`), encoder weights transferred
 - Metrics reported: last-step RMSE, last-step MAE, full-sequence RMSE, full-sequence MAE
-- Best checkpoint selected by validation RMSE
+- Best checkpoint selected by validation full-sequence RMSE
 
 ### Motion Matching (`mocap_evaluation/motion_matching.py`)
 
 DTW-based matching strategy:
-1. Sliding window over mocap database
-2. L2 pre-filter to shortlist candidates
-3. DTW with Sakoe-Chiba band constraint
-4. Features: joint angles + their velocities (dual-feature for robustness)
+1. Build 4-channel feature vector: `[knee, hip, Δknee, Δhip]`
+2. L2 pre-filter over sliding window to shortlist candidates
+3. DTW with Sakoe-Chiba band constraint (width=40 samples) for final ranking
+4. Returns top-K matches with all joint angles for that segment
+
+All category filtering has been removed — the full CMU database is searched without restricting to walking trials.
 
 ### Physics Simulation (`mocap_evaluation/prosthetic_sim.py`)
 
 - All joints driven by mocap reference **except right knee**
 - Right knee driven by **model prediction**
 - Reference simulation: right knee from ground-truth label
+- XY-only root tracking (Z free for physics)
 - Metrics: CoM height (fall threshold: `< 0.55m`), gait symmetry, step count, stability score
-- Backend: MuJoCo
+- Backend: MuJoCo (only supported backend)
+
+### External Data (`mocap_evaluation/external_sample_data.py`)
+
+Handles OpenSim-format gait data as an alternative query source to real recordings. Used by `run_evaluation.py --real-walk-data` and `run_quick_sim.py`. Knee sign convention is corrected on load (OpenSim uses flexion-positive, this project uses included-angle).
 
 ---
 
@@ -232,6 +246,7 @@ Key packages:
 | `scipy` | Signal resampling, spatial transforms |
 | `mujoco` | Physics simulation |
 | `pillow` | GIF generation for gait visualization |
+| `tqdm` | Progress bars (download, training) |
 | `matplotlib` | All plotting |
 | `pywitmotion` | BWT901CL IMU Bluetooth communication |
 | `pyserial` | uMyo EMG device serial communication |
@@ -244,14 +259,18 @@ Key packages:
 
 2. **Hardcoded config**: When asked to change hyperparameters, edit the constants at the top of `run_experiment.py` or `split_to_samples.py` directly — there is no config file or CLI.
 
-3. **Angle convention is critical**: Any code touching angle values must use included-angle (180° = straight). Confusion between flexion and included-angle will break matching and simulation.
+3. **Angle convention is critical**: Any code touching angle values must use included-angle (180° = straight). Confusion between flexion and included-angle will break matching and simulation. `prosthetic_sim.py` uses `_included_to_flexion()` internally to convert for MuJoCo.
 
-4. **Hardware dependency**: `uMyo_python_tools/rigtest.py` and `imutest.py` require physical hardware. They cannot be run in a headless/CI environment.
+4. **Hardware dependency**: `uMyo_python_tools/rigtest.py` and `imutest.py` require physical hardware. They cannot be run in a headless/CI environment. `run_quick_sim.py` works without hardware.
 
-5. **Checkpoint paths**: Training saves checkpoints to `checkpoints/tst_YYYYMMDD_HHMMSS/fold_XX/`. Visualization scripts look for the most recent checkpoint directory.
+5. **Checkpoint paths**: Training saves checkpoints to `checkpoints/tst_YYYYMMDD_HHMMSS/fold_XX/`. Visualization scripts look for the most recent checkpoint directory automatically.
 
 6. **Data location**: Recordings (`.npy` files) are expected in the current working directory by default. `mocap_data/` is gitignored and holds downloaded BVH files.
 
 7. **Full-sequence supervision**: The regressor predicts **every timestep**, not just the final one. Both last-step and full-sequence metrics are reported and matter.
 
 8. **Physics simulation backend**: MuJoCo is the only supported backend. Install with `pip install mujoco`.
+
+9. **No category filtering in motion matching**: The `motion_matching.py` module searches the full CMU database. Category-based filtering was removed; do not re-add it.
+
+10. **External OpenSim data**: `external_sample_data.py` fetches OpenSim gait data from an external URL. The knee sign convention is corrected on load. This is the preferred query source when no real hardware recordings are available.
