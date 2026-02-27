@@ -1,7 +1,17 @@
-"""Prosthetic gait simulation/evaluation.
+"""Prosthetic gait simulation / evaluation.
+
+Drives a full humanoid skeleton from motion-capture data via MuJoCo physics.
+All joints track their mocap reference angles *except* the right knee, which
+is driven by the model's predicted knee angle -- allowing evaluation of how
+well the prediction maintains stable, natural gait.
+
+The torso root position is tracked from BVH root trajectories via a MuJoCo
+mocap body + weld constraint, keeping the body on the correct walking path
+while still allowing physics interactions (foot contacts, balance effects).
 
 Supports:
-- MuJoCo physics backend
+- MuJoCo physics backend with full-body mocap-driven humanoid
+- Trajectory recording for replay and GIF rendering
 - Deterministic kinematic evaluator (dependency fallback)
 
 Public APIs accept included-angle convention (degrees):
@@ -14,7 +24,8 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
@@ -22,16 +33,26 @@ from tqdm import tqdm
 
 try:
     import mujoco
-    import mujoco.viewer
     _MUJOCO_AVAILABLE = True
 except Exception:  # pragma: no cover
     _MUJOCO_AVAILABLE = False
 
+try:
+    import mujoco.viewer  # noqa: F811
+    _VIEWER_AVAILABLE = True
+except Exception:  # pragma: no cover — headless environments
+    _VIEWER_AVAILABLE = False
+
+
+# ── Constants ────────────────────────────────────────────────────────────────
 
 SIM_FPS_DEFAULT = 200.0
-HUMANOID_INIT_POS_Z = 1.05
+HUMANOID_INIT_POS = np.array([0.0, 0.0, 1.0])
+HUMANOID_INIT_POS_Z = 1.05      # legacy value used by kinematic evaluator
 FALL_HEIGHT_THRESHOLD = 0.55
 
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _rad(deg: float) -> float:
     return math.radians(float(deg))
@@ -83,6 +104,16 @@ def _gait_symmetry(right_frames: List[int], left_frames: List[int]) -> float:
     return 0.0 if den < 1e-9 else float(abs(mr - ml) / den)
 
 
+def _pad_or_trim(arr: np.ndarray, T: int, default: float = 180.0) -> np.ndarray:
+    """Ensure *arr* has exactly *T* elements, padding with *default* if short."""
+    arr = np.asarray(arr, dtype=np.float64)
+    if len(arr) >= T:
+        return arr[:T]
+    return np.concatenate([arr, np.full(T - len(arr), default)])
+
+
+# ── Data classes ─────────────────────────────────────────────────────────────
+
 @dataclass
 class EvalMetrics:
     com_height: List[float]
@@ -133,6 +164,343 @@ class EvalMetrics:
         }
 
 
+@dataclass
+class SimTrajectory:
+    """Recorded simulation trajectory for replay and GIF rendering."""
+    qpos_history: np.ndarray   # (T, nq)
+    fps: float
+    mjcf: str                  # MJCF XML used to create the model
+
+
+# ── MJCF humanoid model ─────────────────────────────────────────────────────
+#
+# Full-body humanoid with:
+#   - Mocap body "root_target" driven by BVH root position
+#   - Weld constraint: torso tracks root_target (stiff spring)
+#   - Head (passive, high-damping neck)
+#   - Arms with forearms (shoulder + elbow joints)
+#   - Legs with thigh + shank + foot (hip + knee + ankle joints)
+#   - Right knee/shank/foot coloured orange (prosthetic side)
+#
+# Collision: body geoms collide with floor but NOT with each other
+# (contype=1/conaffinity=2 for body, contype=2/conaffinity=1 for floor).
+
+_MJCF = """
+<mujoco model="prosthetic_eval_humanoid">
+  <compiler angle="degree"/>
+  <option timestep="0.001" gravity="0 0 -9.81" integrator="implicit"/>
+
+  <default>
+    <joint damping="5" armature="0.01"/>
+    <geom condim="3" friction="1 0.5 0.5" contype="1" conaffinity="2"/>
+  </default>
+
+  <visual>
+    <global offwidth="1280" offheight="720"/>
+  </visual>
+
+  <equality>
+    <weld body1="torso" body2="root_target"
+          solref="0.001 1" solimp="0.99 0.999 0.001 0.5 2"/>
+  </equality>
+
+  <worldbody>
+    <geom name="floor" type="plane" size="50 50 0.1"
+          rgba="0.8 0.9 0.8 1" contype="2" conaffinity="1"/>
+    <light pos="0 0 5" dir="0 0 -1" diffuse="0.9 0.9 0.9"/>
+    <light pos="3 3 4" dir="-0.5 -0.5 -1" diffuse="0.4 0.4 0.4"/>
+
+    <!-- Invisible mocap target: driven by BVH root position each frame -->
+    <body name="root_target" mocap="true" pos="0 0 1.0">
+      <geom type="sphere" size="0.001" contype="0" conaffinity="0"
+            rgba="0 0 0 0"/>
+    </body>
+
+    <body name="torso" pos="0 0 1.0">
+      <freejoint name="root"/>
+      <geom type="capsule" fromto="0 0 -0.12 0 0 0.2" size="0.09"
+            rgba="0.6 0.6 0.65 1"/>
+
+      <!-- Head -->
+      <body name="head" pos="0 0 0.3">
+        <joint name="neck" type="hinge" axis="0 1 0"
+               range="-30 30" damping="20"/>
+        <geom type="sphere" size="0.09" rgba="0.85 0.75 0.65 1"/>
+      </body>
+
+      <!-- ── Right leg ── -->
+      <body name="right_thigh" pos="0 -0.10 -0.12">
+        <joint name="right_hip" type="hinge" axis="0 1 0" range="-70 70"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.05"/>
+        <body name="right_shank" pos="0 0 -0.42">
+          <joint name="right_knee" type="hinge" axis="0 1 0" range="0 130"/>
+          <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.045"
+                rgba="1 0.5 0.1 1"/>
+          <body name="right_foot" pos="0 0 -0.42">
+            <joint name="right_ankle" type="hinge" axis="0 1 0"
+                   range="-40 50"/>
+            <geom name="right_foot_geom" type="box"
+                  size="0.11 0.05 0.03" pos="0.07 0 -0.02"
+                  rgba="1 0.5 0.1 1"/>
+          </body>
+        </body>
+      </body>
+
+      <!-- ── Left leg ── -->
+      <body name="left_thigh" pos="0 0.10 -0.12">
+        <joint name="left_hip" type="hinge" axis="0 1 0" range="-70 70"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.05"/>
+        <body name="left_shank" pos="0 0 -0.42">
+          <joint name="left_knee" type="hinge" axis="0 1 0" range="0 130"/>
+          <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.045"/>
+          <body name="left_foot" pos="0 0 -0.42">
+            <joint name="left_ankle" type="hinge" axis="0 1 0"
+                   range="-40 50"/>
+            <geom name="left_foot_geom" type="box"
+                  size="0.11 0.05 0.03" pos="0.07 0 -0.02"/>
+          </body>
+        </body>
+      </body>
+
+      <!-- ── Right arm (upper + forearm) ── -->
+      <body name="right_upper_arm" pos="0 -0.22 0.16">
+        <joint name="right_shoulder" type="hinge" axis="0 1 0"
+               range="-90 90" damping="2"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.28" size="0.03"/>
+        <body name="right_forearm" pos="0 0 -0.28">
+          <joint name="right_elbow" type="hinge" axis="0 1 0"
+                 range="0 130" damping="1"/>
+          <geom type="capsule" fromto="0 0 0 0 0 -0.25" size="0.025"
+                rgba="0.85 0.75 0.65 1"/>
+        </body>
+      </body>
+
+      <!-- ── Left arm (upper + forearm) ── -->
+      <body name="left_upper_arm" pos="0 0.22 0.16">
+        <joint name="left_shoulder" type="hinge" axis="0 1 0"
+               range="-90 90" damping="2"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.28" size="0.03"/>
+        <body name="left_forearm" pos="0 0 -0.28">
+          <joint name="left_elbow" type="hinge" axis="0 1 0"
+                 range="0 130" damping="1"/>
+          <geom type="capsule" fromto="0 0 0 0 0 -0.25" size="0.025"
+                rgba="0.85 0.75 0.65 1"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <!-- ctrl[0..5]: legs -->
+    <position joint="right_hip"      kp="300"/>
+    <position joint="left_hip"       kp="300"/>
+    <position joint="right_knee"     kp="350"/>
+    <position joint="left_knee"      kp="350"/>
+    <position joint="right_ankle"    kp="250"/>
+    <position joint="left_ankle"     kp="250"/>
+    <!-- ctrl[6..9]: arms -->
+    <position joint="right_shoulder" kp="100"/>
+    <position joint="left_shoulder"  kp="100"/>
+    <position joint="right_elbow"    kp="80"/>
+    <position joint="left_elbow"     kp="80"/>
+  </actuator>
+</mujoco>
+"""
+
+
+# ── MuJoCo physics runner ───────────────────────────────────────────────────
+
+class _MuJoCoRunner:
+    """Run a full-body MuJoCo simulation driven by mocap + predicted knee."""
+
+    def __init__(self, use_gui: bool, fps: float):
+        self.use_gui = use_gui
+        self.fps = float(fps)
+        self.dt = 1.0 / max(self.fps, 1.0)
+
+    def run(
+        self,
+        mocap_segment: dict,
+        predicted_knee: np.ndarray,
+        fall_threshold: float,
+        sample_thigh_right: Optional[np.ndarray] = None,
+    ) -> dict:
+        model = mujoco.MjModel.from_xml_string(_MJCF)
+        data = mujoco.MjData(model)
+
+        # ── Determine frame count ────────────────────────────────────────
+        T = int(min(len(predicted_knee), len(mocap_segment["knee_right"])))
+        if sample_thigh_right is not None:
+            T = int(min(T, len(sample_thigh_right)))
+        if T <= 0:
+            out = run_kinematic_evaluation(
+                mocap_segment, predicted_knee,
+                sample_thigh_right=sample_thigh_right,
+            )
+            out["mode"] = "mujoco_physics_empty"
+            return out
+
+        # ── Convert joint angles to flexion (degrees) ────────────────────
+        pred = _included_to_flexion(np.asarray(predicted_knee, dtype=np.float64)[:T])
+        ref = _included_to_flexion(np.asarray(mocap_segment["knee_right"], dtype=np.float64)[:T])
+
+        if sample_thigh_right is not None:
+            hip_r = _included_to_flexion(np.asarray(sample_thigh_right, dtype=np.float64)[:T])
+        else:
+            hip_r = _included_to_flexion(_pad_or_trim(
+                mocap_segment.get("hip_right", np.full(T, 180.0)), T))
+
+        hip_l = _included_to_flexion(_pad_or_trim(
+            mocap_segment.get("hip_left", np.full(T, 180.0)), T))
+        knee_l = _included_to_flexion(_pad_or_trim(
+            mocap_segment.get("knee_left", np.full(T, 180.0)), T))
+        ankle_r = _included_to_flexion(_pad_or_trim(
+            mocap_segment.get("ankle_right", np.full(T, 180.0)), T))
+        ankle_l = _included_to_flexion(_pad_or_trim(
+            mocap_segment.get("ankle_left", np.full(T, 180.0)), T))
+
+        # ── Root position from BVH (MuJoCo Z-up coords, metres) ─────────
+        raw_root = mocap_segment.get("root_pos", np.zeros((T, 3)))
+        if raw_root.shape[0] < T:
+            pad_rows = np.tile(raw_root[-1:], (T - raw_root.shape[0], 1))
+            raw_root = np.vstack([raw_root, pad_rows])
+        raw_root = raw_root[:T].astype(np.float64)
+
+        # Normalise so frame-0 aligns with the humanoid's initial position.
+        # This preserves the BVH motion deltas (forward walk, height sway)
+        # while matching the MuJoCo model's starting pose.
+        has_root_motion = np.any(np.abs(raw_root - raw_root[0]) > 0.001)
+        if has_root_motion:
+            root_pos = raw_root - raw_root[0] + HUMANOID_INIT_POS
+        else:
+            root_pos = np.tile(HUMANOID_INIT_POS, (T, 1))
+
+        # ── Pre-compute all actuator controls (radians) ──────────────────
+        # Actuator order: right_hip, left_hip, right_knee, left_knee,
+        #   right_ankle, left_ankle, right_shoulder, left_shoulder,
+        #   right_elbow, left_elbow
+        controls = np.zeros((T, 10), dtype=np.float64)
+        controls[:, 0] = np.radians(hip_r)
+        controls[:, 1] = np.radians(hip_l)
+        controls[:, 2] = np.radians(pred)          # RIGHT KNEE = PREDICTION
+        controls[:, 3] = np.radians(knee_l)
+        controls[:, 4] = np.radians(ankle_r)
+        controls[:, 5] = np.radians(ankle_l)
+        controls[:, 6] = np.radians(-0.5 * hip_r)  # anti-phase arm swing
+        controls[:, 7] = np.radians(-0.5 * hip_l)
+        controls[:, 8] = np.radians(25.0)           # natural elbow flexion
+        controls[:, 9] = np.radians(25.0)
+
+        # ── Physics substeps per data frame ──────────────────────────────
+        steps_per_frame = max(1, round(self.dt / model.opt.timestep))
+
+        # ── Geom IDs for foot contact detection ──────────────────────────
+        ridx = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "right_foot_geom")
+        lidx = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "left_foot_geom")
+
+        metrics = EvalMetrics.empty()
+        qpos_history: List[np.ndarray] = []
+
+        # ── Warmup: let actuators settle to frame-0 pose ────────────────
+        data.mocap_pos[0] = root_pos[0]
+        data.ctrl[:] = controls[0]
+        for _ in range(20):
+            mujoco.mj_step(model, data)
+
+        # Reset metrics after warmup
+        metrics = EvalMetrics.empty()
+
+        def _step_loop(viewer_obj=None):
+            for t in tqdm(range(T), desc="Simulating", unit="step", leave=False):
+                # Drive root position via mocap body
+                data.mocap_pos[0] = root_pos[t]
+
+                # Drive joint actuators
+                data.ctrl[:] = controls[t]
+
+                # Physics substeps
+                for _ in range(steps_per_frame):
+                    mujoco.mj_step(model, data)
+
+                if viewer_obj is not None:
+                    viewer_obj.sync()
+                    time.sleep(self.dt)
+
+                # Record trajectory
+                qpos_history.append(data.qpos.copy())
+
+                # ── Collect metrics ──────────────────────────────────────
+                com_h = float(data.subtree_com[0, 2])
+                rc = False
+                lc = False
+                for c in range(data.ncon):
+                    con = data.contact[c]
+                    g1, g2 = int(con.geom1), int(con.geom2)
+                    if ridx in (g1, g2):
+                        rc = True
+                    if lidx in (g1, g2):
+                        lc = True
+
+                metrics.com_height.append(com_h)
+                metrics.pred_knee.append(float(pred[t]))
+                metrics.ref_knee.append(float(ref[t]))
+                if rc:
+                    metrics.right_contact_frames.append(t)
+                if lc:
+                    metrics.left_contact_frames.append(t)
+                if (not metrics.fall_detected) and com_h < fall_threshold:
+                    metrics.fall_detected = True
+                    metrics.fall_frame = t
+
+        # ── Run simulation (GUI or headless) ─────────────────────────────
+        gui_worked = False
+        if self.use_gui and _VIEWER_AVAILABLE:
+            try:
+                with mujoco.viewer.launch_passive(model, data) as viewer_obj:
+                    # Camera: side-tracking view
+                    torso_id = mujoco.mj_name2id(
+                        model, mujoco.mjtObj.mjOBJ_BODY, "torso")
+                    viewer_obj.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+                    viewer_obj.cam.trackbodyid = torso_id
+                    viewer_obj.cam.distance = 3.5
+                    viewer_obj.cam.elevation = -15.0
+                    viewer_obj.cam.azimuth = 90.0
+
+                    _step_loop(viewer_obj)
+                    print("[MuJoCo] Simulation complete "
+                          "-- close the viewer window to continue.")
+                    while viewer_obj.is_running():
+                        time.sleep(0.05)
+                gui_worked = True
+            except Exception as exc:
+                print(f"[MuJoCo] Viewer failed ({exc}), falling back to headless.")
+                # Reset state for headless re-run
+                data = mujoco.MjData(model)
+                data.mocap_pos[0] = root_pos[0]
+                data.ctrl[:] = controls[0]
+                for _ in range(20):
+                    mujoco.mj_step(model, data)
+                metrics = EvalMetrics.empty()
+                qpos_history.clear()
+                _step_loop(None)
+        else:
+            _step_loop(None)
+
+        # ── Build result ─────────────────────────────────────────────────
+        out = metrics.to_dict()
+        out["mode"] = "mujoco_physics" + ("+gui" if gui_worked else "")
+
+        # Attach trajectory for caller to save/render if desired
+        out["_trajectory"] = SimTrajectory(
+            qpos_history=np.array(qpos_history),
+            fps=self.fps,
+            mjcf=_MJCF,
+        )
+        return out
+
+
+# ── Kinematic evaluator (fallback when MuJoCo unavailable) ───────────────────
+
 def run_kinematic_evaluation(
     mocap_segment: dict,
     predicted_knee: np.ndarray,
@@ -162,7 +530,8 @@ def run_kinematic_evaluation(
     if sample_thigh_right is not None:
         hip = _included_to_flexion(np.asarray(sample_thigh_right, dtype=np.float64)[:T])
     else:
-        hip = _included_to_flexion(np.asarray(mocap_segment.get("hip_right", np.full(T, 180.0)), dtype=np.float64)[:T])
+        hip = _included_to_flexion(np.asarray(
+            mocap_segment.get("hip_right", np.full(T, 180.0)), dtype=np.float64)[:T])
 
     dev = np.zeros(T, dtype=np.float64)
     L1 = L2 = 0.45
@@ -191,166 +560,7 @@ def run_kinematic_evaluation(
     }
 
 
-_MJCF = """
-<mujoco model="prosthetic_eval_humanoid">
-  <option timestep="0.005" gravity="0 0 -9.81" integrator="RK4"/>
-  <compiler angle="degree"/>
-  <worldbody>
-    <geom name="floor" type="plane" size="8 8 0.1" rgba="0.8 0.9 0.8 1"/>
-    <light pos="0 0 4"/>
-    <body name="torso" pos="0 0 1.0">
-      <freejoint/>
-      <geom type="capsule" fromto="0 0 -0.2 0 0 0.2" size="0.09" rgba="0.6 0.6 0.65 1"/>
-      <body name="right_thigh" pos="0 -0.10 -0.10">
-        <joint name="right_hip" type="hinge" axis="0 1 0" range="-70 70" damping="2"/>
-        <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.05"/>
-        <body name="right_shank" pos="0 0 -0.42">
-          <joint name="right_knee" type="hinge" axis="0 1 0" range="0 130" damping="2"/>
-          <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.045" rgba="1 0.5 0.1 1"/>
-          <body name="right_foot" pos="0 0 -0.42">
-            <joint name="right_ankle" type="hinge" axis="0 1 0" range="-40 50" damping="2"/>
-            <geom name="right_foot_geom" type="box" size="0.11 0.05 0.03" pos="0.07 0 -0.02" rgba="1 0.5 0.1 1"/>
-          </body>
-        </body>
-      </body>
-      <body name="left_thigh" pos="0 0.10 -0.10">
-        <joint name="left_hip" type="hinge" axis="0 1 0" range="-70 70" damping="2"/>
-        <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.05"/>
-        <body name="left_shank" pos="0 0 -0.42">
-          <joint name="left_knee" type="hinge" axis="0 1 0" range="0 130" damping="2"/>
-          <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.045"/>
-          <body name="left_foot" pos="0 0 -0.42">
-            <joint name="left_ankle" type="hinge" axis="0 1 0" range="-40 50" damping="2"/>
-            <geom name="left_foot_geom" type="box" size="0.11 0.05 0.03" pos="0.07 0 -0.02"/>
-          </body>
-        </body>
-      </body>
-      <body name="right_arm" pos="0 -0.22 0.15">
-        <joint name="right_shoulder" type="hinge" axis="0 1 0" range="-90 90" damping="1"/>
-        <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.03"/>
-      </body>
-      <body name="left_arm" pos="0 0.22 0.15">
-        <joint name="left_shoulder" type="hinge" axis="0 1 0" range="-90 90" damping="1"/>
-        <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.03"/>
-      </body>
-    </body>
-  </worldbody>
-  <actuator>
-    <position joint="right_hip" kp="150"/>
-    <position joint="left_hip" kp="150"/>
-    <position joint="right_knee" kp="180"/>
-    <position joint="left_knee" kp="180"/>
-    <position joint="right_ankle" kp="120"/>
-    <position joint="left_ankle" kp="120"/>
-    <position joint="right_shoulder" kp="80"/>
-    <position joint="left_shoulder" kp="80"/>
-  </actuator>
-</mujoco>
-"""
-
-
-class _MuJoCoRunner:
-    def __init__(self, use_gui: bool, fps: float):
-        self.use_gui = use_gui
-        self.fps = float(fps)
-        self.dt = 1.0 / max(self.fps, 1.0)
-
-    def run(
-        self,
-        mocap_segment: dict,
-        predicted_knee: np.ndarray,
-        fall_threshold: float,
-        sample_thigh_right: Optional[np.ndarray] = None,
-    ) -> dict:
-        model = mujoco.MjModel.from_xml_string(_MJCF)
-        model.opt.timestep = self.dt
-        data = mujoco.MjData(model)
-
-        T = int(min(len(predicted_knee), len(mocap_segment["knee_right"])))
-        if sample_thigh_right is not None:
-            T = int(min(T, len(sample_thigh_right)))
-        if T <= 0:
-            out = run_kinematic_evaluation(mocap_segment, predicted_knee, sample_thigh_right=sample_thigh_right)
-            out["mode"] = "mujoco_physics_empty"
-            return out
-
-        pred = _included_to_flexion(np.asarray(predicted_knee, dtype=np.float64)[:T])
-        ref = _included_to_flexion(np.asarray(mocap_segment["knee_right"], dtype=np.float64)[:T])
-        if sample_thigh_right is not None:
-            hip_r = _included_to_flexion(np.asarray(sample_thigh_right, dtype=np.float64)[:T])
-        else:
-            hip_r = _included_to_flexion(np.asarray(mocap_segment.get("hip_right", np.full(T, 180.0)), dtype=np.float64)[:T])
-        hip_l = _included_to_flexion(np.asarray(mocap_segment.get("hip_left", np.full(T, 180.0)), dtype=np.float64)[:T])
-        knee_l = _included_to_flexion(np.asarray(mocap_segment.get("knee_left", np.full(T, 180.0)), dtype=np.float64)[:T])
-        ankle_r = _included_to_flexion(np.asarray(mocap_segment.get("ankle_right", np.full(T, 180.0)), dtype=np.float64)[:T])
-        ankle_l = _included_to_flexion(np.asarray(mocap_segment.get("ankle_left", np.full(T, 180.0)), dtype=np.float64)[:T])
-
-        ridx = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "right_foot_geom")
-        lidx = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "left_foot_geom")
-
-        metrics = EvalMetrics.empty()
-
-        def _step_loop(viewer_obj=None):
-            for t in tqdm(range(T), desc="Simulating", unit="step", leave=False):
-                # Actuator order matches MJCF definition.
-                data.ctrl[0] = _rad(hip_r[t])
-                data.ctrl[1] = _rad(hip_l[t])
-                data.ctrl[2] = _rad(pred[t])
-                data.ctrl[3] = _rad(knee_l[t])
-                data.ctrl[4] = _rad(ankle_r[t])
-                data.ctrl[5] = _rad(ankle_l[t])
-                # Simple anti-phase arm swing from hip motion.
-                data.ctrl[6] = _rad(-0.6 * hip_r[t])
-                data.ctrl[7] = _rad(-0.6 * hip_l[t])
-
-                mujoco.mj_step(model, data)
-                if viewer_obj is not None:
-                    viewer_obj.sync()
-                    time.sleep(self.dt)
-
-                com_h = float(data.subtree_com[0, 2])
-                rc = False
-                lc = False
-                for c in range(data.ncon):
-                    con = data.contact[c]
-                    g1, g2 = int(con.geom1), int(con.geom2)
-                    if ridx in (g1, g2):
-                        rc = True
-                    if lidx in (g1, g2):
-                        lc = True
-
-                metrics.com_height.append(com_h)
-                metrics.pred_knee.append(float(pred[t]))
-                metrics.ref_knee.append(float(ref[t]))
-                if rc:
-                    metrics.right_contact_frames.append(t)
-                if lc:
-                    metrics.left_contact_frames.append(t)
-                if (not metrics.fall_detected) and com_h < fall_threshold:
-                    metrics.fall_detected = True
-                    metrics.fall_frame = t
-
-        gui_worked = False
-        if self.use_gui:
-            try:
-                with mujoco.viewer.launch_passive(model, data) as viewer_obj:
-                    _step_loop(viewer_obj)
-                    print("[MuJoCo] Simulation complete — close the viewer window to continue.")
-                    while viewer_obj.is_running():
-                        time.sleep(0.05)
-                gui_worked = True
-            except Exception as exc:
-                print(f"[MuJoCo] Viewer failed ({exc}), falling back to headless.")
-                mujoco.mj_resetData(model, data)
-                metrics = EvalMetrics.empty()
-                _step_loop(None)
-        else:
-            _step_loop(None)
-
-        out = metrics.to_dict()
-        out["mode"] = "mujoco_physics" + ("+gui" if gui_worked else "")
-        return out
-
+# ── Public API ───────────────────────────────────────────────────────────────
 
 def simulate_prosthetic_walking(
     mocap_segment: dict,
@@ -358,28 +568,250 @@ def simulate_prosthetic_walking(
     use_gui: bool = True,
     fps: float = SIM_FPS_DEFAULT,
     sample_thigh_right: Optional[np.ndarray] = None,
+    save_trajectory: Optional[str | Path] = None,
+    render_gif: Optional[str | Path] = None,
 ) -> dict:
     """Run prosthetic gait simulation via MuJoCo physics.
 
     Parameters
     ----------
-    sample_thigh_right:
-        If provided, the right hip/thigh actuator is driven by this signal
-        (in included-angle degrees, same convention as all other angles)
-        instead of the matched mocap segment's hip_right channel.  Use this
-        to keep the right-leg inputs (thigh + knee) anchored to the sample
-        being evaluated rather than the mocap reference.
+    mocap_segment :
+        Dict of joint angle arrays (included-angle, degrees) from motion
+        matching, plus ``root_pos`` (T, 3) in MuJoCo Z-up metres.
+    predicted_knee :
+        Model-predicted right knee angle (included-angle, degrees).
+    use_gui :
+        Launch interactive MuJoCo viewer (requires display).
+    fps :
+        Data frame rate (default 200 Hz).
+    sample_thigh_right :
+        If provided, drives the right hip from this signal instead of
+        the matched mocap hip_right.  Keeps both right-leg inputs
+        (thigh + knee) anchored to the evaluated sample.
+    save_trajectory :
+        Path to save the recorded trajectory (.npz) for later replay.
+    render_gif :
+        Path to save an animated GIF of the simulation.
+
+    Returns
+    -------
+    dict
+        Evaluation metrics (same keys as before), plus ``"trajectory_path"``
+        and/or ``"gif_path"`` if those outputs were requested.
     """
     if not _MUJOCO_AVAILABLE:
         raise RuntimeError(
             "MuJoCo is required but not installed.\n"
             "Install it with:  pip install mujoco"
         )
-    return _MuJoCoRunner(use_gui=use_gui, fps=fps).run(
+
+    result = _MuJoCoRunner(use_gui=use_gui, fps=fps).run(
         mocap_segment, predicted_knee, FALL_HEIGHT_THRESHOLD,
         sample_thigh_right=sample_thigh_right,
     )
 
+    # Extract trajectory (not JSON-serialisable, handled separately)
+    trajectory = result.pop("_trajectory", None)
+
+    if trajectory is not None and save_trajectory is not None:
+        p = Path(save_trajectory)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        _save_trajectory(p, trajectory)
+        result["trajectory_path"] = str(p)
+        print(f"[sim] Trajectory saved -> {p}")
+
+    if trajectory is not None and render_gif is not None:
+        p = Path(render_gif)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        _render_gif(trajectory, p)
+        if p.exists():
+            result["gif_path"] = str(p)
+
+    return result
+
+
+# ── Trajectory I/O ───────────────────────────────────────────────────────────
+
+def _save_trajectory(path: Path, traj: SimTrajectory) -> None:
+    np.savez_compressed(
+        path,
+        qpos_history=traj.qpos_history,
+        fps=np.array([traj.fps]),
+        mjcf=np.array([traj.mjcf]),
+    )
+
+
+def save_trajectory(path: str | Path, traj: SimTrajectory) -> None:
+    """Save a SimTrajectory to a compressed .npz file."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _save_trajectory(path, traj)
+
+
+def load_trajectory(path: str | Path) -> SimTrajectory:
+    """Load a SimTrajectory from a .npz file."""
+    d = np.load(path, allow_pickle=True)
+    return SimTrajectory(
+        qpos_history=d["qpos_history"],
+        fps=float(d["fps"][0]),
+        mjcf=str(d["mjcf"][0]),
+    )
+
+
+# ── Replay ───────────────────────────────────────────────────────────────────
+
+def replay_trajectory(
+    trajectory_or_path: SimTrajectory | str | Path,
+    speed: float = 1.0,
+) -> None:
+    """Replay a recorded simulation trajectory in the MuJoCo viewer.
+
+    Parameters
+    ----------
+    trajectory_or_path :
+        A SimTrajectory object or path to a saved .npz file.
+    speed :
+        Playback speed multiplier (1.0 = real-time).
+    """
+    if not _MUJOCO_AVAILABLE or not _VIEWER_AVAILABLE:
+        raise RuntimeError("MuJoCo with viewer is required for replay.")
+
+    if isinstance(trajectory_or_path, (str, Path)):
+        traj = load_trajectory(trajectory_or_path)
+    else:
+        traj = trajectory_or_path
+
+    model = mujoco.MjModel.from_xml_string(traj.mjcf)
+    data = mujoco.MjData(model)
+    dt = 1.0 / max(traj.fps, 1.0) / max(speed, 0.01)
+    T = len(traj.qpos_history)
+
+    print(f"[replay] {T} frames @ {traj.fps:.0f} Hz "
+          f"(speed {speed:.1f}x, duration {T / traj.fps:.1f}s)")
+
+    with mujoco.viewer.launch_passive(model, data) as viewer:
+        # Side-tracking camera
+        torso_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "torso")
+        viewer.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+        viewer.cam.trackbodyid = torso_id
+        viewer.cam.distance = 3.5
+        viewer.cam.elevation = -15.0
+        viewer.cam.azimuth = 90.0
+
+        playing = True
+        while playing and viewer.is_running():
+            for t in range(T):
+                if not viewer.is_running():
+                    return
+                data.qpos[:] = traj.qpos_history[t]
+                mujoco.mj_forward(model, data)
+                viewer.sync()
+                time.sleep(dt)
+
+            # Prompt: loop or close
+            print("[replay] Playback complete. "
+                  "Close the viewer to exit, or it will loop.")
+            # Auto-loop: replay again until viewer is closed
+
+        # Keep viewer open after final loop
+        while viewer.is_running():
+            time.sleep(0.05)
+
+
+# ── GIF rendering ────────────────────────────────────────────────────────────
+
+def _render_gif(
+    traj: SimTrajectory,
+    output_path: Path,
+    width: int = 640,
+    height: int = 480,
+    gif_fps: int = 30,
+) -> None:
+    """Render a SimTrajectory to an animated GIF (headless-safe)."""
+    try:
+        from PIL import Image
+    except ImportError:
+        print("[gif] Pillow not installed, skipping GIF render.")
+        return
+
+    try:
+        model = mujoco.MjModel.from_xml_string(traj.mjcf)
+        data = mujoco.MjData(model)
+        renderer = mujoco.Renderer(model, height=height, width=width)
+    except Exception as exc:
+        print(f"[gif] Renderer init failed ({exc}), skipping GIF.")
+        return
+
+    T = len(traj.qpos_history)
+    skip = max(1, round(traj.fps / gif_fps))
+    frame_indices = list(range(0, T, skip))
+
+    # Camera: side-tracking
+    camera = mujoco.MjvCamera()
+    camera.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+    camera.trackbodyid = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_BODY, "torso")
+    camera.distance = 3.5
+    camera.elevation = -15.0
+    camera.azimuth = 90.0
+
+    frames: List = []
+    for t in tqdm(frame_indices, desc="Rendering GIF", unit="frame", leave=False):
+        data.qpos[:] = traj.qpos_history[t]
+        mujoco.mj_forward(model, data)
+        renderer.update_scene(data, camera=camera)
+        pixels = renderer.render()
+        frames.append(Image.fromarray(pixels))
+
+    if not frames:
+        return
+
+    duration_ms = int(1000 * skip / traj.fps)
+    frames[0].save(
+        output_path,
+        save_all=True,
+        append_images=frames[1:],
+        duration=duration_ms,
+        loop=0,
+    )
+    dur_s = T / traj.fps
+    print(f"[gif] Saved {len(frames)}-frame GIF ({dur_s:.1f}s) -> {output_path}")
+
+
+def render_simulation_gif(
+    trajectory_or_path: SimTrajectory | str | Path,
+    output_path: str | Path,
+    width: int = 640,
+    height: int = 480,
+    gif_fps: int = 30,
+) -> None:
+    """Render a saved or in-memory trajectory to an animated GIF.
+
+    Parameters
+    ----------
+    trajectory_or_path :
+        A SimTrajectory object or path to a saved .npz file.
+    output_path :
+        Destination for the .gif file.
+    width, height :
+        Resolution of each rendered frame.
+    gif_fps :
+        Target frame rate for the GIF (frames are subsampled from the
+        full simulation rate).
+    """
+    if not _MUJOCO_AVAILABLE:
+        raise RuntimeError("MuJoCo is required for GIF rendering.")
+
+    if isinstance(trajectory_or_path, (str, Path)):
+        traj = load_trajectory(trajectory_or_path)
+    else:
+        traj = trajectory_or_path
+
+    _render_gif(traj, Path(output_path), width=width, height=height,
+                gif_fps=gif_fps)
+
+
+# ── Demo ─────────────────────────────────────────────────────────────────────
 
 def run_visual_demo(use_full_db: bool = False):
     from mocap_evaluation.mocap_loader import load_aggregated_database
@@ -391,9 +823,40 @@ def run_visual_demo(use_full_db: bool = False):
     qt = db["hip_right"][:T]
     _, _, seg = find_best_match(qk, qt, db)
 
-    out = simulate_prosthetic_walking(seg, qk, use_gui=True)
-    print("Demo metrics:", out)
+    out = simulate_prosthetic_walking(
+        seg, qk, use_gui=True,
+        render_gif="demo_simulation.gif",
+    )
+    print("Demo metrics:", {k: v for k, v in out.items()
+                           if not k.endswith("_series") and not k.endswith("_frames")})
 
 
 if __name__ == "__main__":
-    run_visual_demo()
+    import argparse
+    ap = argparse.ArgumentParser(description="Prosthetic simulation tools")
+    sub = ap.add_subparsers(dest="command")
+
+    sub.add_parser("demo", help="Run a visual demo with mocap data")
+
+    rp = sub.add_parser("replay", help="Replay a saved trajectory")
+    rp.add_argument("path", help="Path to .npz trajectory file")
+    rp.add_argument("--speed", type=float, default=1.0,
+                    help="Playback speed (default: 1.0)")
+
+    gp = sub.add_parser("gif", help="Render a trajectory to GIF")
+    gp.add_argument("path", help="Path to .npz trajectory file")
+    gp.add_argument("--out", default=None, help="Output GIF path")
+    gp.add_argument("--width", type=int, default=640)
+    gp.add_argument("--height", type=int, default=480)
+    gp.add_argument("--fps", type=int, default=30, help="GIF frame rate")
+
+    args = ap.parse_args()
+
+    if args.command == "demo" or args.command is None:
+        run_visual_demo()
+    elif args.command == "replay":
+        replay_trajectory(args.path, speed=args.speed)
+    elif args.command == "gif":
+        out = args.out or Path(args.path).with_suffix(".gif")
+        render_simulation_gif(args.path, out, width=args.width,
+                              height=args.height, gif_fps=args.fps)
