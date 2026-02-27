@@ -599,7 +599,9 @@ class _MuJoCoRunner:
                 qpos_history.append(data.qpos.copy())
 
                 # ── Collect metrics ──────────────────────────────────────
-                com_h = float(data.subtree_com[0, 2])
+                # Use prediction model's subtree CoM (not world-body
+                # subtree which would include the reference humanoid).
+                com_h = float(data.subtree_com[torso_id, 2])
                 rc = False
                 lc = False
                 for c in range(data.ncon):
