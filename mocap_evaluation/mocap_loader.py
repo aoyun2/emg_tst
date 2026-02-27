@@ -179,8 +179,20 @@ def _extract_angles_from_bvh(parser: BVHParser) -> Optional[dict]:
         if k in angles and float(angles[k].mean()) < -5.0:
             angles[k] = -angles[k]
 
-    for k in ("knee_right", "knee_left", "hip_right", "hip_left",
-              "ankle_right", "ankle_left", "pelvis_tilt", "trunk_lean"):
+    # Knees: flexion is always positive, abs() is safe
+    for k in ("knee_right", "knee_left"):
+        if k in angles:
+            angles[k] = np.clip(180.0 - np.abs(angles[k]), 0.0, 180.0).astype(np.float32)
+
+    # Hips & ankles: MUST preserve sign — negative = extension/plantarflexion.
+    # Using abs() here collapsed the 40°+ walking range to ~10° one-directional
+    # motion, making the model appear to stand still.
+    for k in ("hip_right", "hip_left", "ankle_right", "ankle_left"):
+        if k in angles:
+            angles[k] = (180.0 - angles[k]).astype(np.float32)
+
+    # Pelvis/trunk: typically small symmetric values, abs() is fine
+    for k in ("pelvis_tilt", "trunk_lean"):
         if k in angles:
             angles[k] = np.clip(180.0 - np.abs(angles[k]), 0.0, 180.0).astype(np.float32)
 
