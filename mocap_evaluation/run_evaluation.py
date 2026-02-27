@@ -494,23 +494,28 @@ def evaluate_from_curves(
 
     per_match = []
     for rank, (start, dist, segment) in enumerate(tqdm(matches, desc="Simulating matches", unit="match"), start=1):
+        cat = segment.get("category", "unknown")
+        plot_dir = Path(out_path).with_suffix("") / f"match_{rank:02d}_{cat}"
+
         # Both simulations use the sample's own thigh angle for the right hip
         # actuator so that the right leg (thigh + knee) is always driven by
         # the sample being evaluated, not by the matched mocap reference.
         gt_metrics = simulate_prosthetic_walking(
             segment,
             knee_label_inc,
+            use_gui=False,
             sample_thigh_right=thigh_angle,
+            gif_path=str(plot_dir / "ground_truth_replay.gif"),
         )
         pred_metrics = simulate_prosthetic_walking(
             segment,
             pred_knee_inc,
+            use_gui=False,
             sample_thigh_right=thigh_angle,
+            gif_path=str(plot_dir / "prediction_replay.gif"),
         )
-        cat = segment.get("category", "unknown")
 
         # Save simulation plots
-        plot_dir = Path(out_path).with_suffix("") / f"match_{rank:02d}_{cat}"
         plot_simulation(gt_metrics, f"Ground Truth — match #{rank} [{cat}]",
                         plot_dir / "ground_truth_sim.png", fps=mocap_db["fps"])
         plot_simulation(pred_metrics, f"Prediction — match #{rank} [{cat}]",
@@ -551,38 +556,55 @@ def evaluate_from_curves(
 
 def _parse_args():
     ap = argparse.ArgumentParser(
-        description="Evaluate a prosthetic knee model via motion-capture simulation"
+        description="Evaluate a prosthetic knee model via motion-capture simulation",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Quick-start examples:\n"
+            "  # No checkpoint needed — synthetic data demo:\n"
+            "  python -m mocap_evaluation.run_evaluation --mock-data\n\n"
+            "  # External gait sample (downloads automatically):\n"
+            "  python -m mocap_evaluation.run_evaluation --test-sample\n\n"
+            "  # Full evaluation with trained model:\n"
+            "  python -m mocap_evaluation.run_evaluation --checkpoint path/to/reg_best.pt\n"
+        ),
     )
-    ap.add_argument("--checkpoint",  default=None,
-                    help="Path to reg_best.pt checkpoint")
-    ap.add_argument("--data",        default="samples_dataset.npy",
+    # ── Mode selection (pick one) ─────────────────────────────────────────
+    mode = ap.add_argument_group("mode (pick one, or omit for full checkpoint evaluation)")
+    mode.add_argument("--mock-data", action="store_true",
+                      help="Generate synthetic knee/thigh curves (no checkpoint needed)")
+    mode.add_argument("--test-sample", action="store_true",
+                      help="Use a real gait sample for evaluation (no checkpoint needed)")
+    mode.add_argument("--real-walk-data", action="store_true",
+                      help="Extract a walking segment from the mocap database")
+
+    # ── Common options ────────────────────────────────────────────────────
+    ap.add_argument("--checkpoint", default=None,
+                    help="Path to reg_best.pt (auto-detected if omitted)")
+    ap.add_argument("--data", default="samples_dataset.npy",
                     help="Path to samples_dataset.npy")
-    ap.add_argument("--mocap-dir",   default="mocap_data",
-                    help="Directory containing BVH files (or where to download them)")
-    ap.add_argument("--out",         default="eval_results.json",
-                    help="Output JSON file for metrics")
-    ap.add_argument("--n-samples",   type=int, default=None,
-                    help="Limit number of test windows (None = all)")
-    ap.add_argument("--device",      default="cpu",
-                    help="torch device (cpu / cuda)")
-    ap.add_argument("--test-sample",  action="store_true",
-                    help="Run quick evaluation with real test sample curves (no checkpoint needed)")
-    ap.add_argument("--mock-data", action="store_true",
-                    help="Run with generated mock knee/thigh curves (no checkpoint needed)")
+    ap.add_argument("--mocap-dir", default="mocap_data",
+                    help="BVH mocap data directory (auto-downloads if empty)")
+    ap.add_argument("--out", default="eval_results.json",
+                    help="Output JSON path for results")
     ap.add_argument("--top-k", type=int, default=3,
-                    help="Top-k motion matches to simulate")
-    ap.add_argument("--save-mock", default=None,
-                    help="Optional .npz path to save generated mock curves")
-    ap.add_argument("--real-walk-data", action="store_true",
-                    help="Use a real walking segment from mocap DB (thigh pitch + knee included angle only)")
-    ap.add_argument("--save-real", default=None,
-                    help="Optional .npz path to save extracted real walking curves")
-    ap.add_argument("--test-sample-source", choices=["external", "mocap"], default="external",
-                    help="Source for --test-sample queries (external recommended for out-of-db testing)")
-    ap.add_argument("--external-sample-url", default=None,
-                    help="Optional URL override for external gait sample file (.mot/.sto)")
+                    help="Number of motion matches to simulate (default: 3)")
+    ap.add_argument("--n-samples", type=int, default=None,
+                    help="Limit number of test windows")
+    ap.add_argument("--device", default="cpu",
+                    help="Torch device (cpu / cuda)")
     ap.add_argument("--match-categories", default=None,
-                    help="Comma-separated category filter for motion matching (e.g. walk,run)")
+                    help="Filter matches by category (e.g. walk,run)")
+
+    # ── Advanced ──────────────────────────────────────────────────────────
+    adv = ap.add_argument_group("advanced")
+    adv.add_argument("--save-mock", default=None,
+                     help="Save generated mock curves to .npz")
+    adv.add_argument("--save-real", default=None,
+                     help="Save extracted real curves to .npz")
+    adv.add_argument("--test-sample-source", choices=["external", "mocap"],
+                     default="external", help="Gait sample source for --test-sample")
+    adv.add_argument("--external-sample-url", default=None,
+                     help="Custom URL for external gait sample file")
     return ap.parse_args()
 
 
