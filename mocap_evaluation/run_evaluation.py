@@ -38,6 +38,7 @@ from typing import List, Optional
 
 import numpy as np
 import torch
+from tqdm import tqdm
 
 from emg_tst.model import TSTEncoder, TSTRegressor
 from emg_tst.data import StandardScaler
@@ -273,7 +274,7 @@ def evaluate(
     mocap_dir: str | Path = "mocap_data",
     out_path: str | Path  = "eval_results.json",
     n_samples: Optional[int] = None,
-    use_gui: bool = True,
+    use_gui: bool = False,
     use_physics: bool = True,
     device_str: str = "cpu",
     sim_backend: str = "mujoco",
@@ -312,7 +313,7 @@ def evaluate(
 
     # ── Per-window loop ──────────────────────────────────────────────────────
     per_window = []
-    for i in range(N):
+    for i in tqdm(range(N), desc="Evaluating windows", unit="win"):
         t0 = time.time()
 
         x_win      = X[i]                    # (W, F)
@@ -355,15 +356,6 @@ def evaluate(
         )  # RMSE is invariant to the 180-x shift — compute in original convention
         metrics["elapsed_s"]   = float(time.time() - t0)
         per_window.append(metrics)
-
-        print(
-            f"  [{i+1:3d}/{N}] "
-            f"pred_rmse={metrics['pred_rmse']:.2f}°  "
-            f"knee_rmse={metrics['knee_rmse_deg']:.2f}°  "
-            f"fall={metrics['fall_detected']}  "
-            f"stab={metrics['stability_score']:.3f}  "
-            f"({metrics['elapsed_s']:.1f}s)"
-        )
 
     # ── Aggregate summary ────────────────────────────────────────────────────
     def _agg(key):
@@ -410,7 +402,7 @@ def evaluate_from_curves(
     predicted_knee_included: np.ndarray,
     mocap_dir: str | Path = "mocap_data",
     top_k: int = 3,
-    use_gui: bool = True,
+    use_gui: bool = False,
     use_physics: bool = True,
     out_path: str | Path = "eval_mock_results.json",
     sim_backend: str = "mujoco",
@@ -435,7 +427,7 @@ def evaluate_from_curves(
     )
 
     per_match = []
-    for rank, (start, dist, segment) in enumerate(matches, start=1):
+    for rank, (start, dist, segment) in enumerate(tqdm(matches, desc="Simulating matches", unit="match"), start=1):
         # Both simulations use the sample's own thigh angle for the right hip
         # actuator so that the right leg (thigh + knee) is always driven by
         # the sample being evaluated, not by the matched mocap reference.
@@ -504,8 +496,8 @@ def _parse_args():
                     help="Limit number of test windows (None = all)")
     ap.add_argument("--device",      default="cpu",
                     help="torch device (cpu / cuda)")
-    ap.add_argument("--no-gui",      action="store_true",
-                    help="Disable simulation GUI (GUI is on by default when backend supports it)")
+    ap.add_argument("--gui",         action="store_true",
+                    help="Enable simulation GUI (headless by default)")
     ap.add_argument("--no-physics",  action="store_true",
                     help="(Deprecated — ignored. MuJoCo physics is always used.)")
     ap.add_argument("--test-sample",  action="store_true",
@@ -555,7 +547,7 @@ def main():
             mocap_dir=args.mocap_dir,
             out_path=args.out,
             top_k=args.top_k,
-            use_gui=not args.no_gui,
+            use_gui=args.gui,
             use_physics=True,
             sim_backend=args.sim_backend,
             match_categories=match_categories,
@@ -581,7 +573,7 @@ def main():
             predicted_knee_included=curves.predicted_knee_included_deg,
             mocap_dir=args.mocap_dir,
             top_k=args.top_k,
-            use_gui=not args.no_gui,
+            use_gui=args.gui,
             use_physics=True,
             out_path=args.out,
             sim_backend=args.sim_backend,
@@ -600,7 +592,7 @@ def main():
             predicted_knee_included=curves.predicted_knee_included_deg,
             mocap_dir=args.mocap_dir,
             top_k=args.top_k,
-            use_gui=not args.no_gui,
+            use_gui=args.gui,
             use_physics=True,
             out_path=args.out,
             sim_backend=args.sim_backend,
@@ -638,7 +630,7 @@ def main():
         mocap_dir       = args.mocap_dir,
         out_path        = args.out,
         n_samples       = args.n_samples,
-        use_gui         = not args.no_gui,
+        use_gui         = args.gui,
         use_physics     = not args.no_physics,
         device_str      = args.device,
         sim_backend      = args.sim_backend,

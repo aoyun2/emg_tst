@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 import numpy as np
+from tqdm import tqdm
 
 try:
     import mujoco
@@ -286,7 +287,7 @@ class _MuJoCoRunner:
         metrics = EvalMetrics.empty()
 
         def _step_loop(viewer_obj=None):
-            for t in range(T):
+            for t in tqdm(range(T), desc="Simulating", unit="step", leave=False):
                 # Actuator order matches MJCF definition.
                 data.ctrl[0] = _rad(hip_r[t])
                 data.ctrl[1] = _rad(hip_l[t])

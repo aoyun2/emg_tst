@@ -35,6 +35,8 @@ import zipfile
 from pathlib import Path
 from typing import List, Optional, Sequence
 
+from tqdm import tqdm
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -137,9 +139,8 @@ def _download_zip(
 
     downloaded: List[Path] = []
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-        for member in zf.namelist():
-            if not member.endswith(".bvh"):
-                continue
+        bvh_members = [m for m in zf.namelist() if m.endswith(".bvh")]
+        for member in tqdm(bvh_members, desc="Extracting LAFAN1", unit="file", disable=not verbose):
             basename = Path(member).name
             if wanted is not None and basename not in wanted:
                 continue
@@ -148,8 +149,6 @@ def _download_zip(
                 downloaded.append(dest)
                 continue
             dest.write_bytes(zf.read(member))
-            if verbose:
-                print(f"  [ok] {basename}")
             downloaded.append(dest)
 
     return downloaded

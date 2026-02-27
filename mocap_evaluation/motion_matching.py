@@ -23,6 +23,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+from tqdm import tqdm
 
 
 # ── Normalisation ─────────────────────────────────────────────────────────────
@@ -117,7 +118,7 @@ def _xcorr_distances(
     """
     starts = np.arange(0, len(database) - window + 1, stride)
     dists  = np.empty(len(starts), dtype=np.float64)
-    for k, s in enumerate(starts):
+    for k, s in enumerate(tqdm(starts, desc="L2 pre-filter", unit="win", leave=False)):
         seg = database[s : s + window]
         dists[k] = float(np.mean((query - seg) ** 2))
     return dists
@@ -228,7 +229,7 @@ def find_best_match(
     best_dist  = float("inf")
     best_start = int(top_starts[0])
 
-    for s in top_starts:
+    for s in tqdm(top_starts, desc="DTW scoring", unit="cand", leave=False):
         seg = db_n[s : s + T]
         d   = dtw_distance(query_n, seg, band=dtw_band)
         if d < best_dist:
@@ -329,7 +330,7 @@ def find_top_k_matches(
 
     # Full DTW on all pre-filtered candidates
     dtw_scores: List[Tuple[float, int]] = []
-    for s in top_starts:
+    for s in tqdm(top_starts, desc="DTW top-k scoring", unit="cand", leave=False):
         seg = db_n[s : s + T]
         d   = dtw_distance(query_n, seg, band=dtw_band)
         dtw_scores.append((d, int(s)))
@@ -398,8 +399,9 @@ def build_predicted_sequence(
 
     chunks = []
     dists  = []
+    chunk_starts = list(range(0, N, hop))
 
-    for start in range(0, N, hop):
+    for start in tqdm(chunk_starts, desc="Stitching segments", unit="chunk"):
         end = min(start + window, N)
         # Pad last chunk if needed
         knee_q  = imu_knee_full[start:end]

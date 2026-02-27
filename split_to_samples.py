@@ -2,6 +2,7 @@ import glob
 from pathlib import Path
 import numpy as np
 from datetime import datetime
+from tqdm import tqdm
 from emg_tst.data import load_recording
 
 # ==========================================
@@ -68,10 +69,10 @@ def main():
 
     all_X, all_y, all_y_seq, all_file_id, all_start = [], [], [], [], []
 
-    for file_id, p in enumerate(paths):
+    for file_id, p in enumerate(tqdm(paths, desc="Processing recordings", unit="file")):
         X, y, meta = load_recording(Path(p))
-        print(f"{Path(p).name}: T={X.shape[0]} features={X.shape[1]} "
-              f"({meta['n_channels']} bins/sensor) ~{meta['effective_hz']:.1f} Hz")
+        tqdm.write(f"{Path(p).name}: T={X.shape[0]} features={X.shape[1]} "
+                   f"({meta['n_channels']} bins/sensor) ~{meta['effective_hz']:.1f} Hz")
 
         Xs, ys, y_seq, starts = make_nonoverlapping_windows(X, y)
         all_X.append(Xs)

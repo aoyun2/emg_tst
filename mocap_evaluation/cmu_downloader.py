@@ -14,6 +14,8 @@ import urllib.request
 from pathlib import Path
 from typing import List, Optional, Sequence
 
+from tqdm import tqdm
+
 from mocap_evaluation.cmu_catalog import (
     CATALOG,
     TrialInfo,
@@ -98,11 +100,8 @@ def download_trials(
     downloaded: List[Path] = []
     n = len(trials)
 
-    for i, trial in enumerate(trials, 1):
-        if verbose:
-            print(f"[{i}/{n}] {trial.category}: {trial.description} "
-                  f"(subject {trial.subject:02d}, trial {trial.trial:02d})")
-        ok = _download_one(trial, dest_dir, verbose=verbose)
+    for trial in tqdm(trials, desc="Downloading CMU", unit="file", disable=not verbose):
+        ok = _download_one(trial, dest_dir, verbose=False)
         if ok:
             downloaded.append(dest_dir / trial.filename)
 
