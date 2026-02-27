@@ -70,23 +70,53 @@ class BVHParser:
     # ------------------------------------------------------------------
 
     def parse(self, path: str | Path) -> "BVHParser":
-        lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
+        # utf-8-sig strips BOM automatically (common on Windows-edited files)
+        lines = Path(path).read_text(encoding="utf-8-sig", errors="replace").splitlines()
         i = 0
-        while i < len(lines) and lines[i].strip() != "HIERARCHY":
+        while i < len(lines) and lines[i].strip().upper() != "HIERARCHY":
             i += 1
+        if i >= len(lines):
+            raise ValueError(f"BVH parse error in {path}: HIERARCHY section not found")
         i += 1  # skip 'HIERARCHY'
 
         self.root, i = self._parse_node(lines, i)
 
         # Locate MOTION section
-        while i < len(lines) and lines[i].strip() != "MOTION":
+        while i < len(lines) and lines[i].strip().upper() != "MOTION":
             i += 1
+        if i >= len(lines):
+            raise ValueError(f"BVH parse error in {path}: MOTION section not found")
         i += 1
 
-        # Frames: N
+        # Find "Frames:" line (skip any blanks or comments)
+        while i < len(lines):
+            stripped = lines[i].strip()
+            if stripped.lower().startswith("frames") and ":" in stripped:
+                break
+            if stripped and not stripped.startswith("#"):
+                raise ValueError(
+                    f"BVH parse error in {path}: expected 'Frames:' "
+                    f"but got {stripped!r} at line {i+1}"
+                )
+            i += 1
+        if i >= len(lines):
+            raise ValueError(f"BVH parse error in {path}: 'Frames:' line not found")
         self.n_frames = int(lines[i].split(":", 1)[1].strip())
         i += 1
-        # Frame Time: T
+
+        # Find "Frame Time:" line
+        while i < len(lines):
+            stripped = lines[i].strip()
+            if stripped.lower().startswith("frame") and ":" in stripped:
+                break
+            if stripped and not stripped.startswith("#"):
+                raise ValueError(
+                    f"BVH parse error in {path}: expected 'Frame Time:' "
+                    f"but got {stripped!r} at line {i+1}"
+                )
+            i += 1
+        if i >= len(lines):
+            raise ValueError(f"BVH parse error in {path}: 'Frame Time:' line not found")
         self.frame_time = float(lines[i].split(":", 1)[1].strip())
         i += 1
 
@@ -194,12 +224,16 @@ class BVHParser:
         name = tok[1]
         joint = BVHJoint(name=name, parent=None)
         self.joints[name] = joint
-        i += 1  # skip 'ROOT/JOINT name' line
 
-        # Find opening {
-        while i < len(lines) and lines[i].strip() != "{":
-            i += 1
-        i += 1  # skip '{'
+        # Handle '{' on the same line as ROOT/JOINT: "ROOT Hips {"
+        if "{" in tok:
+            i += 1  # skip this line, already consumed the '{'
+        else:
+            i += 1  # skip 'ROOT/JOINT name' line
+            # Find opening {
+            while i < len(lines) and lines[i].strip() != "{":
+                i += 1
+            i += 1  # skip '{'
 
         while i < len(lines):
             tok_str = lines[i].strip()
@@ -227,17 +261,18 @@ class BVHParser:
                     child.parent = joint
                     joint.children.append(child)
 
-            elif kw == "End":  # 'End Site'
-                # Skip the End Site { OFFSET ... } block
+            elif kw == "End":  # 'End Site' or 'End Site {'
+                # Check if '{' is on the same line
+                brace_on_line = "{" in tok_str
                 i += 1  # skip 'End Site' line
-                depth = 0
+                depth = 1 if brace_on_line else 0
                 while i < len(lines):
                     t = lines[i].strip()
-                    if t == "{":
+                    if "{" in t:
                         depth += 1
-                    elif t == "}":
+                    if "}" in t:
                         depth -= 1
-                        if depth == 0:
+                        if depth <= 0:
                             i += 1
                             break
                     i += 1

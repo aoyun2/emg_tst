@@ -42,6 +42,7 @@ Returned database dict (all angles in **degrees**, all arrays at TARGET_FPS):
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import urllib.request
 import urllib.error
@@ -227,7 +228,11 @@ def load_cmu_bvh(bvh_path: str | Path) -> Optional[dict]:
     bvh_path = Path(bvh_path)
     if not bvh_path.exists():
         return None
-    parser = BVHParser().parse(bvh_path)
+    try:
+        parser = BVHParser().parse(bvh_path)
+    except (ValueError, IndexError) as exc:
+        print(f"  [warn] Skipping {bvh_path.name}: {exc}")
+        return None
     return _extract_angles_from_bvh(parser)
 
 
@@ -437,14 +442,114 @@ def _concatenate_databases(dbs: list, meta: Optional[list] = None) -> dict:
     return result
 
 
+# ── Cache helpers ─────────────────────────────────────────────────────────────
+
+# Keys that are per-frame 1-D arrays in the database dict.
+_CACHE_KEYS_1D = [
+    "knee_right", "knee_left", "hip_right", "hip_left",
+    "ankle_right", "ankle_left", "pelvis_tilt", "trunk_lean",
+]
+
+
+def _cache_fingerprint(bvh_dir: Path) -> str:
+    """Fast fingerprint of a BVH directory: sorted filenames + sizes."""
+    if not bvh_dir.exists():
+        return ""
+    entries = []
+    for f in sorted(bvh_dir.glob("*.bvh")):
+        entries.append(f"{f.name}:{f.stat().st_size}")
+    return hashlib.md5("|".join(entries).encode()).hexdigest()
+
+
+def _cache_path(mocap_root: Path, datasets: Sequence[str]) -> Path:
+    """Return the path for the cached .npz for a given set of datasets."""
+    tag = "_".join(sorted(datasets))
+    return mocap_root / f".cache_{tag}.npz"
+
+
+def _save_cache(path: Path, db: dict) -> None:
+    """Persist the aggregated database to a .npz file."""
+    save_dict: dict = {}
+    for k in _CACHE_KEYS_1D:
+        save_dict[k] = db[k]
+    save_dict["root_pos"] = db["root_pos"]
+    save_dict["fps"] = np.float64(db["fps"])
+    save_dict["source"] = np.array(db["source"])
+    if "categories" in db:
+        save_dict["categories"] = db["categories"]
+    if "file_boundaries" in db:
+        save_dict["file_boundaries"] = np.array(db["file_boundaries"], dtype=object)
+    # Store the fingerprints so we can detect stale caches.
+    if "_fingerprints" in db:
+        save_dict["_fingerprints"] = np.array(db["_fingerprints"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(path, **save_dict)
+
+
+def _load_cache(path: Path) -> Optional[dict]:
+    """Load a cached .npz, returning the database dict or None."""
+    if not path.exists():
+        return None
+    try:
+        raw = np.load(path, allow_pickle=True)
+    except Exception:
+        return None
+    db: dict = {}
+    for k in _CACHE_KEYS_1D:
+        if k not in raw:
+            return None
+        db[k] = raw[k]
+    db["root_pos"] = raw["root_pos"]
+    db["fps"] = float(raw["fps"])
+    db["source"] = str(raw["source"])
+    if "categories" in raw:
+        db["categories"] = raw["categories"]
+    if "file_boundaries" in raw:
+        db["file_boundaries"] = list(raw["file_boundaries"])
+    if "_fingerprints" in raw:
+        db["_fingerprints"] = str(raw["_fingerprints"])
+    return db
+
+
+# ── Dataset registry ─────────────────────────────────────────────────────────
+
+# Maps short dataset names to (sub-folder, auto-download function).
+_DATASET_REGISTRY: Dict[str, tuple] = {}
+
+
+def _register_datasets():
+    """Populate the dataset registry (called once at import time)."""
+    _DATASET_REGISTRY["bandai"] = ("bandai", _auto_download_bandai)
+    _DATASET_REGISTRY["bandai_ds1"] = ("bandai_ds1", _auto_download_bandai_ds1)
+    _DATASET_REGISTRY["cmu"] = ("cmu", _auto_download_cmu)
+    _DATASET_REGISTRY["lafan1"] = ("lafan1", _auto_download_lafan1)
+    _DATASET_REGISTRY["sfu"] = ("sfu", _auto_download_sfu)
+
+
+ALL_DATASETS = ("bandai", "bandai_ds1", "cmu", "lafan1", "sfu")
+
+
 # ── Main entry point — always aggregated ──────────────────────────────────────
 
 
 def load_aggregated_database(
     mocap_root: str | Path = MOCAP_DATA_DIR,
     try_download: bool = True,
+    datasets: Optional[Sequence[str]] = None,
+    use_cache: bool = True,
 ) -> dict:
-    """Load an aggregated mocap database from **all** dataset sub-folders.
+    """Load an aggregated mocap database from dataset sub-folders.
+
+    Parameters
+    ----------
+    mocap_root   : root directory containing per-dataset sub-folders
+    try_download : auto-download missing datasets
+    datasets     : which datasets to include, e.g. ``["cmu"]`` or
+                   ``["cmu", "bandai"]``.  ``None`` defaults to ``["cmu"]``.
+    use_cache    : if True, cache the parsed database to a ``.npz`` file
+                   inside *mocap_root* and reload from cache on subsequent
+                   calls.  The cache is invalidated automatically when the
+                   BVH file listing changes (new/removed files).
 
     Sub-folders searched (relative to *mocap_root*):
         bandai/      — Bandai Namco Motiondataset-2
@@ -452,44 +557,66 @@ def load_aggregated_database(
         cmu/         — CMU Graphics Lab
         lafan1/      — Ubisoft LAFAN1
         sfu/         — SFU Motion Capture Database
-
-    If a sub-folder is empty and ``try_download`` is True the corresponding
-    downloader is invoked automatically.
     """
+    _register_datasets()
     mocap_root = Path(mocap_root)
-    bandai_dir     = mocap_root / "bandai"
-    bandai_ds1_dir = mocap_root / "bandai_ds1"
-    cmu_dir        = mocap_root / "cmu"
-    lafan1_dir     = mocap_root / "lafan1"
-    sfu_dir        = mocap_root / "sfu"
 
+    if datasets is None:
+        active = ["cmu"]
+    else:
+        active = [d.lower() for d in datasets]
+        unknown = set(active) - set(ALL_DATASETS)
+        if unknown:
+            raise ValueError(
+                f"Unknown dataset(s): {unknown}. "
+                f"Available: {', '.join(ALL_DATASETS)}"
+            )
+
+    # ── Auto-download requested datasets ─────────────────────────────────
     if try_download:
-        _auto_download_bandai(bandai_dir)
-        _auto_download_bandai_ds1(bandai_ds1_dir)
-        _auto_download_cmu(cmu_dir)
-        _auto_download_lafan1(lafan1_dir)
-        _auto_download_sfu(sfu_dir)
+        for name in active:
+            subfolder, dl_fn = _DATASET_REGISTRY[name]
+            dl_fn(mocap_root / subfolder)
 
+    # ── Try loading from cache ───────────────────────────────────────────
+    if use_cache:
+        fingerprints = {
+            name: _cache_fingerprint(mocap_root / _DATASET_REGISTRY[name][0])
+            for name in active
+        }
+        fp_str = "|".join(f"{k}={v}" for k, v in sorted(fingerprints.items()))
+        cp = _cache_path(mocap_root, active)
+        cached = _load_cache(cp)
+        if cached is not None and cached.get("_fingerprints") == fp_str:
+            total_dur = len(cached["knee_right"]) / TARGET_FPS
+            n_files = len(cached.get("file_boundaries", []))
+            print(f"[mocap_loader] Loaded from cache: {cp.name} "
+                  f"({total_dur:.1f}s, {n_files} files)")
+            cached.pop("_fingerprints", None)
+            return cached
+
+    # ── Parse BVH files ──────────────────────────────────────────────────
     all_segments: list = []
     all_meta: list = []
-    for label, d in [("bandai", bandai_dir), ("bandai_ds1", bandai_ds1_dir),
-                     ("cmu", cmu_dir), ("lafan1", lafan1_dir), ("sfu", sfu_dir)]:
+    for name in active:
+        subfolder, _ = _DATASET_REGISTRY[name]
+        d = mocap_root / subfolder
         segs, meta = _load_local_bvh_segments(d)
         if segs:
-            print(f"[mocap_loader] {label}: {len(segs)} files")
+            print(f"[mocap_loader] {name}: {len(segs)} files")
         all_segments.extend(segs)
         all_meta.extend(meta)
 
     if not all_segments:
+        ds_list = ", ".join(active)
         raise RuntimeError(
-            "No BVH mocap data available.\n"
+            f"No BVH mocap data available for datasets: {ds_list}.\n"
             f"Expected files in sub-folders of: {mocap_root}\n"
             "Download everything at once:\n"
             "  python -m mocap_evaluation.download_all\n"
             "Or individually:\n"
-            "  python -m mocap_evaluation.bandai_namco_downloader\n"
-            "  python -m mocap_evaluation.bandai_namco_ds1_downloader\n"
             "  python -m mocap_evaluation.cmu_downloader\n"
+            "  python -m mocap_evaluation.bandai_namco_downloader\n"
             "  python -m mocap_evaluation.lafan1_downloader\n"
             "  python -m mocap_evaluation.sfu_downloader"
         )
@@ -501,6 +628,14 @@ def load_aggregated_database(
     combined["source"] = "+".join(sorted(sources)) + "+aggregated"
     print(f"[mocap_loader] Aggregated {len(all_segments)} files, {total_dur:.1f}s total, "
           f"{n_cats} categories (sources: {combined['source']})")
+
+    # ── Save cache ───────────────────────────────────────────────────────
+    if use_cache:
+        combined["_fingerprints"] = fp_str
+        _save_cache(cp, combined)
+        combined.pop("_fingerprints", None)
+        print(f"[mocap_loader] Saved cache -> {cp.name}")
+
     return combined
 
 
@@ -515,14 +650,16 @@ load_aggregated_bandai_cmu_database = load_aggregated_database
 def load_or_generate_mocap_database(
     bvh_dir: str | Path = MOCAP_DATA_DIR,
     try_download: bool = True,
+    **kwargs,
 ) -> dict:
     """Backward-compatible entry point — delegates to :func:`load_aggregated_database`."""
-    return load_aggregated_database(mocap_root=bvh_dir, try_download=try_download)
+    return load_aggregated_database(mocap_root=bvh_dir, try_download=try_download, **kwargs)
 
 
 def load_full_cmu_database(
     bvh_dir: str | Path = MOCAP_DATA_DIR,
     try_download: bool = True,
+    **kwargs,
 ) -> dict:
     """Backward-compatible entry point — delegates to :func:`load_aggregated_database`."""
-    return load_aggregated_database(mocap_root=bvh_dir, try_download=try_download)
+    return load_aggregated_database(mocap_root=bvh_dir, try_download=try_download, **kwargs)
