@@ -35,6 +35,8 @@ import urllib.request
 from pathlib import Path
 from typing import List, Optional, Sequence
 
+from tqdm import tqdm
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -195,22 +197,19 @@ def _download_motions(
     total_ok = 0
     total_tried = 0
 
-    for motion in motions:
-        for style in styles:
-            if verbose:
-                print(f"\n[Bandai Namco] {motion} / {style}")
-            for idx in range(1, _MAX_ID + 1):
-                fname = f"dataset-2_{motion}_{style}_{idx:03d}.bvh"
-                ok = _download_one(fname, dest_dir, verbose=verbose)
-                total_tried += 1
-                if ok:
-                    downloaded.append(dest_dir / fname)
-                    total_ok += 1
-                else:
-                    # First 404 → this style's files are exhausted
-                    if verbose:
-                        print(f"  (no more files for {motion}/{style} after id {idx})")
-                    break
+    combos = [(motion, style) for motion in motions for style in styles]
+    pbar = tqdm(combos, desc="Downloading Bandai", unit="combo", disable=not verbose)
+    for motion, style in pbar:
+        pbar.set_postfix_str(f"{motion}/{style}")
+        for idx in range(1, _MAX_ID + 1):
+            fname = f"dataset-2_{motion}_{style}_{idx:03d}.bvh"
+            ok = _download_one(fname, dest_dir, verbose=False)
+            total_tried += 1
+            if ok:
+                downloaded.append(dest_dir / fname)
+                total_ok += 1
+            else:
+                break
 
     if verbose:
         print(f"\nBandai Namco: downloaded {total_ok} files to {dest_dir}/")

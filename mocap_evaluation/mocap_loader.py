@@ -48,6 +48,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+from tqdm import tqdm
 
 from mocap_evaluation.bvh_parser import BVHParser
 
@@ -225,7 +226,7 @@ def _load_local_bvh_segments(bvh_dir: Path) -> tuple[list, list]:
     bvh_files = sorted(bvh_dir.glob("*.bvh")) if bvh_dir.exists() else []
     segments = []
     meta = []
-    for bf in bvh_files:
+    for bf in tqdm(bvh_files, desc=f"Loading {bvh_dir.name}", unit="file", disable=len(bvh_files) == 0):
         cat = _category_for_file(bf.name)
         db = load_cmu_bvh(bf)
         if db is not None:

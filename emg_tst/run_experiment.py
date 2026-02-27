@@ -8,6 +8,7 @@ from datetime import datetime
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from emg_tst.data import StandardScaler
 from emg_tst.masking import stateful_variable_mask
@@ -203,7 +204,8 @@ def _train_cv(X_all, y_all, y_seq_all, folds, feature_cols, device, run_dir, lab
 
         if not quiet:
             print("[Pretrain]")
-        for epoch in range(1, EPOCHS_PRETRAIN + 1):
+        epoch_iter = tqdm(range(1, EPOCHS_PRETRAIN + 1), desc="Pretrain", unit="epoch", disable=quiet)
+        for epoch in epoch_iter:
             pre.train()
             num_sum = 0.0
             den_sum = 0.0
@@ -234,8 +236,8 @@ def _train_cv(X_all, y_all, y_seq_all, folds, feature_cols, device, run_dir, lab
                 num_sum += float(num.detach().item())
                 den_sum += float(den.detach().item())
 
-            if not quiet:
-                print(f"  epoch {epoch:02d} recon_mse(masked)={num_sum/max(den_sum,1e-8):.6f}")
+            recon_mse = num_sum / max(den_sum, 1e-8)
+            epoch_iter.set_postfix(recon_mse=f"{recon_mse:.6f}")
 
         # -------- FINETUNE --------
         reg = TSTRegressor(encoder, out_dim=1).to(device)
@@ -249,7 +251,8 @@ def _train_cv(X_all, y_all, y_seq_all, folds, feature_cols, device, run_dir, lab
         fold_dir = run_dir / f"fold_{fold_i:02d}"
         fold_dir.mkdir(parents=True, exist_ok=True)
 
-        for epoch in range(1, EPOCHS_FINETUNE + 1):
+        ft_iter = tqdm(range(1, EPOCHS_FINETUNE + 1), desc="Finetune", unit="epoch", disable=quiet)
+        for epoch in ft_iter:
             reg.train()
             total = 0.0
             n = 0
@@ -273,11 +276,11 @@ def _train_cv(X_all, y_all, y_seq_all, folds, feature_cols, device, run_dir, lab
 
             metrics = eval_regressor(reg, dl_test, device=device)
             train_rmse = math.sqrt(total / max(n, 1))
-            cur_lr = scheduler.get_last_lr()[0]
-            if not quiet:
-                print(f"  epoch {epoch:02d} lr={cur_lr:.2e} train_seq_rmse={train_rmse:.3f} "
-                      f"test_rmse={metrics['rmse']:.3f} test_seq_rmse={metrics['seq_rmse']:.3f} "
-                      f"test_mae={metrics['mae']:.3f}")
+            ft_iter.set_postfix(
+                train=f"{train_rmse:.3f}",
+                test=f"{metrics['rmse']:.3f}",
+                seq=f"{metrics['seq_rmse']:.3f}",
+            )
 
             if metrics["rmse"] < best_rmse:
                 best_rmse = metrics["rmse"]
@@ -331,7 +334,7 @@ def permutation_importance(reg, ds_test, feature_cols, device, n_repeats=5):
     # For each feature, shuffle it and measure RMSE increase
     importance = np.zeros(n_vars, dtype=np.float64)
 
-    for f_i in range(n_vars):
+    for f_i in tqdm(range(n_vars), desc="Perm. importance", unit="feat"):
         deltas = []
         for _ in range(n_repeats):
             # Build shuffled dataset
