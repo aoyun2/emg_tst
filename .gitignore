@@ -3,3 +3,6 @@ __pycache__/
 *.pyo
 mocap_data/
 smoke_test_sim.gif
+*_traj.npz
+MUJOCO_LOG.TXT
+sim_comparison.png
