@@ -1,6 +1,7 @@
 """Download and prepare external gait curves for out-of-database matching tests."""
 from __future__ import annotations
 
+import math
 from typing import Iterable, Optional
 from urllib.error import HTTPError, URLError
 import urllib.request
@@ -120,10 +121,14 @@ def extract_external_sample_curves(
     knee_rs = _resample_to_target_fps(time_s, knee_inc, TARGET_FPS)
 
     target_len = max(1, int(round(seconds * TARGET_FPS)))
+
+    # All publicly available OpenSim walking IK files are single gait cycles
+    # (~1-2 s).  Walking is periodic, so tile the signal to reach the
+    # requested evaluation window length.
     if len(knee_rs) < target_len:
-        raise ValueError(
-            f"External sample too short ({len(knee_rs)} frames) for requested {target_len} frames"
-        )
+        reps = math.ceil(target_len / len(knee_rs))
+        knee_rs = np.tile(knee_rs, reps)
+        hip_rs = np.tile(hip_rs, reps)
 
     rng = np.random.default_rng(seed)
     start = int(rng.integers(0, len(knee_rs) - target_len + 1))
