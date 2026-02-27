@@ -33,8 +33,7 @@ emg_tst/
 ├── mocap_evaluation/           # Motion capture evaluation pipeline
 │   ├── bvh_parser.py          # BVH motion capture file parser
 │   ├── cmu_catalog.py         # CMU mocap database index (curated subjects/trials)
-│   ├── cmu_downloader.py      # CMU database batch downloader
-│   ├── bandai_namco_downloader.py  # Bandai Namco dataset downloader
+│   ├── cmu_downloader.py      # CMU database batch downloader (with verification)
 │   ├── mocap_loader.py        # Load BVH files with standardized joint angles
 │   ├── motion_matching.py     # DTW-based mocap-to-IMU signal matching
 │   ├── prosthetic_sim.py      # MuJoCo physics simulation
@@ -95,15 +94,15 @@ python emg_tst/visualize.py
 
 ### 5. Mocap Evaluation
 ```bash
+# Download CMU mocap database (with completeness verification)
+python -m mocap_evaluation.cmu_downloader
+python -m mocap_evaluation.cmu_downloader --verify
+
 # Evaluate with synthetic mock data (no external data needed)
 python -m mocap_evaluation.run_evaluation --mock-data --full-db
 
-# Download real mocap data first, then evaluate
-python -m mocap_evaluation.bandai_namco_downloader --dest mocap_data
+# Evaluate with real data
 python -m mocap_evaluation.run_evaluation --full-db
-
-# Download CMU mocap database
-python -m mocap_evaluation.cmu_downloader
 ```
 
 ### 6. IMU Testing
@@ -148,7 +147,7 @@ Recordings saved by `rigtest.py` are NumPy dictionaries with keys:
 - `thigh_angle`: secondary angle input feature
 - `effective_hz`: actual sampling rate
 
-After `split_to_samples.py`: `samples_dataset.npy` array of shape `[N_samples, seq_len=200, n_vars+1]` (last column is target knee angle).
+After `split_to_samples.py`: `samples_dataset.npy` array of shape `[N_samples, seq_len=200, n_vars+1]` (last column is target knee angle). Each window covers 1 second at 200 Hz. During evaluation, consecutive windows are concatenated into 5-second segments for physics simulation.
 
 ### Angle Convention
 

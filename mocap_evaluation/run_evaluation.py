@@ -134,20 +134,27 @@ def _derive_window_seconds(
     data_path: str | Path | None,
     checkpoint_path: str | Path | None = None,
 ) -> float:
-    """Derive sample window duration (in seconds) from the model architecture.
+    """Derive the per-sample window duration (in seconds) from the dataset or model.
 
-    When both *checkpoint_path* and *data_path* are provided the two sources
-    must agree on the window length — the checkpoint's ``seq_len`` must equal
-    the dataset's ``window`` field.  A mismatch indicates that the wrong
-    checkpoint/dataset pair is being used and raises ``ValueError``.
+    This returns the **training** window size (e.g. 1 second), not the
+    evaluation segment length.  The evaluation script concatenates multiple
+    training windows to form longer segments for physics simulation.
 
-    Priority (when only one source is available):
-    1. Checkpoint ``model_cfg["seq_len"]`` (exact model sequence length).
-    2. Dataset ``window`` field from *samples_dataset.npy*.
+    Priority:
+    1. Dataset ``window`` field from *samples_dataset.npy*.
+    2. Checkpoint ``model_cfg["seq_len"]``.
     3. Architecture default: 200 samples @ 200 Hz = 1.0 s.
     """
-    ckpt_seq_len: int | None = None
     dataset_window: int | None = None
+    ckpt_seq_len: int | None = None
+
+    if data_path is not None:
+        p = Path(data_path)
+        if p.exists():
+            d = np.load(p, allow_pickle=True)
+            if isinstance(d, np.ndarray):
+                d = d.item()
+            dataset_window = int(d.get("window", 200))
 
     if checkpoint_path is not None:
         p = Path(checkpoint_path)
@@ -158,28 +165,11 @@ def _derive_window_seconds(
             except Exception:
                 pass
 
-    if data_path is not None:
-        p = Path(data_path)
-        if p.exists():
-            d = np.load(p, allow_pickle=True)
-            if isinstance(d, np.ndarray):
-                d = d.item()
-            dataset_window = int(d.get("window", 200))
-
-    if ckpt_seq_len is not None and dataset_window is not None:
-        if ckpt_seq_len != dataset_window:
-            raise ValueError(
-                f"Length mismatch: checkpoint seq_len={ckpt_seq_len} "
-                f"!= dataset window={dataset_window}. "
-                "Ensure the checkpoint and dataset were produced with the same window size."
-            )
-        return ckpt_seq_len / TARGET_FPS
+    if dataset_window is not None:
+        return dataset_window / TARGET_FPS
 
     if ckpt_seq_len is not None:
         return ckpt_seq_len / TARGET_FPS
-
-    if dataset_window is not None:
-        return dataset_window / TARGET_FPS
 
     return 200 / TARGET_FPS
 
@@ -235,6 +225,7 @@ def load_samples(
     X         : (N, W, F) raw features
     y_seq     : (N, W) knee angle labels per timestep (degrees)
     thigh_col : int  column index of thigh_angle feature in X
+    file_ids  : (N,) int32  recording file index per window
     """
     data  = np.load(samples_path, allow_pickle=True)
     if isinstance(data, np.ndarray):
@@ -242,15 +233,18 @@ def load_samples(
 
     X     = data["X"].astype(np.float32)      # (N, W, F)
     y_seq = data["y_seq"].astype(np.float32)  # (N, W)
+    file_ids = data.get("file_id", np.zeros(len(X), dtype=np.int32))
+    file_ids = np.asarray(file_ids, dtype=np.int32)
 
     if max_samples is not None:
-        X     = X[:max_samples]
-        y_seq = y_seq[:max_samples]
+        X        = X[:max_samples]
+        y_seq    = y_seq[:max_samples]
+        file_ids = file_ids[:max_samples]
 
     # Thigh angle is the last feature column (from data.py load_recording)
     thigh_col = X.shape[2] - 1
 
-    return X, y_seq, thigh_col
+    return X, y_seq, thigh_col, file_ids
 
 
 # ── Per-window inference ──────────────────────────────────────────────────────
@@ -265,7 +259,12 @@ def predict_knee_sequence(
     device: torch.device,
 ) -> np.ndarray:
     """
-    Run one 1-second window through the model.
+    Run a window through the model, handling length mismatches.
+
+    If the input window is longer than the model's ``seq_len``, a sliding
+    window with 50% overlap is used and overlapping predictions are averaged.
+    If shorter, the input is right-padded (replicated last frame) and the
+    extra predictions are discarded.
 
     Returns
     -------
@@ -274,9 +273,47 @@ def predict_knee_sequence(
     x = (x_window - scaler.mean_) / scaler.std_    # (W, F)
     if feature_cols is not None:
         x = x[:, feature_cols]
-    x_t = torch.from_numpy(x).unsqueeze(0).float().to(device)  # (1, W, n_vars)
-    out = model(x_t)   # (1, W, 1)
-    return out[0, :, 0].cpu().numpy()
+
+    W = x.shape[0]
+    model_seq_len = model.encoder.seq_len
+
+    if W == model_seq_len:
+        # Exact match — single forward pass
+        x_t = torch.from_numpy(x).unsqueeze(0).float().to(device)
+        out = model(x_t)   # (1, W, 1)
+        return out[0, :, 0].cpu().numpy()
+
+    if W < model_seq_len:
+        # Pad to model_seq_len, run, trim back
+        pad = np.tile(x[-1:], (model_seq_len - W, 1))
+        x_padded = np.concatenate([x, pad], axis=0)
+        x_t = torch.from_numpy(x_padded).unsqueeze(0).float().to(device)
+        out = model(x_t)
+        return out[0, :W, 0].cpu().numpy()
+
+    # W > model_seq_len — sliding window with 50 % overlap
+    stride = model_seq_len // 2
+    pred_sum = np.zeros(W, dtype=np.float64)
+    pred_cnt = np.zeros(W, dtype=np.float64)
+
+    start = 0
+    while start < W:
+        end = start + model_seq_len
+        if end > W:
+            # Last chunk: align to the end
+            start = W - model_seq_len
+            end = W
+        chunk = x[start:end]
+        x_t = torch.from_numpy(chunk).unsqueeze(0).float().to(device)
+        out = model(x_t)  # (1, model_seq_len, 1)
+        preds = out[0, :, 0].cpu().numpy()
+        pred_sum[start:end] += preds
+        pred_cnt[start:end] += 1.0
+        if end >= W:
+            break
+        start += stride
+
+    return (pred_sum / np.maximum(pred_cnt, 1.0)).astype(np.float32)
 
 
 # ── Test sample evaluation ───────────────────────────────────────────────────
@@ -343,6 +380,66 @@ def run_test_sample(
 # ── Main evaluation loop ──────────────────────────────────────────────────────
 
 
+EVAL_SECONDS_DEFAULT = 5.0  # physics evaluation window (seconds)
+
+
+def _build_eval_segments(
+    X: np.ndarray,
+    y_seq: np.ndarray,
+    file_ids: np.ndarray,
+    windows_per_seg: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Concatenate consecutive training windows into longer eval segments.
+
+    Only windows from the **same recording file** are grouped together to
+    avoid discontinuities at file boundaries.  Leftover windows that don't
+    fill a complete segment are discarded.
+
+    Parameters
+    ----------
+    X        : (N, W, F) per-window features
+    y_seq    : (N, W)    per-window knee angle labels
+    file_ids : (N,)      recording file index per window
+    windows_per_seg : number of consecutive windows to merge
+
+    Returns
+    -------
+    X_seg   : (M, W*windows_per_seg, F)
+    y_seg   : (M, W*windows_per_seg)
+    """
+    N, W, F = X.shape
+    k = windows_per_seg
+
+    # Group consecutive same-file runs, then chunk each run into segments
+    seg_X: list[np.ndarray] = []
+    seg_y: list[np.ndarray] = []
+
+    run_start = 0
+    while run_start < N:
+        fid = file_ids[run_start]
+        run_end = run_start + 1
+        while run_end < N and file_ids[run_end] == fid:
+            run_end += 1
+        run_len = run_end - run_start
+        n_segs = run_len // k
+        for s in range(n_segs):
+            base = run_start + s * k
+            x_parts = X[base : base + k]            # (k, W, F)
+            y_parts = y_seq[base : base + k]        # (k, W)
+            seg_X.append(x_parts.reshape(k * W, F))
+            seg_y.append(y_parts.reshape(k * W))
+        run_start = run_end
+
+    if not seg_X:
+        # Not enough consecutive same-file windows — fall back to
+        # concatenating all windows as a single segment.
+        X_cat = X.reshape(1, N * W, F)
+        y_cat = y_seq.reshape(1, N * W)
+        return X_cat, y_cat
+
+    return np.stack(seg_X), np.stack(seg_y)
+
+
 def evaluate(
     checkpoint_path: str | Path,
     samples_path: str | Path,
@@ -352,13 +449,19 @@ def evaluate(
     device_str: str = "cpu",
     match_categories: Optional[List[str]] = None,
     use_cache: bool = True,
+    eval_seconds: float = EVAL_SECONDS_DEFAULT,
 ) -> dict:
     """
     Full prosthetic evaluation pipeline.
 
+    Training windows (e.g. 1 s) are concatenated into longer evaluation
+    segments (default 5 s) so the physics simulation runs long enough to
+    reveal falls.  The model predicts over each segment using sliding-window
+    inference.
+
     Returns
     -------
-    dict  with keys 'per_window' (list) and 'summary' (aggregated stats)
+    dict  with keys 'per_segment' (list) and 'summary' (aggregated stats)
     """
     device = torch.device(device_str)
     print(f"[eval] Device: {device}")
@@ -371,9 +474,19 @@ def evaluate(
 
     # ── Load samples ────────────────────────────────────────────────────────
     print(f"[eval] Loading samples: {samples_path}")
-    X, y_seq, thigh_col = load_samples(samples_path, max_samples=n_samples)
-    N = len(X)
-    print(f"       {N} windows  shape={X.shape}")
+    X, y_seq, thigh_col, file_ids = load_samples(samples_path, max_samples=n_samples)
+    N, W, F = X.shape
+    train_window_sec = W / TARGET_FPS
+    print(f"       {N} windows  shape={X.shape}  ({train_window_sec:.1f}s each)")
+
+    # ── Concatenate into longer eval segments ───────────────────────────────
+    windows_per_seg = max(1, int(round(eval_seconds / train_window_sec)))
+    actual_eval_sec = windows_per_seg * train_window_sec
+    X_seg, y_seg = _build_eval_segments(X, y_seq, file_ids, windows_per_seg)
+    M = len(X_seg)
+    print(f"[eval] Eval segments: {M} × {windows_per_seg} windows "
+          f"= {actual_eval_sec:.1f}s each  "
+          f"(model seq_len={model_cfg['seq_len']})")
 
     # ── Load / generate mocap database ──────────────────────────────────────
     print(f"[eval] Loading CMU mocap database from: {mocap_dir}")
@@ -387,26 +500,24 @@ def evaluate(
     print(f"       {db_dur:.1f} s @ {mocap_db['fps']:.0f} Hz  "
           f"(source: {mocap_db['source']}{extra})")
 
-    # ── Per-window loop ──────────────────────────────────────────────────────
-    per_window = []
-    for i in tqdm(range(N), desc="Evaluating windows", unit="win"):
+    # ── Per-segment loop ────────────────────────────────────────────────────
+    per_segment = []
+    for i in tqdm(range(M), desc="Evaluating segments", unit="seg"):
         t0 = time.time()
 
-        x_win      = X[i]                    # (W, F)
-        knee_label = y_seq[i]                # (W,) ground-truth knee angle (deg)
-        thigh_sig  = x_win[:, thigh_col]     # (W,) raw thigh angle feature
+        x_seg_i    = X_seg[i]                    # (S, F)  S = W * windows_per_seg
+        knee_label = y_seg[i]                     # (S,)
+        thigh_sig  = x_seg_i[:, thigh_col]        # (S,)
 
-        # Model prediction
+        # Model prediction (sliding window handles S > model seq_len)
         pred_knee = predict_knee_sequence(
-            model, scaler, x_win, feature_cols, device
+            model, scaler, x_seg_i, feature_cols, device
         )
 
-        # Standardized convention: 180° = straight (rigtest enclosed angle).
-        # BVH-derived database angles are normalized to the same convention.
         knee_label_inc = knee_label.astype(np.float32)
         pred_knee_inc = pred_knee.astype(np.float32)
 
-        # Motion matching (included-angle convention)
+        # Motion matching on the full eval segment
         _, dtw_dist, segment = find_best_match(
             knee_label_inc,
             thigh_sig,
@@ -414,42 +525,43 @@ def evaluate(
             categories=match_categories,
         )
 
-        # Simulation consumes the same included-angle convention.
-        # The sample's thigh angle drives the right hip actuator so that
-        # both the right knee and right thigh come from the sample, not mocap.
+        # Physics simulation over the full segment length
         metrics = simulate_prosthetic_walking(
             segment, pred_knee_inc,
             use_gui=False,
             sample_thigh_right=thigh_sig,
         )
 
-        metrics["window_idx"]  = i
-        metrics["dtw_dist"]    = float(dtw_dist)
-        metrics["pred_rmse"]   = float(
+        metrics["segment_idx"]  = i
+        metrics["dtw_dist"]     = float(dtw_dist)
+        metrics["pred_rmse"]    = float(
             np.sqrt(np.mean((pred_knee - knee_label) ** 2))
-        )  # RMSE is invariant to the 180-x shift — compute in original convention
-        metrics["elapsed_s"]   = float(time.time() - t0)
-        per_window.append(metrics)
+        )
+        metrics["elapsed_s"]    = float(time.time() - t0)
+        metrics["segment_seconds"] = actual_eval_sec
+        per_segment.append(metrics)
 
-        # Save plots for first 5 windows
+        # Save plots for first 5 segments
         if i < 5:
             plot_dir = Path(out_path).with_suffix("") / "plots"
-            plot_simulation(metrics, f"Window {i}",
-                            plot_dir / f"window_{i:04d}_sim.png")
+            plot_simulation(metrics, f"Segment {i} ({actual_eval_sec:.0f}s)",
+                            plot_dir / f"segment_{i:04d}_sim.png")
 
     # ── Aggregate summary ────────────────────────────────────────────────────
     def _agg(key):
-        vals = [w[key] for w in per_window if key in w]
+        vals = [w[key] for w in per_segment if key in w]
         if not vals:
             return {}
         arr = np.array(vals, dtype=np.float64)
         return {"mean": float(arr.mean()), "std": float(arr.std()),
                 "min": float(arr.min()), "max": float(arr.max())}
 
-    fall_rate = float(np.mean([w["fall_detected"] for w in per_window]))
+    fall_rate = float(np.mean([w["fall_detected"] for w in per_segment]))
 
     summary = {
-        "n_windows":       N,
+        "n_segments":      M,
+        "eval_seconds":    actual_eval_sec,
+        "windows_per_seg": windows_per_seg,
         "fall_rate":       fall_rate,
         "pred_rmse":       _agg("pred_rmse"),
         "knee_rmse_deg":   _agg("knee_rmse_deg"),
@@ -457,11 +569,11 @@ def evaluate(
         "dtw_dist":        _agg("dtw_dist"),
         "com_height_std":  _agg("com_height_std"),
         "gait_symmetry":   _agg("gait_symmetry"),
-        "mode":            per_window[0].get("mode", "unknown") if per_window else "unknown",
+        "mode":            per_segment[0].get("mode", "unknown") if per_segment else "unknown",
         "mocap_source":    mocap_db["source"],
     }
 
-    result = {"per_window": per_window, "summary": summary}
+    result = {"per_segment": per_segment, "summary": summary}
 
     # ── Save JSON ────────────────────────────────────────────────────────────
     out_path = Path(out_path)
@@ -615,6 +727,11 @@ def _parse_args():
                     help="Replay a previously saved trajectory file in the MuJoCo viewer")
     ap.add_argument("--replay-speed", type=float, default=1.0,
                     help="Playback speed for --replay (default: 1.0)")
+    ap.add_argument("--eval-seconds", type=float, default=EVAL_SECONDS_DEFAULT,
+                    help=f"Duration of each evaluation segment in seconds "
+                         f"(default: {EVAL_SECONDS_DEFAULT}). Consecutive "
+                         f"training windows are concatenated to reach this "
+                         f"length for physics simulation.")
     ap.add_argument("--no-cache", action="store_true",
                     help="Disable .npz caching of parsed BVH databases")
     return ap.parse_args()
@@ -638,8 +755,8 @@ def main():
     if args.test_sample:
         # ── Fallback: test sample mode (no trained model needed) ─────
         out_path = args.out or "eval_test_sample_results.json"
-        seconds = _derive_window_seconds(args.data, None)
-        print(f"[eval] Window duration: {seconds:.3f} s")
+        seconds = args.eval_seconds
+        print(f"[eval] Test sample duration: {seconds:.1f} s")
 
         run_test_sample(
             mocap_dir=args.mocap_dir,
@@ -669,6 +786,7 @@ def main():
             device_str=args.device,
             match_categories=match_categories,
             use_cache=use_cache,
+            eval_seconds=args.eval_seconds,
         )
 
 

@@ -164,6 +164,77 @@ def download_all(
 
 
 # ---------------------------------------------------------------------------
+# Verification
+# ---------------------------------------------------------------------------
+
+
+def verify_completeness(
+    dest_dir: str | Path = "mocap_data/cmu",
+    verbose: bool = True,
+) -> tuple[List[TrialInfo], List[TrialInfo]]:
+    """
+    Check the local directory against the full CMU catalog.
+
+    Returns
+    -------
+    (present, missing) : tuple of two lists of TrialInfo
+        *present* trials have a non-empty .bvh file on disk;
+        *missing* trials are absent or have an empty file.
+    """
+    dest_dir = Path(dest_dir)
+    present: List[TrialInfo] = []
+    missing: List[TrialInfo] = []
+
+    for trial in CATALOG:
+        f = dest_dir / trial.filename
+        if f.exists() and f.stat().st_size > 100:
+            present.append(trial)
+        else:
+            missing.append(trial)
+
+    if verbose:
+        total = len(CATALOG)
+        n_ok = len(present)
+        n_miss = len(missing)
+        pct = 100.0 * n_ok / total if total else 0.0
+        print(f"CMU Mocap Verification ({dest_dir}):")
+        print(f"  Present:  {n_ok:>5} / {total} ({pct:.1f}%)")
+        print(f"  Missing:  {n_miss:>5}")
+        if n_miss > 0 and n_miss <= 30:
+            for t in missing:
+                print(f"    {t.filename}  [{t.category}]  {t.description}")
+        elif n_miss > 30:
+            # Group by category for compact display
+            miss_cats: dict[str, int] = {}
+            for t in missing:
+                miss_cats[t.category] = miss_cats.get(t.category, 0) + 1
+            for cat, count in sorted(miss_cats.items()):
+                print(f"    {cat:<15} {count} missing")
+
+    return present, missing
+
+
+def verify_and_download_missing(
+    dest_dir: str | Path = "mocap_data/cmu",
+    verbose: bool = True,
+) -> List[Path]:
+    """
+    Verify the dataset and download any missing files.
+
+    Returns list of newly downloaded file paths.
+    """
+    _, missing = verify_completeness(dest_dir, verbose=verbose)
+    if not missing:
+        if verbose:
+            print("Dataset is complete — nothing to download.")
+        return []
+
+    if verbose:
+        print(f"\nDownloading {len(missing)} missing file(s)...")
+    return download_trials(missing, dest_dir, verbose=verbose)
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -172,7 +243,7 @@ def main():
     import argparse
 
     ap = argparse.ArgumentParser(
-        description="Download CMU mocap BVH files by motion category"
+        description="Download and verify CMU mocap BVH files"
     )
     ap.add_argument(
         "--categories", "-c", nargs="*", default=None,
@@ -191,6 +262,11 @@ def main():
         "--list", action="store_true",
         help="List available categories and trial counts, then exit",
     )
+    ap.add_argument(
+        "--verify", action="store_true",
+        help="Check completeness against the full catalog and download any "
+             "missing files",
+    )
     args = ap.parse_args()
 
     if args.list:
@@ -198,6 +274,10 @@ def main():
         for cat, count in summary().items():
             print(f"  {cat:<15} {count:3d} trials")
         print(f"  {'TOTAL':<15} {len(CATALOG):3d} trials")
+        return
+
+    if args.verify:
+        verify_and_download_missing(dest_dir=args.dest)
         return
 
     download_by_category(
