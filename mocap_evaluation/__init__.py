@@ -22,7 +22,7 @@ Pipeline
 1. cmu_catalog / cmu_downloader : curated index + batch download of CMU mocap BVH files
 2. bvh_parser        : parse BVH motion capture files
 3. mocap_loader      : load CMU BVH source with per-file category metadata
-4. motion_matching   : category-aware DTW sliding-window search to align IMU signals with mocap
+4. motion_matching   : DTW sliding-window search to align IMU signals with mocap
 5. prosthetic_sim    : MuJoCo-first simulation; right knee = model prediction, GUI visualisation
 6. run_evaluation    : end-to-end pipeline + JSON metrics output
 

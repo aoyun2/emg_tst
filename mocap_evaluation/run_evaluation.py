@@ -30,7 +30,7 @@ import math
 import sys
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 import numpy as np
 import torch
@@ -331,7 +331,6 @@ def run_test_sample(
     mocap_dir: str | Path = "mocap_data",
     out_path: str | Path = "eval_test_sample_results.json",
     top_k: int = 3,
-    match_categories: Optional[List[str]] = None,
     seconds: float = 4.0,
     sample_source: str = "external",
     external_url: Optional[str] = None,
@@ -346,7 +345,6 @@ def run_test_sample(
     print("TEST SAMPLE -- real mocap query -> motion matching -> simulation")
     print("=" * 60)
 
-    categories = tuple(match_categories) if match_categories else None
     if sample_source == "external":
         curves = extract_external_sample_curves(
             seconds=seconds,
@@ -356,7 +354,6 @@ def run_test_sample(
         curves = extract_real_sample_curves(
             mocap_dir=mocap_dir,
             seconds=seconds,
-            categories=categories,
         )
     model_rmse = float(np.sqrt(np.mean(
         (curves.predicted_knee_included_deg - curves.knee_label_included_deg) ** 2
@@ -375,7 +372,6 @@ def run_test_sample(
         mocap_dir=mocap_dir,
         top_k=top_k,
         out_path=out_path,
-        match_categories=match_categories,
         render_gifs=render_gifs,
         use_cache=use_cache,
     )
@@ -499,7 +495,6 @@ def evaluate(
     out_path: str | Path  = "eval_results.json",
     n_samples: Optional[int] = None,
     device_str: str = "cpu",
-    match_categories: Optional[List[str]] = None,
     use_cache: bool = True,
     eval_seconds: float = EVAL_SECONDS_DEFAULT,
 ) -> dict:
@@ -579,7 +574,6 @@ def evaluate(
             knee_label_inc,
             thigh_sig,
             mocap_db,
-            categories=match_categories,
         )
 
         # Physics simulation over the full segment length
@@ -650,7 +644,6 @@ def play_mocap_match(
     seconds: float = 4.0,
     sample_source: str = "external",
     external_url: Optional[str] = None,
-    match_categories: Optional[List[str]] = None,
     use_cache: bool = True,
     save_trajectory: Optional[str | Path] = None,
 ) -> None:
@@ -659,7 +652,6 @@ def play_mocap_match(
     All joints (including right knee) are driven by the matched mocap segment
     so the user can see exactly what motion was matched.
     """
-    categories = tuple(match_categories) if match_categories else None
     if sample_source == "external":
         curves = extract_external_sample_curves(
             seconds=seconds,
@@ -669,7 +661,6 @@ def play_mocap_match(
         curves = extract_real_sample_curves(
             mocap_dir=mocap_dir,
             seconds=seconds,
-            categories=categories,
         )
 
     knee = curves.knee_label_included_deg.astype(np.float32)
@@ -685,7 +676,6 @@ def play_mocap_match(
 
     _, dist, segment = find_best_match(
         knee, thigh, mocap_db,
-        categories=match_categories,
     )
 
     cat = segment.get("category", "unknown")
@@ -753,7 +743,6 @@ def evaluate_from_curves(
     mocap_dir: str | Path = "mocap_data",
     top_k: int = 3,
     out_path: str | Path = "eval_mock_results.json",
-    match_categories: Optional[List[str]] = None,
     render_gifs: bool = False,
     use_cache: bool = True,
 ) -> dict:
@@ -775,7 +764,6 @@ def evaluate_from_curves(
         imu_thigh=thigh_angle.astype(np.float32),
         mocap_db=mocap_db,
         k=top_k,
-        categories=match_categories,
     )
 
     per_match = []
@@ -877,8 +865,6 @@ def _parse_args():
                     help="Output JSON file for metrics (auto-selected if omitted)")
     ap.add_argument("--top-k", type=int, default=3,
                     help="Top-k motion matches to simulate (test-sample mode)")
-    ap.add_argument("--match-categories", default=None,
-                    help="Comma-separated category filter for motion matching (e.g. walk,run)")
     ap.add_argument("--render-gifs", action="store_true",
                     help="Render animated GIFs of each simulation alongside plots")
     ap.add_argument("--play-match", action="store_true",
@@ -908,10 +894,6 @@ def main():
         replay_trajectory(args.replay, speed=args.replay_speed)
         return
 
-    match_categories = None
-    if args.match_categories:
-        match_categories = [c.strip() for c in args.match_categories.split(",") if c.strip()]
-
     use_cache = not args.no_cache
 
     if args.play_match:
@@ -923,7 +905,6 @@ def main():
             seconds=seconds,
             sample_source=args.test_sample_source,
             external_url=args.external_sample_url,
-            match_categories=match_categories,
             use_cache=use_cache,
         )
         return
@@ -938,7 +919,6 @@ def main():
             mocap_dir=args.mocap_dir,
             out_path=out_path,
             top_k=args.top_k,
-            match_categories=match_categories,
             seconds=seconds,
             sample_source=args.test_sample_source,
             external_url=args.external_sample_url,
@@ -960,7 +940,6 @@ def main():
             out_path=out_path,
             n_samples=args.n_samples,
             device_str=args.device,
-            match_categories=match_categories,
             use_cache=use_cache,
             eval_seconds=args.eval_seconds,
         )

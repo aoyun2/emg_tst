@@ -64,7 +64,6 @@ def main():
         curves = extract_real_sample_curves(
             mocap_dir=args.mocap_dir,
             seconds=seconds,
-            categories=("walk",),
         )
     knee_included = curves.knee_label_included_deg.astype(np.float32)
     thigh = curves.thigh_angle_deg.astype(np.float32)
