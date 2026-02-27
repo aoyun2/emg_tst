@@ -1,5 +1,5 @@
 numpy
 torch
 scipy          # signal resampling, spatial transforms (motion matching)
-pybullet       # physics simulation (prosthetic_sim.py)
+mujoco         # physics simulation (prosthetic_sim.py)
 pillow         # GIF generation (prosthetic_sim.py / save_stick_figure_gifs)

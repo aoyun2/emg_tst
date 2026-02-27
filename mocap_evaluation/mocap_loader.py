@@ -190,15 +190,15 @@ def _extract_angles_from_bvh(parser: BVHParser) -> Optional[dict]:
 
     # Root position (metres; BVH positions are typically in cm)
     # BVH uses Y-up: Xposition=lateral, Yposition=height, Zposition=forward.
-    # PyBullet uses Z-up: index 0=forward(X), 1=lateral(Y), 2=height(Z).
+    # MuJoCo uses Z-up: index 0=forward(X), 1=lateral(Y), 2=height(Z).
     root_pos_raw = parser.get_positions(root_joint_name)
     if root_pos_raw is not None and root_pos_raw.shape[1] >= 3:
         rp = _resample_2d(root_pos_raw[:, :3], src_fps, TARGET_FPS) / 100.0
-        rp_pb = np.empty_like(rp)
-        rp_pb[:, 0] = rp[:, 2]   # forward: BVH Z → PyBullet X
-        rp_pb[:, 1] = rp[:, 0]   # lateral: BVH X → PyBullet Y
-        rp_pb[:, 2] = rp[:, 1]   # height:  BVH Y → PyBullet Z
-        angles["root_pos"] = rp_pb[:N]
+        rp_zup = np.empty_like(rp)
+        rp_zup[:, 0] = rp[:, 2]   # forward: BVH Z → MuJoCo X
+        rp_zup[:, 1] = rp[:, 0]   # lateral: BVH X → MuJoCo Y
+        rp_zup[:, 2] = rp[:, 1]   # height:  BVH Y → MuJoCo Z
+        angles["root_pos"] = rp_zup[:N]
     else:
         angles["root_pos"] = np.zeros((N, 3), dtype=np.float32)
 
