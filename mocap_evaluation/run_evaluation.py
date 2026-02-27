@@ -225,6 +225,7 @@ def load_samples(
     X         : (N, W, F) raw features
     y_seq     : (N, W) knee angle labels per timestep (degrees)
     thigh_col : int  column index of thigh_angle feature in X
+    file_ids  : (N,) int32  recording file index per window
     """
     data  = np.load(samples_path, allow_pickle=True)
     if isinstance(data, np.ndarray):
@@ -232,15 +233,18 @@ def load_samples(
 
     X     = data["X"].astype(np.float32)      # (N, W, F)
     y_seq = data["y_seq"].astype(np.float32)  # (N, W)
+    file_ids = data.get("file_id", np.zeros(len(X), dtype=np.int32))
+    file_ids = np.asarray(file_ids, dtype=np.int32)
 
     if max_samples is not None:
-        X     = X[:max_samples]
-        y_seq = y_seq[:max_samples]
+        X        = X[:max_samples]
+        y_seq    = y_seq[:max_samples]
+        file_ids = file_ids[:max_samples]
 
     # Thigh angle is the last feature column (from data.py load_recording)
     thigh_col = X.shape[2] - 1
 
-    return X, y_seq, thigh_col
+    return X, y_seq, thigh_col, file_ids
 
 
 # ── Per-window inference ──────────────────────────────────────────────────────
@@ -382,14 +386,20 @@ EVAL_SECONDS_DEFAULT = 5.0  # physics evaluation window (seconds)
 def _build_eval_segments(
     X: np.ndarray,
     y_seq: np.ndarray,
+    file_ids: np.ndarray,
     windows_per_seg: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Concatenate consecutive training windows into longer eval segments.
+
+    Only windows from the **same recording file** are grouped together to
+    avoid discontinuities at file boundaries.  Leftover windows that don't
+    fill a complete segment are discarded.
 
     Parameters
     ----------
     X        : (N, W, F) per-window features
     y_seq    : (N, W)    per-window knee angle labels
+    file_ids : (N,)      recording file index per window
     windows_per_seg : number of consecutive windows to merge
 
     Returns
@@ -399,27 +409,35 @@ def _build_eval_segments(
     """
     N, W, F = X.shape
     k = windows_per_seg
-    M = N // k  # drop leftover windows that don't fill a full segment
-    if M == 0:
-        # Not enough windows — use all of them as a single segment
-        X_cat = np.concatenate(X, axis=0)[np.newaxis]  # (1, N*W, F)
-        y_cat = np.concatenate(y_seq, axis=0)[np.newaxis]  # (1, N*W)
+
+    # Group consecutive same-file runs, then chunk each run into segments
+    seg_X: list[np.ndarray] = []
+    seg_y: list[np.ndarray] = []
+
+    run_start = 0
+    while run_start < N:
+        fid = file_ids[run_start]
+        run_end = run_start + 1
+        while run_end < N and file_ids[run_end] == fid:
+            run_end += 1
+        run_len = run_end - run_start
+        n_segs = run_len // k
+        for s in range(n_segs):
+            base = run_start + s * k
+            x_parts = X[base : base + k]            # (k, W, F)
+            y_parts = y_seq[base : base + k]        # (k, W)
+            seg_X.append(x_parts.reshape(k * W, F))
+            seg_y.append(y_parts.reshape(k * W))
+        run_start = run_end
+
+    if not seg_X:
+        # Not enough consecutive same-file windows — fall back to
+        # concatenating all windows as a single segment.
+        X_cat = X.reshape(1, N * W, F)
+        y_cat = y_seq.reshape(1, N * W)
         return X_cat, y_cat
 
-    X_seg = np.concatenate(
-        [X[i * k : (i + 1) * k] for i in range(M)], axis=1
-    ).reshape(M, W * k, F)
-    # np.concatenate along axis=0 for each group doesn't give us (M, W*k, F)
-    # directly, so build explicitly:
-    X_seg = np.zeros((M, W * k, F), dtype=X.dtype)
-    y_seg = np.zeros((M, W * k), dtype=y_seq.dtype)
-    for i in range(M):
-        for j in range(k):
-            idx = i * k + j
-            X_seg[i, j * W : (j + 1) * W, :] = X[idx]
-            y_seg[i, j * W : (j + 1) * W] = y_seq[idx]
-
-    return X_seg, y_seg
+    return np.stack(seg_X), np.stack(seg_y)
 
 
 def evaluate(
@@ -456,7 +474,7 @@ def evaluate(
 
     # ── Load samples ────────────────────────────────────────────────────────
     print(f"[eval] Loading samples: {samples_path}")
-    X, y_seq, thigh_col = load_samples(samples_path, max_samples=n_samples)
+    X, y_seq, thigh_col, file_ids = load_samples(samples_path, max_samples=n_samples)
     N, W, F = X.shape
     train_window_sec = W / TARGET_FPS
     print(f"       {N} windows  shape={X.shape}  ({train_window_sec:.1f}s each)")
@@ -464,7 +482,7 @@ def evaluate(
     # ── Concatenate into longer eval segments ───────────────────────────────
     windows_per_seg = max(1, int(round(eval_seconds / train_window_sec)))
     actual_eval_sec = windows_per_seg * train_window_sec
-    X_seg, y_seg = _build_eval_segments(X, y_seq, windows_per_seg)
+    X_seg, y_seg = _build_eval_segments(X, y_seq, file_ids, windows_per_seg)
     M = len(X_seg)
     print(f"[eval] Eval segments: {M} × {windows_per_seg} windows "
           f"= {actual_eval_sec:.1f}s each  "
