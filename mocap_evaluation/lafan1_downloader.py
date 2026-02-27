@@ -10,10 +10,12 @@ License: CC BY-NC-ND 4.0 (non-commercial, no derivatives, with attribution)
 Dataset overview
 ----------------
   • 496,672 motion frames across 77 sequences and 5 subjects
-  • 15 action categories at 30 fps
+  • 15 action themes at 30 fps
   • Skeleton: standard MotionBuilder naming (RightUpLeg, RightLeg, RightFoot …)
-  • Actions: aiming, dance, fallAndGetUp, fight, ground, jump, obstacles,
-            push, run, walk, etc.
+  • Actions: aiming, dance, fallAndGetUp, fight, fightAndSports, ground,
+            jumps, multipleActions, obstacles, push, pushAndFall,
+            pushAndStumble, run, sprint, walk
+  • Not all subjects appear in every take — subject coverage is irregular
 
 The BVH files are distributed as a zip archive (``lafan1.zip``) inside the
 GitHub repository (stored via Git LFS).  This downloader fetches the zip,
@@ -57,29 +59,39 @@ ACTIONS: List[str] = [
     "dance",
     "fallAndGetUp",
     "fight",
+    "fightAndSports",
     "ground",
     "jumps",
+    "multipleActions",
     "obstacles",
     "push",
+    "pushAndFall",
+    "pushAndStumble",
     "run",
     "sprint",
     "walk",
 ]
 
-# Number of sequence variants per action (observed from the repo).
-# Some actions have more variants than others.
+# Upper bound on take/variant numbers per action.  These are generous upper
+# bounds used *only* when building the ``wanted`` filter for action/subject
+# sub-selection.  Not all take×subject combinations exist — the actual zip
+# contains 77 BVH files with irregular subject coverage per take.
 _ACTION_MAX_VARIANTS: dict[str, int] = {
-    "aiming":        3,
-    "dance":         3,
-    "fallAndGetUp":  2,
-    "fight":         3,
-    "ground":        4,
-    "jumps":         2,
-    "obstacles":     2,
-    "push":          2,
-    "run":           3,
-    "sprint":        2,
-    "walk":          3,
+    "aiming":          3,
+    "dance":           3,
+    "fallAndGetUp":    3,
+    "fight":           3,
+    "fightAndSports":  2,
+    "ground":          4,
+    "jumps":           2,
+    "multipleActions": 4,
+    "obstacles":       5,
+    "push":            2,
+    "pushAndFall":     2,
+    "pushAndStumble":  3,
+    "run":             3,
+    "sprint":          2,
+    "walk":            4,
 }
 
 _RETRY_DELAYS = [2, 4, 8, 16]
@@ -231,11 +243,12 @@ def main():
     args = ap.parse_args()
 
     if args.list:
-        print("Available actions:")
+        print("Available actions (77 total sequences, irregular subject coverage):")
         for a in ACTIONS:
             n_var = _ACTION_MAX_VARIANTS.get(a, 3)
-            print(f"  {a:<20} ({n_var} variants × {len(SUBJECTS)} subjects)")
+            print(f"  {a:<20} (up to {n_var} takes)")
         print(f"\nSubjects: {SUBJECTS}")
+        print("Note: not all subjects appear in every take.")
         return
 
     download_all(

@@ -7,10 +7,11 @@ Usage
     python -m mocap_evaluation.download_all --root mocap_data
 
 This downloads:
-    mocap_data/bandai/   — Bandai Namco Motiondataset-2 (~2,900 BVH files)
-    mocap_data/cmu/      — CMU Graphics Lab (~300 BVH files)
-    mocap_data/lafan1/   — Ubisoft LAFAN1 (~135 BVH files)
-    mocap_data/sfu/      — SFU Motion Capture (~38 BVH files)
+    mocap_data/bandai/      — Bandai Namco Motiondataset-2 (~2,900 BVH files)
+    mocap_data/bandai_ds1/  — Bandai Namco Motiondataset-1 (175 BVH files)
+    mocap_data/cmu/         — CMU Graphics Lab (~2,435 BVH files)
+    mocap_data/lafan1/      — Ubisoft LAFAN1 (77 BVH files)
+    mocap_data/sfu/         — SFU Motion Capture (46 BVH files)
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ from pathlib import Path
 def download_everything(root: str | Path = "mocap_data", verbose: bool = True) -> None:
     root = Path(root)
 
-    # ── Bandai Namco ──────────────────────────────────────────────────────
+    # ── Bandai Namco Dataset-2 ─────────────────────────────────────────
     try:
         from mocap_evaluation.bandai_namco_downloader import download_locomotion
         print("=" * 60)
@@ -29,7 +30,17 @@ def download_everything(root: str | Path = "mocap_data", verbose: bool = True) -
         print("=" * 60)
         download_locomotion(dest_dir=root / "bandai", verbose=verbose)
     except Exception as exc:
-        print(f"Bandai Namco download failed: {exc}")
+        print(f"Bandai Namco DS2 download failed: {exc}")
+
+    # ── Bandai Namco Dataset-1 ─────────────────────────────────────────
+    try:
+        from mocap_evaluation.bandai_namco_ds1_downloader import download_all as ds1_download
+        print("\n" + "=" * 60)
+        print("Downloading Bandai Namco Motiondataset-1")
+        print("=" * 60)
+        ds1_download(dest_dir=root / "bandai_ds1", verbose=verbose)
+    except Exception as exc:
+        print(f"Bandai Namco DS1 download failed: {exc}")
 
     # ── CMU ───────────────────────────────────────────────────────────────
     try:

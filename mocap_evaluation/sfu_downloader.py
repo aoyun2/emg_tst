@@ -9,13 +9,14 @@ License: Free for academic / research use.
 
 Dataset overview
 ----------------
-  • ~480 BVH files across multiple subjects and motion types
-  • Motions include walking, running, jumping, boxing, kicking, etc.
+  • ~46 BVH files across 8 subjects and diverse motion types
+  • Motions include walking, jogging, jumping, dance, parkour, kendo, yoga, etc.
   • Skeleton: standard MotionBuilder naming (RightUpLeg, RightLeg, …)
   • FPS: 120 Hz
 
-The SFU database serves individual BVH files.  This downloader fetches
-a curated subset of locomotion-relevant trials.
+The SFU database serves individual BVH files from two URL prefixes
+(``nusmocap/`` for most subjects, ``nusmocapnew/`` for subject 0019).
+This downloader fetches all verified trials.
 
 Usage
 -----
@@ -38,61 +39,83 @@ from tqdm import tqdm
 # ---------------------------------------------------------------------------
 
 _BASE_URL = "https://mocap.cs.sfu.ca/nusmocap/"
+_BASE_URL_NEW = "https://mocap.cs.sfu.ca/nusmocapnew/"
 
 
 class SFUTrial(NamedTuple):
     filename: str
     category: str
     description: str
+    base_url: str = _BASE_URL  # override for nusmocapnew files
 
 
-# Curated catalog of SFU BVH files covering locomotion and common activities.
+# Verified catalog of SFU BVH files — every entry confirmed via HTTP 200.
 # Subject numbering and filenames follow the SFU database conventions.
+# File availability verified against https://mocap.cs.sfu.ca/ on 2026-02-27.
 CATALOG: List[SFUTrial] = [
-    # Subject 1 — walking / running
-    SFUTrial("0005_Walking001.bvh",    "walk",     "Normal walking"),
-    SFUTrial("0005_Walking002.bvh",    "walk",     "Walking variation"),
-    SFUTrial("0005_Walking003.bvh",    "walk",     "Walking slow"),
-    SFUTrial("0005_Walking004.bvh",    "walk",     "Walking fast"),
-    SFUTrial("0005_Walking005.bvh",    "walk",     "Walking variation"),
-    SFUTrial("0005_Walking006.bvh",    "walk",     "Walking straight"),
-    SFUTrial("0005_Walking007.bvh",    "walk",     "Walking with turn"),
-    SFUTrial("0005_Walking008.bvh",    "walk",     "Walking brisk"),
-    SFUTrial("0005_Walking009.bvh",    "walk",     "Walking circle"),
-    SFUTrial("0005_Walking010.bvh",    "walk",     "Walking long"),
-    SFUTrial("0005_Running001.bvh",    "run",      "Normal running"),
-    SFUTrial("0005_Running002.bvh",    "run",      "Running variation"),
-    SFUTrial("0005_Running003.bvh",    "run",      "Running fast"),
-    SFUTrial("0005_Jogging001.bvh",    "run",      "Jogging"),
-    SFUTrial("0005_Jumping001.bvh",    "jump",     "Standing jump"),
-    SFUTrial("0005_Jumping002.bvh",    "jump",     "Jump variation"),
-    # Subject 7 — locomotion
-    SFUTrial("0007_Walking001.bvh",    "walk",     "Normal walking"),
-    SFUTrial("0007_Walking002.bvh",    "walk",     "Walking variation"),
-    SFUTrial("0007_Walking003.bvh",    "walk",     "Walking slow"),
-    SFUTrial("0007_Walking004.bvh",    "walk",     "Walking turn"),
-    SFUTrial("0007_Walking005.bvh",    "walk",     "Walking circle"),
-    SFUTrial("0007_Running001.bvh",    "run",      "Normal running"),
-    SFUTrial("0007_Running002.bvh",    "run",      "Running variation"),
-    SFUTrial("0007_Jumping001.bvh",    "jump",     "Standing jump"),
-    # Subject 12 — locomotion
-    SFUTrial("0012_Walking001.bvh",    "walk",     "Normal walking"),
-    SFUTrial("0012_Walking002.bvh",    "walk",     "Walking variation"),
-    SFUTrial("0012_Running001.bvh",    "run",      "Normal running"),
-    SFUTrial("0012_Jumping001.bvh",    "jump",     "Standing jump"),
-    # Subject 15 — locomotion
-    SFUTrial("0015_Walking001.bvh",    "walk",     "Normal walking"),
-    SFUTrial("0015_Walking002.bvh",    "walk",     "Walking brisk"),
-    SFUTrial("0015_Running001.bvh",    "run",      "Normal running"),
-    # Subject 17 — locomotion
-    SFUTrial("0017_Walking001.bvh",    "walk",     "Normal walking"),
-    SFUTrial("0017_Walking002.bvh",    "walk",     "Walking variation"),
-    SFUTrial("0017_Running001.bvh",    "run",      "Normal running"),
-    SFUTrial("0017_Jumping001.bvh",    "jump",     "Standing jump"),
-    # Sport / exercise
-    SFUTrial("0005_Kicking001.bvh",    "sport",    "Kicking"),
-    SFUTrial("0005_Boxing001.bvh",     "sport",    "Boxing"),
-    SFUTrial("0007_Kicking001.bvh",    "sport",    "Kicking"),
+    # ── Subject 0005 — Male, age 18-25 ──────────────────────────────────
+    SFUTrial("0005_Walking001.bvh",        "walk",       "Normal walking"),
+    SFUTrial("0005_BackwardsWalk001.bvh",  "walk",       "Walking backwards"),
+    SFUTrial("0005_Jogging001.bvh",        "run",        "Jogging"),
+    SFUTrial("0005_SlowTrot001.bvh",       "run",        "Slow trot"),
+    SFUTrial("0005_SideSkip001.bvh",       "locomotion", "Side skipping"),
+    SFUTrial("0005_Stomping001.bvh",       "locomotion", "Stomping"),
+    SFUTrial("0005_2FeetJump001.bvh",      "jump",       "Two-feet jump"),
+    SFUTrial("0005_JumpRope001.bvh",       "jump",       "Jump rope"),
+
+    # ── Subject 0007 — Male, age 18-25, 175cm 60kg ─────────────────────
+    SFUTrial("0007_Walking001.bvh",        "walk",       "Normal walking"),
+    SFUTrial("0007_Crawling001.bvh",       "locomotion", "Crawling"),
+    SFUTrial("0007_Balance001.bvh",        "balance",    "Balancing"),
+    SFUTrial("0007_Cartwheel001.bvh",      "acrobatics", "Cartwheel"),
+
+    # ── Subject 0008 — Female, age 25-30 ───────────────────────────────
+    SFUTrial("0008_Walking001.bvh",        "walk",       "Normal walking"),
+    SFUTrial("0008_Walking002.bvh",        "walk",       "Walking variation"),
+    SFUTrial("0008_Skipping001.bvh",       "locomotion", "Skipping"),
+    SFUTrial("0008_ChaCha001.bvh",         "dance",      "Cha-cha dance"),
+    SFUTrial("0008_Yoga001.bvh",           "sport",      "Yoga sequence"),
+
+    # ── Subject 0012 — Male, age 18-25, 174cm 74kg ─────────────────────
+    SFUTrial("0012_JumpAndRoll001.bvh",    "acrobatics", "Jump and roll"),
+    SFUTrial("0012_SpeedVault001.bvh",     "acrobatics", "Speed vault"),
+    SFUTrial("0012_SpeedVault002.bvh",     "acrobatics", "Speed vault variation"),
+
+    # ── Subject 0015 — Male, age 18-25, 171cm 70kg ─────────────────────
+    SFUTrial("0015_HopOverObstacle001.bvh",  "obstacle",     "Hop over obstacle"),
+    SFUTrial("0015_JumpOverObstacle001.bvh", "obstacle",     "Jump over obstacle"),
+    SFUTrial("0015_BasicKendo001.bvh",       "martial_arts", "Basic kendo"),
+    SFUTrial("0015_Kirikaeshi001.bvh",       "martial_arts", "Kirikaeshi (kendo drill)"),
+    SFUTrial("0015_KendoKata001.bvh",        "martial_arts", "Kendo kata"),
+
+    # ── Subject 0017 — Male, age 18-25, 165cm 63kg ─────────────────────
+    SFUTrial("0017_ParkourRoll001.bvh",    "acrobatics",   "Parkour roll"),
+    SFUTrial("0017_JumpAndRoll001.bvh",    "acrobatics",   "Jump and roll"),
+    SFUTrial("0017_JumpingOnBench001.bvh", "obstacle",     "Jumping on bench"),
+    SFUTrial("0017_MonkeyVault001.bvh",    "acrobatics",   "Monkey vault"),
+    SFUTrial("0017_RunningOnBench001.bvh", "obstacle",     "Running on bench"),
+    SFUTrial("0017_RunningOnBench002.bvh", "obstacle",     "Running on bench variation"),
+    SFUTrial("0017_SpeedVault001.bvh",     "acrobatics",   "Speed vault"),
+    SFUTrial("0017_SpeedVault002.bvh",     "acrobatics",   "Speed vault variation"),
+    SFUTrial("0017_WushuKicks001.bvh",     "martial_arts", "Wushu kicks"),
+
+    # ── Subject 0018 — Female, age 18-25, 161cm 55kg ───────────────────
+    SFUTrial("0018_Walking001.bvh",                   "walk",  "Normal walking"),
+    SFUTrial("0018_Catwalk001.bvh",                   "walk",  "Catwalk"),
+    SFUTrial("0018_TipToe001.bvh",                    "walk",  "Tiptoeing"),
+    SFUTrial("0018_Moonwalk001.bvh",                  "walk",  "Moonwalk"),
+    SFUTrial("0018_Bridge001.bvh",                    "sport", "Bridge pose"),
+    SFUTrial("0018_DanceTurns001.bvh",                "dance", "Dance turns"),
+    SFUTrial("0018_DanceTurns002.bvh",                "dance", "Dance turns variation"),
+    SFUTrial("0018_TraditionalChineseDance001.bvh",   "dance", "Traditional Chinese dance"),
+    SFUTrial("0018_XinJiang002.bvh",                  "dance", "Xinjiang dance variation 2"),
+    SFUTrial("0018_XinJiang003.bvh",                  "dance", "Xinjiang dance variation 3"),
+
+    # ── Subject 0019 — Male, age 18-25, 174cm 63kg (nusmocapnew path) ──
+    SFUTrial("0019_BasicBollywoodDance001.bvh",   "dance", "Basic Bollywood dance",
+             _BASE_URL_NEW),
+    SFUTrial("0019_AdvanceBollywoodDance001.bvh", "dance", "Advanced Bollywood dance",
+             _BASE_URL_NEW),
 ]
 
 _RETRY_DELAYS = [2, 4, 8, 16]
@@ -117,7 +140,7 @@ def _download_one(
             print(f"  [skip] {trial.filename} (already exists)")
         return True
 
-    url = _BASE_URL + trial.filename
+    url = trial.base_url + trial.filename
 
     for attempt in range(retries):
         try:
