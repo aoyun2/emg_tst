@@ -61,8 +61,13 @@ def plot_simulation(
     title: str,
     out_path: str | Path,
     fps: float = 200.0,
+    knee_label: str = "Driving knee signal",
 ) -> None:
-    """Save a 3-panel plot of simulation results (knee angles, CoM, contacts)."""
+    """Save a 3-panel plot of simulation results (knee angles, CoM, contacts).
+
+    *knee_label* is the legend label for the knee signal that drove the
+    simulation's right knee actuator (e.g. "Model prediction", "GT label").
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -83,8 +88,8 @@ def plot_simulation(
 
     # Panel 1: Knee angles (flexion convention as stored)
     ax = axes[0]
-    ax.plot(t, ref, label="Reference (mocap)", linewidth=1.5, alpha=0.8)
-    ax.plot(t, pred, label="Predicted (model)", linewidth=1.5)
+    ax.plot(t, ref, label="Reference (matched mocap)", linewidth=1.5, alpha=0.8)
+    ax.plot(t, pred, label=knee_label, linewidth=1.5)
     if metrics.get("fall_detected") and metrics["fall_frame"] >= 0:
         ff = metrics["fall_frame"] / fps
         ax.axvline(ff, color="red", linestyle="--", alpha=0.6, label=f"Fall @ {ff:.2f}s")
@@ -125,6 +130,100 @@ def plot_simulation(
     fig.savefig(out_path, dpi=140)
     plt.close(fig)
     print(f"[viz] Simulation plot saved -> {out_path}")
+
+
+def plot_simulation_comparison(
+    gt_metrics: dict,
+    good_metrics: dict,
+    bad_metrics: Optional[dict],
+    title: str,
+    out_path: str | Path,
+    fps: float = 200.0,
+) -> None:
+    """Save a 3-panel comparison plot (GT vs good prediction vs bad prediction)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    gt_knee = np.asarray(gt_metrics.get("pred_knee_series", []))
+    good_knee = np.asarray(good_metrics.get("pred_knee_series", []))
+    ref_knee = np.asarray(gt_metrics.get("ref_knee_series", []))
+    if gt_knee.size == 0:
+        return
+
+    T = len(gt_knee)
+    t = np.arange(T) / fps
+
+    n_runs = 3 if bad_metrics is not None else 2
+    fig, axes = plt.subplots(3, 1, figsize=(14, 12), sharex=True)
+
+    # Panel 1: Knee angles
+    ax = axes[0]
+    ax.plot(t, ref_knee[:T], label="Matched CMU knee (ref)", lw=1.5, color="green", alpha=0.7)
+    ax.plot(t, gt_knee[:T], label="GT knee", lw=2, color="blue")
+    good_rmse = good_metrics.get("knee_rmse_deg", 0)
+    ax.plot(t, good_knee[:T], label=f"Good pred (RMSE={good_rmse:.1f})", lw=2, color="orange", alpha=0.8)
+    if bad_metrics is not None:
+        bad_knee = np.asarray(bad_metrics.get("pred_knee_series", []))
+        bad_rmse = bad_metrics.get("knee_rmse_deg", 0)
+        ax.plot(t[:len(bad_knee)], bad_knee[:T], label=f"Bad pred (RMSE={bad_rmse:.1f})",
+                lw=2, color="red", alpha=0.7)
+    ax.set_ylabel("Knee angle (deg, 180=straight)")
+    ax.set_title(title)
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    # Panel 2: CoM height
+    ax = axes[1]
+    gt_com = np.asarray(gt_metrics.get("com_height_series", []))
+    good_com = np.asarray(good_metrics.get("com_height_series", []))
+    if gt_com.size > 0:
+        ax.plot(t[:len(gt_com)], gt_com[:T], label="GT CoM", lw=2, color="blue")
+    if good_com.size > 0:
+        good_stab = good_metrics.get("stability_score", 0)
+        ax.plot(t[:len(good_com)], good_com[:T],
+                label=f"Good pred CoM (stab={good_stab:.2f})", lw=2, color="orange", alpha=0.8)
+    if bad_metrics is not None:
+        bad_com = np.asarray(bad_metrics.get("com_height_series", []))
+        if bad_com.size > 0:
+            bad_stab = bad_metrics.get("stability_score", 0)
+            ax.plot(t[:len(bad_com)], bad_com[:T],
+                    label=f"Bad pred CoM (stab={bad_stab:.2f})", lw=2, color="red", alpha=0.7)
+    ax.axhline(FALL_HEIGHT_THRESHOLD, color="r", ls="--", lw=1, label="Fall threshold")
+    gt_stab = gt_metrics.get("stability_score", 0)
+    ax.set_ylabel("CoM height (m)")
+    ax.set_title(f"CoM  |  GT stab={gt_stab:.3f}")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    # Panel 3: Foot contacts
+    ax = axes[2]
+    runs = [("GT", gt_metrics, "blue"), ("Good", good_metrics, "orange")]
+    if bad_metrics is not None:
+        runs.append(("Bad", bad_metrics, "red"))
+    for i, (label, m, color) in enumerate(runs):
+        rc = np.asarray(m.get("right_contact_frames", [])) / fps
+        lc = np.asarray(m.get("left_contact_frames", [])) / fps
+        y = 1 - i * 0.25
+        if len(rc) > 0:
+            ax.scatter(rc, np.full_like(rc, y), marker="|", s=100, color=color, label=f"{label} R")
+        if len(lc) > 0:
+            ax.scatter(lc, np.full_like(lc, y + 0.08), marker="|", s=100, color=color, alpha=0.5, label=f"{label} L")
+    steps_str = (f"GT={gt_metrics.get('step_count', 0)}, "
+                 f"Good={good_metrics.get('step_count', 0)}")
+    if bad_metrics is not None:
+        steps_str += f", Bad={bad_metrics.get('step_count', 0)}"
+    ax.set_xlabel("Time (s)")
+    ax.set_title(f"Foot contacts  |  Steps: {steps_str}")
+    ax.legend(loc="upper right", fontsize=7)
+    ax.grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=140)
+    plt.close(fig)
+    print(f"[viz] Comparison plot saved -> {out_path}")
 
 
 # ── Window-length helper ──────────────────────────────────────────────────────
@@ -327,6 +426,9 @@ def predict_knee_sequence(
 # ── Test sample evaluation ───────────────────────────────────────────────────
 
 
+BAD_PRED_NOISE_STD = 25.0  # degrees — intentionally poor prediction
+
+
 def run_test_sample(
     mocap_dir: str | Path = "mocap_data",
     out_path: str | Path = "eval_test_sample_results.json",
@@ -340,6 +442,8 @@ def run_test_sample(
     """Run the motion-matching pipeline using real test sample curves.
 
     This is a fallback mode for when no trained model checkpoint is available.
+    Runs three simulations per match: ground truth, good prediction, and
+    bad prediction (high noise) to contrast stability outcomes.
     """
     print("=" * 60)
     print("TEST SAMPLE -- real mocap query -> motion matching -> simulation")
@@ -359,16 +463,27 @@ def run_test_sample(
         (curves.predicted_knee_included_deg - curves.knee_label_included_deg) ** 2
     )))
 
+    # Generate a bad prediction with much higher noise
+    rng = np.random.default_rng(42)
+    knee_label = curves.knee_label_included_deg
+    bad_pred = np.clip(
+        knee_label + rng.normal(0.0, BAD_PRED_NOISE_STD, len(knee_label)).astype(np.float32),
+        0.0, 180.0,
+    )
+    bad_rmse = float(np.sqrt(np.mean((bad_pred - knee_label) ** 2)))
+
     print(
-        f"[eval] Real test sample: {len(curves.knee_label_included_deg)} frames @ {curves.fps} Hz"
+        f"[eval] Real test sample: {len(knee_label)} frames @ {curves.fps} Hz"
     )
     print(f"[eval] Source file: {curves.source_file} [{curves.category}]")
-    print(f"[eval] Pred-vs-label RMSE (model surrogate): {model_rmse:.2f}°")
+    print(f"[eval] Good pred RMSE: {model_rmse:.2f}°  |  "
+          f"Bad pred RMSE (noise std={BAD_PRED_NOISE_STD}): {bad_rmse:.2f}°")
 
     result = evaluate_from_curves(
-        knee_label_included=curves.knee_label_included_deg,
+        knee_label_included=knee_label,
         thigh_angle=curves.thigh_angle_deg,
         predicted_knee_included=curves.predicted_knee_included_deg,
+        bad_predicted_knee_included=bad_pred,
         mocap_dir=mocap_dir,
         top_k=top_k,
         out_path=out_path,
@@ -376,6 +491,7 @@ def run_test_sample(
         use_cache=use_cache,
     )
     result["test_sample_pred_vs_label_rmse_deg"] = model_rmse
+    result["bad_pred_vs_label_rmse_deg"] = bad_rmse
     with open(out_path, "w") as f:
         json.dump(result, f, indent=2)
     return result
@@ -596,7 +712,8 @@ def evaluate(
         if i < 5:
             plot_dir = Path(out_path).with_suffix("") / "plots"
             plot_simulation(metrics, f"Segment {i} ({actual_eval_sec:.0f}s)",
-                            plot_dir / f"segment_{i:04d}_sim.png")
+                            plot_dir / f"segment_{i:04d}_sim.png",
+                            knee_label="Model prediction")
 
     # ── Aggregate summary ────────────────────────────────────────────────────
     def _agg(key):
@@ -745,14 +862,20 @@ def evaluate_from_curves(
     out_path: str | Path = "eval_mock_results.json",
     render_gifs: bool = False,
     use_cache: bool = True,
+    bad_predicted_knee_included: Optional[np.ndarray] = None,
 ) -> dict:
     """Evaluate motion matching directly from label/thigh curves.
 
     This path is designed for early feasibility testing before recorded data is
     available from ``rigtest.py``.
+
+    When *bad_predicted_knee_included* is provided, a third "bad prediction"
+    simulation is run per match to contrast stability outcomes.
     """
     knee_label_inc = knee_label_included.astype(np.float32)
     pred_knee_inc = predicted_knee_included.astype(np.float32)
+    bad_knee_inc = (bad_predicted_knee_included.astype(np.float32)
+                    if bad_predicted_knee_included is not None else None)
 
     mocap_db = load_aggregated_database(
         mocap_root=mocap_dir, try_download=True,
@@ -777,7 +900,7 @@ def evaluate_from_curves(
         gt_traj = plot_dir / "ground_truth_sim.traj.npz"
         pred_traj = plot_dir / "prediction_sim.traj.npz"
 
-        # Both simulations use the sample's own thigh angle for the right hip
+        # All simulations use the sample's own thigh angle for the right hip
         # actuator so that the right leg (thigh + knee) is always driven by
         # the sample being evaluated, not by the matched mocap reference.
         gt_metrics = simulate_prosthetic_walking(
@@ -793,27 +916,52 @@ def evaluate_from_curves(
             sample_thigh_right=thigh_angle,
             save_trajectory=pred_traj,
             render_gif=pred_gif,
+            show_reference=True,
+            reference_knee=knee_label_inc,
         )
 
-        # Save simulation plots
-        plot_simulation(gt_metrics, f"Ground Truth -- match #{rank} [{cat}]",
-                        plot_dir / "ground_truth_sim.png", fps=mocap_db["fps"])
-        plot_simulation(pred_metrics, f"Prediction -- match #{rank} [{cat}]",
-                        plot_dir / "prediction_sim.png", fps=mocap_db["fps"])
+        match_entry = {
+            "match_rank": rank,
+            "start_idx": int(start),
+            "dtw_dist": float(dist),
+            "category": cat,
+            "ground_truth_replaced_right_knee": gt_metrics,
+            "prediction_replaced_right_knee": pred_metrics,
+            "pred_vs_label_rmse_deg": float(
+                np.sqrt(np.mean((predicted_knee_included - knee_label_included) ** 2))
+            ),
+        }
 
-        per_match.append(
-            {
-                "match_rank": rank,
-                "start_idx": int(start),
-                "dtw_dist": float(dist),
-                "category": cat,
-                "ground_truth_replaced_right_knee": gt_metrics,
-                "prediction_replaced_right_knee": pred_metrics,
-                "pred_vs_label_rmse_deg": float(
-                    np.sqrt(np.mean((predicted_knee_included - knee_label_included) ** 2))
-                ),
-            }
+        # Bad prediction simulation (optional, for demo/test-sample mode)
+        bad_metrics = None
+        if bad_knee_inc is not None:
+            bad_gif = (plot_dir / "bad_prediction_sim.gif") if render_gifs else None
+            bad_traj = plot_dir / "bad_prediction_sim.traj.npz"
+            bad_metrics = simulate_prosthetic_walking(
+                segment,
+                bad_knee_inc,
+                sample_thigh_right=thigh_angle,
+                save_trajectory=bad_traj,
+                render_gif=bad_gif,
+                show_reference=True,
+                reference_knee=knee_label_inc,
+            )
+            match_entry["bad_prediction_replaced_right_knee"] = bad_metrics
+            match_entry["bad_pred_vs_label_rmse_deg"] = float(
+                np.sqrt(np.mean(
+                    (bad_predicted_knee_included - knee_label_included) ** 2
+                ))
+            )
+
+        # Single comparison plot with all runs (GT vs good vs bad)
+        plot_simulation_comparison(
+            gt_metrics, pred_metrics, bad_metrics,
+            title=f"Match #{rank} [{cat}]",
+            out_path=plot_dir / "comparison.png",
+            fps=mocap_db["fps"],
         )
+
+        per_match.append(match_entry)
 
     result = {
         "mode": "curve_direct",
