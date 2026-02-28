@@ -544,7 +544,7 @@ class _MuJoCoRunner:
 
         # ── Body IDs for XY-only root tracking ───────────────────────────
         # We track XY from BVH but let Z (height) be determined by physics
-        # so the weld constraint doesn't fight floor contact forces.
+        # so the connect constraint doesn't fight floor contact forces.
         torso_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "torso")
         ref_torso_id = None
         if self.show_reference:
@@ -577,7 +577,7 @@ class _MuJoCoRunner:
 
                 # Drive root position via mocap body.
                 # Track XY from BVH; let Z (height) float with physics
-                # so the weld doesn't fight floor contact forces.
+                # so the connect constraint doesn't fight floor contact forces.
                 data.mocap_pos[0, :2] = root_pos[t, :2]
                 data.mocap_pos[0, 2] = data.xpos[torso_id, 2]
                 if self.show_reference:
