@@ -6,10 +6,11 @@ is driven by the model's predicted knee angle -- allowing evaluation of how
 well the prediction maintains stable, natural gait.
 
 The torso root uses slide joints for translation (X, Y, Z) and a ball joint
-for orientation.  X and Y are driven by position actuators from BVH root
-trajectories — exactly the same mechanism as the limb joints.  The Z slide
-joint has **no actuator** (only damping), so the body moves vertically under
-gravity alone and can fall naturally when gait is unstable.
+for orientation.  X and Y are driven by soft position actuators (kp=100) from
+BVH root trajectories.  The Z slide joint has **no actuator** and minimal
+damping (2), so the body moves vertically under gravity alone and can fall
+naturally when gait is unstable.  The ball joint also has low damping (2) to
+allow realistic tipping.
 
 Supports:
 - MuJoCo physics backend with full-body mocap-driven humanoid
@@ -194,7 +195,7 @@ _MJCF = """
   <option timestep="0.001" gravity="0 0 -9.81" integrator="implicit"/>
 
   <default>
-    <joint damping="12" armature="0.02"/>
+    <joint damping="5" armature="0.02"/>
     <geom condim="3" friction="1 0.5 0.5" contype="1" conaffinity="2"/>
   </default>
 
@@ -211,8 +212,8 @@ _MJCF = """
     <body name="torso" pos="0 0 1.05">
       <joint name="root_x" type="slide" axis="1 0 0"/>
       <joint name="root_y" type="slide" axis="0 1 0"/>
-      <joint name="root_z" type="slide" axis="0 0 1" damping="50"/>
-      <joint name="root_ball" type="ball" damping="20"/>
+      <joint name="root_z" type="slide" axis="0 0 1" damping="2"/>
+      <joint name="root_ball" type="ball" damping="2"/>
       <geom type="capsule" fromto="0 0 -0.12 0 0 0.2" size="0.09"
             rgba="0.6 0.6 0.65 1"/>
 
@@ -299,8 +300,8 @@ _MJCF = """
     <position joint="right_elbow"    kp="80"/>
     <position joint="left_elbow"     kp="80"/>
     <!-- ctrl[10..11]: root XY tracking (Z has no actuator — free for gravity) -->
-    <position joint="root_x" kp="300"/>
-    <position joint="root_y" kp="300"/>
+    <position joint="root_x" kp="100"/>
+    <position joint="root_y" kp="100"/>
   </actuator>
 </mujoco>
 """
@@ -320,8 +321,8 @@ def _build_dual_mjcf() -> str:
     <body name="ref_torso" pos="0 {ref_y} 1.05">
       <joint name="ref_root_x" type="slide" axis="1 0 0"/>
       <joint name="ref_root_y" type="slide" axis="0 1 0"/>
-      <joint name="ref_root_z" type="slide" axis="0 0 1" damping="50"/>
-      <joint name="ref_root_ball" type="ball" damping="20"/>
+      <joint name="ref_root_z" type="slide" axis="0 0 1" damping="2"/>
+      <joint name="ref_root_ball" type="ball" damping="2"/>
       <geom type="capsule" fromto="0 0 -0.12 0 0 0.2" size="0.09"
             rgba="0.3 0.5 0.8 0.5"/>
 
@@ -406,8 +407,8 @@ def _build_dual_mjcf() -> str:
     <position joint="ref_left_shoulder"  kp="100"/>
     <position joint="ref_right_elbow"    kp="80"/>
     <position joint="ref_left_elbow"     kp="80"/>
-    <position joint="ref_root_x" kp="300"/>
-    <position joint="ref_root_y" kp="300"/>"""
+    <position joint="ref_root_x" kp="100"/>
+    <position joint="ref_root_y" kp="100"/>"""
 
     base = _MJCF
     base = base.replace(

@@ -11,7 +11,7 @@ BAD_NOISE_STD = 25.0    # degrees — poor model, should cause instability
 
 # ── External query (OpenSim IK from GitHub, NOT from CMU DB) ──────────────
 print("Downloading external OpenSim gait data...")
-curves = extract_external_sample_curves(seconds=5.0, pred_noise_std=GOOD_NOISE_STD)
+curves = extract_external_sample_curves(seconds=10.0, pred_noise_std=GOOD_NOISE_STD)
 knee_query = curves.knee_label_included_deg
 thigh_query = curves.thigh_angle_deg
 pred_knee_good = curves.predicted_knee_included_deg
