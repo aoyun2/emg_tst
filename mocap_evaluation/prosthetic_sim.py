@@ -6,8 +6,9 @@ is driven by the model's predicted knee angle -- allowing evaluation of how
 well the prediction maintains stable, natural gait.
 
 The torso root position is tracked from BVH root trajectories via a MuJoCo
-mocap body + weld constraint, keeping the body on the correct walking path
-while still allowing physics interactions (foot contacts, balance effects).
+mocap body + connect constraint (position only), keeping the body on the
+correct walking path while leaving orientation free for physics (the body
+can lean, tilt, and fall naturally based on foot contacts and balance).
 
 Supports:
 - MuJoCo physics backend with full-body mocap-driven humanoid
@@ -178,7 +179,7 @@ class SimTrajectory:
 #
 # Full-body humanoid with:
 #   - Mocap body "root_target" driven by BVH root position
-#   - Weld constraint: torso tracks root_target (stiff spring)
+#   - Connect constraint: torso position tracks root_target (rotation free)
 #   - Head (passive, high-damping neck)
 #   - Arms with forearms (shoulder + elbow joints)
 #   - Legs with thigh + shank + foot (hip + knee + ankle joints)
@@ -202,8 +203,8 @@ _MJCF = """
   </visual>
 
   <equality>
-    <weld body1="torso" body2="root_target"
-          solref="0.02 1" solimp="0.95 0.99 0.01 0.5 2"/>
+    <connect body1="torso" body2="root_target" anchor="0 0 0"
+             solref="0.02 1" solimp="0.95 0.99 0.01 0.5 2"/>
   </equality>
 
   <worldbody>
@@ -315,12 +316,12 @@ def _build_dual_mjcf() -> str:
 
     The reference model is semi-transparent blue, offset laterally by
     REF_Y_OFFSET.  It shares the floor and lighting with the prediction
-    model but uses its own mocap target + weld constraint + actuators.
+    model but uses its own mocap target + connect constraint + actuators.
     """
     ref_y = REF_Y_OFFSET
 
     ref_equality = (
-        f'    <weld body1="ref_torso" body2="ref_root_target"\n'
+        f'    <connect body1="ref_torso" body2="ref_root_target" anchor="0 0 0"\n'
         f'          solref="0.02 1" solimp="0.95 0.99 0.01 0.5 2"/>'
     )
 
