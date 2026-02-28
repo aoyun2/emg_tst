@@ -2,15 +2,17 @@
 
 Drives a full humanoid skeleton from motion-capture data via MuJoCo physics.
 All joints track their mocap reference angles *except* the right knee, which
-is driven by the model's predicted knee angle -- allowing evaluation of how
-well the prediction maintains stable, natural gait.
+is driven by the model's predicted knee angle, and the right hip, which is
+driven by the sample's thigh_angle -- allowing evaluation of how well the
+prediction maintains stable, natural gait.
 
-The torso root uses slide joints for translation (X, Y, Z) and a ball joint
-for orientation.  X and Y are driven by soft position actuators (kp=100) from
-BVH root trajectories.  The Z slide joint has **no actuator** and minimal
-damping (2), so the body moves vertically under gravity alone and can fall
-naturally when gait is unstable.  The ball joint also has low damping (2) to
-allow realistic tipping.
+The torso root uses slide joints for translation (X, Y, Z) and three hinge
+joints for orientation (yaw, pitch, roll).  X and Y are driven by soft
+position actuators (kp=100) from BVH root trajectories.  Yaw, pitch, and
+roll are driven by position actuators (kp=200) from BVH root orientation.
+The Z slide joint has **no actuator** and minimal damping (2), so the body
+moves vertically under gravity alone and can fall naturally when gait is
+unstable.
 
 Supports:
 - MuJoCo physics backend with full-body mocap-driven humanoid
@@ -180,9 +182,10 @@ class SimTrajectory:
 # ── MJCF humanoid model ─────────────────────────────────────────────────────
 #
 # Full-body humanoid with:
-#   - Root: slide joints X/Y (actuated), slide joint Z (free), ball joint (free)
+#   - Root: slide joints X/Y (actuated), slide joint Z (free),
+#     hinge joints yaw/pitch/roll (actuated from BVH root orientation)
 #   - Head (passive, high-damping neck)
-#   - Arms with forearms (shoulder + elbow joints)
+#   - Arms with forearms (shoulder + elbow joints, driven from BVH)
 #   - Legs with thigh + shank + foot (hip + knee + ankle joints)
 #   - Right knee/shank/foot coloured orange (prosthetic side)
 #
@@ -213,7 +216,9 @@ _MJCF = """
       <joint name="root_x" type="slide" axis="1 0 0"/>
       <joint name="root_y" type="slide" axis="0 1 0"/>
       <joint name="root_z" type="slide" axis="0 0 1" damping="2"/>
-      <joint name="root_ball" type="ball" damping="2"/>
+      <joint name="root_yaw"   type="hinge" axis="0 0 1" damping="5"/>
+      <joint name="root_pitch" type="hinge" axis="0 1 0" damping="5"/>
+      <joint name="root_roll"  type="hinge" axis="1 0 0" damping="5"/>
       <geom type="capsule" fromto="0 0 -0.12 0 0 0.2" size="0.09"
             rgba="0.6 0.6 0.65 1"/>
 
@@ -302,6 +307,10 @@ _MJCF = """
     <!-- ctrl[10..11]: root XY tracking (Z has no actuator — free for gravity) -->
     <position joint="root_x" kp="100"/>
     <position joint="root_y" kp="100"/>
+    <!-- ctrl[12..14]: root orientation from mocap -->
+    <position joint="root_yaw"   kp="200"/>
+    <position joint="root_pitch" kp="200"/>
+    <position joint="root_roll"  kp="200"/>
   </actuator>
 </mujoco>
 """
@@ -322,7 +331,9 @@ def _build_dual_mjcf() -> str:
       <joint name="ref_root_x" type="slide" axis="1 0 0"/>
       <joint name="ref_root_y" type="slide" axis="0 1 0"/>
       <joint name="ref_root_z" type="slide" axis="0 0 1" damping="2"/>
-      <joint name="ref_root_ball" type="ball" damping="2"/>
+      <joint name="ref_root_yaw"   type="hinge" axis="0 0 1" damping="5"/>
+      <joint name="ref_root_pitch" type="hinge" axis="0 1 0" damping="5"/>
+      <joint name="ref_root_roll"  type="hinge" axis="1 0 0" damping="5"/>
       <geom type="capsule" fromto="0 0 -0.12 0 0 0.2" size="0.09"
             rgba="0.3 0.5 0.8 0.5"/>
 
@@ -396,7 +407,7 @@ def _build_dual_mjcf() -> str:
     </body>
 """
 
-    ref_actuators = """    <!-- Reference model actuators (ctrl[12..23]) -->
+    ref_actuators = """    <!-- Reference model actuators (ctrl[15..29]) -->
     <position joint="ref_right_hip"      kp="300"/>
     <position joint="ref_left_hip"       kp="300"/>
     <position joint="ref_right_knee"     kp="350"/>
@@ -408,7 +419,10 @@ def _build_dual_mjcf() -> str:
     <position joint="ref_right_elbow"    kp="80"/>
     <position joint="ref_left_elbow"     kp="80"/>
     <position joint="ref_root_x" kp="100"/>
-    <position joint="ref_root_y" kp="100"/>"""
+    <position joint="ref_root_y" kp="100"/>
+    <position joint="ref_root_yaw"   kp="200"/>
+    <position joint="ref_root_pitch" kp="200"/>
+    <position joint="ref_root_roll"  kp="200"/>"""
 
     base = _MJCF
     base = base.replace(
@@ -476,6 +490,29 @@ class _MuJoCoRunner:
         ankle_l = _included_to_flexion(_pad_or_trim(
             mocap_segment.get("ankle_left", np.full(T, 180.0)), T))
 
+        # Shoulders & elbows from mocap (included-angle → flexion degrees)
+        shoulder_r = _included_to_flexion(_pad_or_trim(
+            mocap_segment.get("shoulder_right", np.full(T, 180.0)), T))
+        shoulder_l = _included_to_flexion(_pad_or_trim(
+            mocap_segment.get("shoulder_left", np.full(T, 180.0)), T))
+        elbow_r = _included_to_flexion(_pad_or_trim(
+            mocap_segment.get("elbow_right", np.full(T, 180.0)), T))
+        elbow_l = _included_to_flexion(_pad_or_trim(
+            mocap_segment.get("elbow_left", np.full(T, 180.0)), T))
+
+        # Root orientation from BVH (raw degrees, already in BVH convention)
+        # BVH Xrotation = pitch (forward/back lean)
+        # BVH Yrotation = yaw (turning)
+        # BVH Zrotation = roll (lateral lean)
+        root_pitch = _pad_or_trim(
+            mocap_segment.get("root_pitch", np.zeros(T)), T, default=0.0)
+        root_yaw = _pad_or_trim(
+            mocap_segment.get("root_yaw", np.zeros(T)), T, default=0.0)
+        root_roll = _pad_or_trim(
+            mocap_segment.get("root_roll", np.zeros(T)), T, default=0.0)
+        # Normalise root yaw so frame-0 starts at 0 (no absolute heading)
+        root_yaw = root_yaw - root_yaw[0]
+
         # ── Root position from BVH (MuJoCo Z-up coords, metres) ─────────
         raw_root = mocap_segment.get("root_pos", np.zeros((T, 3)))
         if raw_root.shape[0] < T:
@@ -491,10 +528,13 @@ class _MuJoCoRunner:
             root_pos = np.tile(HUMANOID_INIT_POS, (T, 1))
 
         # ── Pre-compute controls (radians) ────────────────────────────────
-        # Actuator order: right_hip, left_hip, right_knee, left_knee,
-        #   right_ankle, left_ankle, right_shoulder, left_shoulder,
-        #   right_elbow, left_elbow, root_x, root_y
-        n_act = 24 if self.show_reference else 12
+        # Actuator order (15 per humanoid):
+        #   0: right_hip, 1: left_hip, 2: right_knee, 3: left_knee,
+        #   4: right_ankle, 5: left_ankle, 6: right_shoulder, 7: left_shoulder,
+        #   8: right_elbow, 9: left_elbow, 10: root_x, 11: root_y,
+        #   12: root_yaw, 13: root_pitch, 14: root_roll
+        N_ACT_PER = 15
+        n_act = N_ACT_PER * 2 if self.show_reference else N_ACT_PER
         controls = np.zeros((T, n_act), dtype=np.float64)
         controls[:, 0] = np.radians(hip_r)
         controls[:, 1] = np.radians(hip_l)
@@ -502,15 +542,18 @@ class _MuJoCoRunner:
         controls[:, 3] = np.radians(knee_l)
         controls[:, 4] = np.radians(ankle_r)
         controls[:, 5] = np.radians(ankle_l)
-        # Contralateral arm swing: right arm follows left hip, left arm
-        # follows right hip.  This gives natural human gait patterning.
-        controls[:, 6] = np.radians(0.4 * hip_l)   # right shoulder
-        controls[:, 7] = np.radians(0.4 * hip_r)   # left shoulder
-        controls[:, 8] = np.radians(25.0)           # natural elbow flexion
-        controls[:, 9] = np.radians(25.0)
+        # Arms driven by actual mocap data
+        controls[:, 6] = np.radians(shoulder_r)
+        controls[:, 7] = np.radians(shoulder_l)
+        controls[:, 8] = np.radians(elbow_r)
+        controls[:, 9] = np.radians(elbow_l)
         # Root XY tracking (slide joint targets, metres — not radians)
         controls[:, 10] = root_pos[:, 0]
         controls[:, 11] = root_pos[:, 1]
+        # Root orientation from mocap (radians)
+        controls[:, 12] = np.radians(root_yaw)
+        controls[:, 13] = np.radians(root_pitch)
+        controls[:, 14] = np.radians(root_roll)
 
         if self.show_reference:
             # Reference model: identical to prediction except right knee
@@ -520,18 +563,22 @@ class _MuJoCoRunner:
                     np.asarray(reference_knee, dtype=np.float64)[:T])
             else:
                 ref_knee_visual = ref
-            controls[:, 12] = np.radians(hip_r)
-            controls[:, 13] = np.radians(hip_l)
-            controls[:, 14] = np.radians(ref_knee_visual)  # RIGHT KNEE = REFERENCE
-            controls[:, 15] = np.radians(knee_l)
-            controls[:, 16] = np.radians(ankle_r)
-            controls[:, 17] = np.radians(ankle_l)
-            controls[:, 18] = np.radians(0.4 * hip_l)
-            controls[:, 19] = np.radians(0.4 * hip_r)
-            controls[:, 20] = np.radians(25.0)
-            controls[:, 21] = np.radians(25.0)
-            controls[:, 22] = root_pos[:, 0]
-            controls[:, 23] = root_pos[:, 1]
+            off = N_ACT_PER
+            controls[:, off + 0] = np.radians(hip_r)
+            controls[:, off + 1] = np.radians(hip_l)
+            controls[:, off + 2] = np.radians(ref_knee_visual)  # RIGHT KNEE = REFERENCE
+            controls[:, off + 3] = np.radians(knee_l)
+            controls[:, off + 4] = np.radians(ankle_r)
+            controls[:, off + 5] = np.radians(ankle_l)
+            controls[:, off + 6] = np.radians(shoulder_r)
+            controls[:, off + 7] = np.radians(shoulder_l)
+            controls[:, off + 8] = np.radians(elbow_r)
+            controls[:, off + 9] = np.radians(elbow_l)
+            controls[:, off + 10] = root_pos[:, 0]
+            controls[:, off + 11] = root_pos[:, 1]
+            controls[:, off + 12] = np.radians(root_yaw)
+            controls[:, off + 13] = np.radians(root_pitch)
+            controls[:, off + 14] = np.radians(root_roll)
 
         # ── Physics substeps per data frame ──────────────────────────────
         steps_per_frame = max(1, round(self.dt / model.opt.timestep))

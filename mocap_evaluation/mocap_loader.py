@@ -13,18 +13,25 @@ Download:
     python -m mocap_evaluation.cmu_downloader
 
 Returned database dict (all angles in **degrees**, all arrays at TARGET_FPS):
-    knee_right   : (N,)   right knee included angle (180 = straight)
-    knee_left    : (N,)   left  knee included angle (180 = straight)
-    hip_right    : (N,)   right hip included angle (180 = neutral/straight)
-    hip_left     : (N,)   left  hip included angle (180 = neutral/straight)
-    ankle_right  : (N,)   right ankle included angle (180 = neutral/straight)
-    ankle_left   : (N,)   left  ankle included angle (180 = neutral/straight)
-    pelvis_tilt  : (N,)   anterior pelvic tilt (+= anterior)
-    trunk_lean   : (N,)   trunk forward lean (+= forward)
-    root_pos     : (N, 3) pelvis position in metres
-    fps          : float  always TARGET_FPS after resampling
-    source       : str    e.g. "cmu_bvh+aggregated"
-    categories   : (N,) str array — per-frame motion category label (optional)
+    knee_right      : (N,)   right knee included angle (180 = straight)
+    knee_left       : (N,)   left  knee included angle (180 = straight)
+    hip_right       : (N,)   right hip included angle (180 = neutral/straight)
+    hip_left        : (N,)   left  hip included angle (180 = neutral/straight)
+    ankle_right     : (N,)   right ankle included angle (180 = neutral/straight)
+    ankle_left      : (N,)   left  ankle included angle (180 = neutral/straight)
+    pelvis_tilt     : (N,)   anterior pelvic tilt (+= anterior)
+    trunk_lean      : (N,)   trunk forward lean (+= forward)
+    shoulder_right  : (N,)   right shoulder included angle (180 = neutral)
+    shoulder_left   : (N,)   left  shoulder included angle (180 = neutral)
+    elbow_right     : (N,)   right elbow included angle (180 = straight)
+    elbow_left      : (N,)   left  elbow included angle (180 = straight)
+    root_pitch      : (N,)   root orientation pitch (degrees, BVH Xrotation)
+    root_yaw        : (N,)   root orientation yaw (degrees, BVH Yrotation)
+    root_roll       : (N,)   root orientation roll (degrees, BVH Zrotation)
+    root_pos        : (N, 3) pelvis position in metres
+    fps             : float  always TARGET_FPS after resampling
+    source          : str    e.g. "cmu_bvh+aggregated"
+    categories      : (N,) str array — per-frame motion category label (optional)
     file_boundaries : list of (start, end, filename, category) tuples
 """
 from __future__ import annotations
@@ -57,6 +64,10 @@ _CMU_JOINT_MAP = {
     "LeftFoot":   "ankle_left",
     "LowerBack":  "pelvis_tilt",
     "Spine":      "trunk_lean",
+    "RightArm":   "shoulder_right",   # upper-arm flexion/extension
+    "LeftArm":    "shoulder_left",
+    "RightForeArm": "elbow_right",    # elbow flexion
+    "LeftForeArm":  "elbow_left",
 }
 
 # ── Normal gait kinematics from Winter (2009) ─────────────────────────────────
@@ -158,12 +169,24 @@ def _extract_angles_from_bvh(parser: BVHParser) -> Optional[dict]:
         if k in angles:
             angles[k] = np.clip(180.0 - np.abs(angles[k]), 0.0, 180.0).astype(np.float32)
 
-    # Fill missing signals with zeros
+    # Shoulders & elbows: same sign-flip heuristic as hips, then included-angle
+    for k in ("shoulder_right", "shoulder_left"):
+        if k in angles and float(angles[k].mean()) < -5.0:
+            angles[k] = -angles[k]
+        if k in angles:
+            angles[k] = (180.0 - angles[k]).astype(np.float32)
+    for k in ("elbow_right", "elbow_left"):
+        if k in angles:
+            angles[k] = np.clip(180.0 - np.abs(angles[k]), 0.0, 180.0).astype(np.float32)
+
+    # Fill missing signals with zeros (neutral = 180 for included-angle)
     N = len(angles["knee_right"])
     for k in ("hip_right", "hip_left", "ankle_right", "ankle_left",
-              "pelvis_tilt", "trunk_lean"):
+              "pelvis_tilt", "trunk_lean",
+              "shoulder_right", "shoulder_left",
+              "elbow_right", "elbow_left"):
         if k not in angles:
-            angles[k] = np.zeros(N, dtype=np.float32)
+            angles[k] = np.full(N, 180.0, dtype=np.float32)
 
     # Root position (metres; BVH positions are typically in cm)
     # BVH uses Y-up: Xposition=lateral, Yposition=height, Zposition=forward.
@@ -178,6 +201,21 @@ def _extract_angles_from_bvh(parser: BVHParser) -> Optional[dict]:
         angles["root_pos"] = rp_zup[:N]
     else:
         angles["root_pos"] = np.zeros((N, 3), dtype=np.float32)
+
+    # Root orientation from Hips rotation channels (degrees).
+    # BVH Y-up convention:
+    #   Xrotation = pitch (forward/backward lean, sagittal plane)
+    #   Yrotation = yaw   (turning, transverse plane)
+    #   Zrotation = roll  (lateral lean, frontal plane)
+    # Stored as raw BVH degrees; the simulation converts to MuJoCo Z-up.
+    for ch_name, key in [("Xrotation", "root_pitch"),
+                         ("Yrotation", "root_yaw"),
+                         ("Zrotation", "root_roll")]:
+        ch = parser.get_channel(root_joint_name, ch_name)
+        if ch is not None:
+            angles[key] = _resample(ch, src_fps, TARGET_FPS)[:N]
+        else:
+            angles[key] = np.zeros(N, dtype=np.float32)
 
     angles["fps"]    = float(TARGET_FPS)
     angles["source"] = source_tag
@@ -274,7 +312,9 @@ def _concatenate_databases(dbs: list, meta: Optional[list] = None) -> dict:
            ``file_boundaries`` list are added to the result.
     """
     keys_1d = ["knee_right", "knee_left", "hip_right", "hip_left",
-               "ankle_right", "ankle_left", "pelvis_tilt", "trunk_lean"]
+               "ankle_right", "ankle_left", "pelvis_tilt", "trunk_lean",
+               "shoulder_right", "shoulder_left", "elbow_right", "elbow_left",
+               "root_pitch", "root_yaw", "root_roll"]
     result: dict = {}
     for k in keys_1d:
         result[k] = np.concatenate([d[k] for d in dbs])
@@ -304,11 +344,13 @@ def _concatenate_databases(dbs: list, meta: Optional[list] = None) -> dict:
 _CACHE_KEYS_1D = [
     "knee_right", "knee_left", "hip_right", "hip_left",
     "ankle_right", "ankle_left", "pelvis_tilt", "trunk_lean",
+    "shoulder_right", "shoulder_left", "elbow_right", "elbow_left",
+    "root_pitch", "root_yaw", "root_roll",
 ]
 
 # Bump this when angle extraction or resampling logic changes so that stale
 # caches are automatically invalidated (the fingerprint includes this string).
-_CACHE_VERSION = "v2"
+_CACHE_VERSION = "v3"
 
 
 def _cache_fingerprint(bvh_dir: Path) -> str:

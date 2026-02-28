@@ -189,7 +189,9 @@ def find_best_match(
 
     # ── extract all joints for best segment ───────────────────────────────
     keys_1d = ["knee_right", "knee_left", "hip_right", "hip_left",
-               "ankle_right", "ankle_left", "pelvis_tilt", "trunk_lean"]
+               "ankle_right", "ankle_left", "pelvis_tilt", "trunk_lean",
+               "shoulder_right", "shoulder_left", "elbow_right", "elbow_left",
+               "root_pitch", "root_yaw", "root_roll"]
     matched: dict = {}
     for k in keys_1d:
         if k in mocap_db:
@@ -287,7 +289,9 @@ def find_top_k_matches(
     chosen_starts: List[int] = []
 
     keys_1d = ["knee_right", "knee_left", "hip_right", "hip_left",
-               "ankle_right", "ankle_left", "pelvis_tilt", "trunk_lean"]
+               "ankle_right", "ankle_left", "pelvis_tilt", "trunk_lean",
+               "shoulder_right", "shoulder_left", "elbow_right", "elbow_left",
+               "root_pitch", "root_yaw", "root_roll"]
 
     for dist, s in dtw_scores:
         if len(selected) >= k:
