@@ -787,7 +787,7 @@ class _MuJoCoRunner:
                 with ctx as viewer_obj:
                     # Camera: side-tracking view
                     torso_id = mujoco.mj_name2id(
-                        model, mujoco.mjtObj.mjOBJ_BODY, "torso")
+                        model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
                     viewer_obj.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
                     viewer_obj.cam.trackbodyid = torso_id
                     viewer_obj.cam.distance = 4.5 if self.show_reference else 3.5
@@ -1129,7 +1129,7 @@ def _render_gif(
     camera = mujoco.MjvCamera()
     camera.type = mujoco.mjtCamera.mjCAMERA_TRACKING
     camera.trackbodyid = mujoco.mj_name2id(
-        model, mujoco.mjtObj.mjOBJ_BODY, "torso")
+        model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
     camera.distance = 4.5
     camera.elevation = -15.0
     camera.azimuth = 90.0
