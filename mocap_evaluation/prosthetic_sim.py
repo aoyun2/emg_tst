@@ -7,12 +7,16 @@ driven by the sample's thigh_angle -- allowing evaluation of how well the
 prediction maintains stable, natural gait.
 
 The torso root uses slide joints for translation (X, Y, Z) and three hinge
-joints for orientation (yaw, pitch, roll).  X and Y are driven by soft
-position actuators (kp=100) from BVH root trajectories.  Yaw, pitch, and
-roll are driven by position actuators (kp=200) from BVH root orientation.
-The Z slide joint has **no actuator** and minimal damping (2), so the body
-moves vertically under gravity alone and can fall naturally when gait is
-unstable.
+joints for orientation (yaw, pitch, roll).  X and Y are driven by stiff
+position actuators (kp=2000, damping=200) from BVH root trajectories.
+Yaw, pitch, and roll are driven by position actuators (kp=500, damping=50)
+from BVH root orientation.  The Z slide joint has **no actuator** and
+minimal damping (2), so the body moves vertically under gravity alone and
+can fall naturally when gait is unstable.
+
+All joint actuators use near-critically-damped PD control (high kp with
+matched joint damping) so the skeleton tracks the mocap reference smoothly
+without oscillation.
 
 Supports:
 - MuJoCo physics backend with full-body mocap-driven humanoid
@@ -207,7 +211,7 @@ _MJCF = """
   <option timestep="0.001" gravity="0 0 -9.81" integrator="implicit"/>
 
   <default>
-    <joint damping="5" armature="0.02"/>
+    <joint damping="50" armature="0.02"/>
     <geom condim="3" friction="1 0.5 0.5" contype="1" conaffinity="2"/>
   </default>
 
@@ -222,32 +226,32 @@ _MJCF = """
     <light pos="3 3 4" dir="-0.5 -0.5 -1" diffuse="0.4 0.4 0.4"/>
 
     <body name="pelvis" pos="0 0 1.05">
-      <joint name="root_x" type="slide" axis="1 0 0"/>
-      <joint name="root_y" type="slide" axis="0 1 0"/>
+      <joint name="root_x" type="slide" axis="1 0 0" damping="200"/>
+      <joint name="root_y" type="slide" axis="0 1 0" damping="200"/>
       <joint name="root_z" type="slide" axis="0 0 1" damping="2"/>
-      <joint name="root_yaw"   type="hinge" axis="0 0 1" damping="5"/>
-      <joint name="root_pitch" type="hinge" axis="0 1 0" damping="5"/>
-      <joint name="root_roll"  type="hinge" axis="1 0 0" damping="5"/>
+      <joint name="root_yaw"   type="hinge" axis="0 0 1" damping="50"/>
+      <joint name="root_pitch" type="hinge" axis="0 1 0" damping="50"/>
+      <joint name="root_roll"  type="hinge" axis="1 0 0" damping="50"/>
       <geom type="capsule" fromto="0 0 -0.12 0 0 0" size="0.085"
             rgba="0.6 0.6 0.65 1"/>
 
       <!-- ── Right leg ── -->
       <body name="right_thigh" pos="0 -0.10 -0.12">
-        <joint name="right_hip" type="hinge" axis="0 -1 0" range="-70 70"/>
+        <joint name="right_hip" type="hinge" axis="0 -1 0" range="-70 70" damping="80"/>
         <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.05"/>
         <body name="right_shank" pos="0 0 -0.42">
-          <joint name="right_knee" type="hinge" axis="0 1 0" range="0 130"/>
+          <joint name="right_knee" type="hinge" axis="0 1 0" range="0 130" damping="70"/>
           <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.045"
                 rgba="1 0.5 0.1 1"/>
           <body name="right_foot" pos="0 0 -0.42">
             <joint name="right_ankle" type="hinge" axis="0 -1 0"
-                   range="-50 40"/>
+                   range="-50 40" damping="40"/>
             <geom name="right_foot_geom" type="box"
                   size="0.11 0.05 0.03" pos="0.07 0 -0.02"
                   rgba="1 0.5 0.1 1"/>
             <body name="right_toe" pos="0.18 0 -0.02">
               <joint name="right_toe" type="hinge" axis="0 -1 0"
-                     range="-30 45"/>
+                     range="-30 45" damping="20"/>
               <geom type="box" size="0.04 0.04 0.02"
                     rgba="1 0.5 0.1 1"/>
             </body>
@@ -257,19 +261,19 @@ _MJCF = """
 
       <!-- ── Left leg ── -->
       <body name="left_thigh" pos="0 0.10 -0.12">
-        <joint name="left_hip" type="hinge" axis="0 -1 0" range="-70 70"/>
+        <joint name="left_hip" type="hinge" axis="0 -1 0" range="-70 70" damping="80"/>
         <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.05"/>
         <body name="left_shank" pos="0 0 -0.42">
-          <joint name="left_knee" type="hinge" axis="0 1 0" range="0 130"/>
+          <joint name="left_knee" type="hinge" axis="0 1 0" range="0 130" damping="70"/>
           <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.045"/>
           <body name="left_foot" pos="0 0 -0.42">
             <joint name="left_ankle" type="hinge" axis="0 -1 0"
-                   range="-50 40"/>
+                   range="-50 40" damping="40"/>
             <geom name="left_foot_geom" type="box"
                   size="0.11 0.05 0.03" pos="0.07 0 -0.02"/>
             <body name="left_toe" pos="0.18 0 -0.02">
               <joint name="left_toe" type="hinge" axis="0 -1 0"
-                     range="-30 45"/>
+                     range="-30 45" damping="20"/>
               <geom type="box" size="0.04 0.04 0.02"/>
             </body>
           </body>
@@ -397,46 +401,46 @@ _MJCF = """
 
   <actuator>
     <!-- ctrl[0..7]: legs + toes -->
-    <position joint="right_hip"      kp="300"/>
-    <position joint="left_hip"       kp="300"/>
-    <position joint="right_knee"     kp="350"/>
-    <position joint="left_knee"      kp="350"/>
-    <position joint="right_ankle"    kp="250"/>
-    <position joint="left_ankle"     kp="250"/>
-    <position joint="right_toe"      kp="100"/>
-    <position joint="left_toe"       kp="100"/>
+    <position joint="right_hip"      kp="400"/>
+    <position joint="left_hip"       kp="400"/>
+    <position joint="right_knee"     kp="400"/>
+    <position joint="left_knee"      kp="400"/>
+    <position joint="right_ankle"    kp="300"/>
+    <position joint="left_ankle"     kp="300"/>
+    <position joint="right_toe"      kp="150"/>
+    <position joint="left_toe"       kp="150"/>
     <!-- ctrl[8..10]: spine chain -->
-    <position joint="lower_back"     kp="200"/>
-    <position joint="spine_jnt"      kp="200"/>
-    <position joint="spine1_jnt"     kp="200"/>
+    <position joint="lower_back"     kp="300"/>
+    <position joint="spine_jnt"      kp="300"/>
+    <position joint="spine1_jnt"     kp="300"/>
     <!-- ctrl[11..12]: neck + head -->
-    <position joint="neck"           kp="100"/>
-    <position joint="head_jnt"       kp="80"/>
+    <position joint="neck"           kp="150"/>
+    <position joint="head_jnt"       kp="100"/>
     <!-- ctrl[13..14]: clavicles -->
-    <position joint="right_clav"     kp="80"/>
-    <position joint="left_clav"      kp="80"/>
+    <position joint="right_clav"     kp="100"/>
+    <position joint="left_clav"      kp="100"/>
     <!-- ctrl[15..18]: shoulders + elbows -->
-    <position joint="right_shoulder" kp="100"/>
-    <position joint="left_shoulder"  kp="100"/>
-    <position joint="right_elbow"    kp="80"/>
-    <position joint="left_elbow"     kp="80"/>
+    <position joint="right_shoulder" kp="150"/>
+    <position joint="left_shoulder"  kp="150"/>
+    <position joint="right_elbow"    kp="100"/>
+    <position joint="left_elbow"     kp="100"/>
     <!-- ctrl[19..20]: wrists -->
-    <position joint="right_wrist"    kp="60"/>
-    <position joint="left_wrist"     kp="60"/>
+    <position joint="right_wrist"    kp="80"/>
+    <position joint="left_wrist"     kp="80"/>
     <!-- ctrl[21..26]: fingers + thumbs -->
-    <position joint="right_finger"   kp="20"/>
-    <position joint="right_fing_idx" kp="20"/>
-    <position joint="right_thumb"    kp="20"/>
-    <position joint="left_finger"    kp="20"/>
-    <position joint="left_fing_idx"  kp="20"/>
-    <position joint="left_thumb"     kp="20"/>
+    <position joint="right_finger"   kp="30"/>
+    <position joint="right_fing_idx" kp="30"/>
+    <position joint="right_thumb"    kp="30"/>
+    <position joint="left_finger"    kp="30"/>
+    <position joint="left_fing_idx"  kp="30"/>
+    <position joint="left_thumb"     kp="30"/>
     <!-- ctrl[27..28]: root XY tracking (Z has no actuator — free for gravity) -->
-    <position joint="root_x" kp="100"/>
-    <position joint="root_y" kp="100"/>
+    <position joint="root_x" kp="2000"/>
+    <position joint="root_y" kp="2000"/>
     <!-- ctrl[29..31]: root orientation from mocap -->
-    <position joint="root_yaw"   kp="200"/>
-    <position joint="root_pitch" kp="200"/>
-    <position joint="root_roll"  kp="200"/>
+    <position joint="root_yaw"   kp="500"/>
+    <position joint="root_pitch" kp="500"/>
+    <position joint="root_roll"  kp="500"/>
   </actuator>
 </mujoco>
 """
@@ -492,38 +496,38 @@ def _build_dual_mjcf() -> str:
 
     # Build reference actuator block (same joint order, prefixed names)
     ref_actuators = """    <!-- Reference model actuators -->
-    <position joint="ref_right_hip"      kp="300"/>
-    <position joint="ref_left_hip"       kp="300"/>
-    <position joint="ref_right_knee"     kp="350"/>
-    <position joint="ref_left_knee"      kp="350"/>
-    <position joint="ref_right_ankle"    kp="250"/>
-    <position joint="ref_left_ankle"     kp="250"/>
-    <position joint="ref_right_toe"      kp="100"/>
-    <position joint="ref_left_toe"       kp="100"/>
-    <position joint="ref_lower_back"     kp="200"/>
-    <position joint="ref_spine_jnt"      kp="200"/>
-    <position joint="ref_spine1_jnt"     kp="200"/>
-    <position joint="ref_neck"           kp="100"/>
-    <position joint="ref_head_jnt"       kp="80"/>
-    <position joint="ref_right_clav"     kp="80"/>
-    <position joint="ref_left_clav"      kp="80"/>
-    <position joint="ref_right_shoulder" kp="100"/>
-    <position joint="ref_left_shoulder"  kp="100"/>
-    <position joint="ref_right_elbow"    kp="80"/>
-    <position joint="ref_left_elbow"     kp="80"/>
-    <position joint="ref_right_wrist"    kp="60"/>
-    <position joint="ref_left_wrist"     kp="60"/>
-    <position joint="ref_right_finger"   kp="20"/>
-    <position joint="ref_right_fing_idx" kp="20"/>
-    <position joint="ref_right_thumb"    kp="20"/>
-    <position joint="ref_left_finger"    kp="20"/>
-    <position joint="ref_left_fing_idx"  kp="20"/>
-    <position joint="ref_left_thumb"     kp="20"/>
-    <position joint="ref_root_x" kp="100"/>
-    <position joint="ref_root_y" kp="100"/>
-    <position joint="ref_root_yaw"   kp="200"/>
-    <position joint="ref_root_pitch" kp="200"/>
-    <position joint="ref_root_roll"  kp="200"/>"""
+    <position joint="ref_right_hip"      kp="400"/>
+    <position joint="ref_left_hip"       kp="400"/>
+    <position joint="ref_right_knee"     kp="400"/>
+    <position joint="ref_left_knee"      kp="400"/>
+    <position joint="ref_right_ankle"    kp="300"/>
+    <position joint="ref_left_ankle"     kp="300"/>
+    <position joint="ref_right_toe"      kp="150"/>
+    <position joint="ref_left_toe"       kp="150"/>
+    <position joint="ref_lower_back"     kp="300"/>
+    <position joint="ref_spine_jnt"      kp="300"/>
+    <position joint="ref_spine1_jnt"     kp="300"/>
+    <position joint="ref_neck"           kp="150"/>
+    <position joint="ref_head_jnt"       kp="100"/>
+    <position joint="ref_right_clav"     kp="100"/>
+    <position joint="ref_left_clav"      kp="100"/>
+    <position joint="ref_right_shoulder" kp="150"/>
+    <position joint="ref_left_shoulder"  kp="150"/>
+    <position joint="ref_right_elbow"    kp="100"/>
+    <position joint="ref_left_elbow"     kp="100"/>
+    <position joint="ref_right_wrist"    kp="80"/>
+    <position joint="ref_left_wrist"     kp="80"/>
+    <position joint="ref_right_finger"   kp="30"/>
+    <position joint="ref_right_fing_idx" kp="30"/>
+    <position joint="ref_right_thumb"    kp="30"/>
+    <position joint="ref_left_finger"    kp="30"/>
+    <position joint="ref_left_fing_idx"  kp="30"/>
+    <position joint="ref_left_thumb"     kp="30"/>
+    <position joint="ref_root_x" kp="2000"/>
+    <position joint="ref_root_y" kp="2000"/>
+    <position joint="ref_root_yaw"   kp="500"/>
+    <position joint="ref_root_pitch" kp="500"/>
+    <position joint="ref_root_roll"  kp="500"/>"""
 
     base = _MJCF
     base = base.replace(
@@ -685,9 +689,9 @@ class _MuJoCoRunner:
         qpos_history: List[np.ndarray] = []
 
         # ── Warmup: let actuators settle to frame-0 pose ────────────────
-        # 500 steps (0.5 s) to fully settle joints + body height.
+        # 1000 steps (1.0 s) to fully settle joints + body height.
         data.ctrl[:] = controls[0]
-        for _ in range(500):
+        for _ in range(1000):
             mujoco.mj_step(model, data)
 
         # Reset metrics after warmup
@@ -816,7 +820,7 @@ class _MuJoCoRunner:
                 # Reset state for headless re-run
                 data = mujoco.MjData(model)
                 data.ctrl[:] = controls[0]
-                for _ in range(500):
+                for _ in range(1000):
                     mujoco.mj_step(model, data)
                 metrics = EvalMetrics.empty()
                 qpos_history.clear()
