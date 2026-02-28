@@ -21,6 +21,8 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from tqdm import tqdm
 
+from mocap_evaluation.mocap_loader import _ALL_JOINT_KEYS
+
 
 # ── Normalisation ─────────────────────────────────────────────────────────────
 
@@ -188,8 +190,7 @@ def find_best_match(
             best_start = int(s)
 
     # ── extract all joints for best segment ───────────────────────────────
-    keys_1d = ["knee_right", "knee_left", "hip_right", "hip_left",
-               "ankle_right", "ankle_left", "pelvis_tilt", "trunk_lean"]
+    keys_1d = _ALL_JOINT_KEYS + ["root_pitch", "root_yaw", "root_roll"]
     matched: dict = {}
     for k in keys_1d:
         if k in mocap_db:
@@ -286,8 +287,7 @@ def find_top_k_matches(
     selected: List[Tuple[int, float, dict]] = []
     chosen_starts: List[int] = []
 
-    keys_1d = ["knee_right", "knee_left", "hip_right", "hip_left",
-               "ankle_right", "ankle_left", "pelvis_tilt", "trunk_lean"]
+    keys_1d = _ALL_JOINT_KEYS + ["root_pitch", "root_yaw", "root_roll"]
 
     for dist, s in dtw_scores:
         if len(selected) >= k:

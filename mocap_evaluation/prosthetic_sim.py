@@ -2,15 +2,17 @@
 
 Drives a full humanoid skeleton from motion-capture data via MuJoCo physics.
 All joints track their mocap reference angles *except* the right knee, which
-is driven by the model's predicted knee angle -- allowing evaluation of how
-well the prediction maintains stable, natural gait.
+is driven by the model's predicted knee angle, and the right hip, which is
+driven by the sample's thigh_angle -- allowing evaluation of how well the
+prediction maintains stable, natural gait.
 
-The torso root uses slide joints for translation (X, Y, Z) and a ball joint
-for orientation.  X and Y are driven by soft position actuators (kp=100) from
-BVH root trajectories.  The Z slide joint has **no actuator** and minimal
-damping (2), so the body moves vertically under gravity alone and can fall
-naturally when gait is unstable.  The ball joint also has low damping (2) to
-allow realistic tipping.
+The torso root uses slide joints for translation (X, Y, Z) and three hinge
+joints for orientation (yaw, pitch, roll).  X and Y are driven by soft
+position actuators (kp=100) from BVH root trajectories.  Yaw, pitch, and
+roll are driven by position actuators (kp=200) from BVH root orientation.
+The Z slide joint has **no actuator** and minimal damping (2), so the body
+moves vertically under gravity alone and can fall naturally when gait is
+unstable.
 
 Supports:
 - MuJoCo physics backend with full-body mocap-driven humanoid
@@ -179,15 +181,25 @@ class SimTrajectory:
 
 # ── MJCF humanoid model ─────────────────────────────────────────────────────
 #
-# Full-body humanoid with:
-#   - Root: slide joints X/Y (actuated), slide joint Z (free), ball joint (free)
-#   - Head (passive, high-damping neck)
-#   - Arms with forearms (shoulder + elbow joints)
-#   - Legs with thigh + shank + foot (hip + knee + ankle joints)
-#   - Right knee/shank/foot coloured orange (prosthetic side)
+# Full-body humanoid matching the CMU cgspeed BVH skeleton hierarchy.
+# ALL BVH joints are represented and driven from mocap data, with the sole
+# exception of the right knee (model prediction) and optionally the right
+# hip (sample thigh_angle).
+#
+# Body hierarchy:
+#   Pelvis (root: slide X/Y/Z + hinge yaw/pitch/roll)
+#   ├── Right leg: hip → knee → ankle → toe
+#   ├── Left leg:  hip → knee → ankle → toe
+#   └── Spine chain: LowerBack → Spine → Spine1
+#       ├── Neck → Head
+#       ├── Right arm: Clavicle → Shoulder → Elbow → Wrist → Fingers/Thumb
+#       └── Left arm:  Clavicle → Shoulder → Elbow → Wrist → Fingers/Thumb
 #
 # Collision: body geoms collide with floor but NOT with each other
 # (contype=1/conaffinity=2 for body, contype=2/conaffinity=1 for floor).
+
+# Number of actuators per humanoid (prediction or reference)
+N_ACT_PER_HUMANOID = 32
 
 _MJCF = """
 <mujoco model="prosthetic_eval_humanoid">
@@ -209,20 +221,15 @@ _MJCF = """
     <light pos="0 0 5" dir="0 0 -1" diffuse="0.9 0.9 0.9"/>
     <light pos="3 3 4" dir="-0.5 -0.5 -1" diffuse="0.4 0.4 0.4"/>
 
-    <body name="torso" pos="0 0 1.05">
+    <body name="pelvis" pos="0 0 1.05">
       <joint name="root_x" type="slide" axis="1 0 0"/>
       <joint name="root_y" type="slide" axis="0 1 0"/>
       <joint name="root_z" type="slide" axis="0 0 1" damping="2"/>
-      <joint name="root_ball" type="ball" damping="2"/>
-      <geom type="capsule" fromto="0 0 -0.12 0 0 0.2" size="0.09"
+      <joint name="root_yaw"   type="hinge" axis="0 0 1" damping="5"/>
+      <joint name="root_pitch" type="hinge" axis="0 1 0" damping="5"/>
+      <joint name="root_roll"  type="hinge" axis="1 0 0" damping="5"/>
+      <geom type="capsule" fromto="0 0 -0.12 0 0 0" size="0.085"
             rgba="0.6 0.6 0.65 1"/>
-
-      <!-- Head -->
-      <body name="head" pos="0 0 0.3">
-        <joint name="neck" type="hinge" axis="0 1 0"
-               range="-30 30" damping="20"/>
-        <geom type="sphere" size="0.09" rgba="0.85 0.75 0.65 1"/>
-      </body>
 
       <!-- ── Right leg ── -->
       <body name="right_thigh" pos="0 -0.10 -0.12">
@@ -238,6 +245,12 @@ _MJCF = """
             <geom name="right_foot_geom" type="box"
                   size="0.11 0.05 0.03" pos="0.07 0 -0.02"
                   rgba="1 0.5 0.1 1"/>
+            <body name="right_toe" pos="0.18 0 -0.02">
+              <joint name="right_toe" type="hinge" axis="0 -1 0"
+                     range="-30 45"/>
+              <geom type="box" size="0.04 0.04 0.02"
+                    rgba="1 0.5 0.1 1"/>
+            </body>
           </body>
         </body>
       </body>
@@ -254,54 +267,176 @@ _MJCF = """
                    range="-50 40"/>
             <geom name="left_foot_geom" type="box"
                   size="0.11 0.05 0.03" pos="0.07 0 -0.02"/>
+            <body name="left_toe" pos="0.18 0 -0.02">
+              <joint name="left_toe" type="hinge" axis="0 -1 0"
+                     range="-30 45"/>
+              <geom type="box" size="0.04 0.04 0.02"/>
+            </body>
           </body>
         </body>
       </body>
 
-      <!-- ── Right arm (upper + forearm) ── -->
-      <body name="right_upper_arm" pos="0 -0.22 0.16">
-        <joint name="right_shoulder" type="hinge" axis="0 -1 0"
-               range="-90 90" damping="2"/>
-        <geom type="capsule" fromto="0 0 0 0 0 -0.28" size="0.03"/>
-        <body name="right_forearm" pos="0 0 -0.28">
-          <joint name="right_elbow" type="hinge" axis="0 -1 0"
-                 range="0 130" damping="1"/>
-          <geom type="capsule" fromto="0 0 0 0 0 -0.25" size="0.025"
-                rgba="0.85 0.75 0.65 1"/>
-        </body>
-      </body>
+      <!-- ── Spine chain (LowerBack → Spine → Spine1) ── -->
+      <body name="lower_back" pos="0 0 0">
+        <joint name="lower_back" type="hinge" axis="0 1 0"
+               range="-30 30"/>
+        <geom type="capsule" fromto="0 0 0 0 0 0.07" size="0.075"
+              rgba="0.6 0.6 0.65 1"/>
+        <body name="spine" pos="0 0 0.07">
+          <joint name="spine_jnt" type="hinge" axis="0 1 0"
+                 range="-30 30"/>
+          <geom type="capsule" fromto="0 0 0 0 0 0.06" size="0.07"
+                rgba="0.6 0.6 0.65 1"/>
+          <body name="spine1" pos="0 0 0.06">
+            <joint name="spine1_jnt" type="hinge" axis="0 1 0"
+                   range="-30 30"/>
+            <geom type="capsule" fromto="0 0 0 0 0 0.06" size="0.065"
+                  rgba="0.6 0.6 0.65 1"/>
 
-      <!-- ── Left arm (upper + forearm) ── -->
-      <body name="left_upper_arm" pos="0 0.22 0.16">
-        <joint name="left_shoulder" type="hinge" axis="0 -1 0"
-               range="-90 90" damping="2"/>
-        <geom type="capsule" fromto="0 0 0 0 0 -0.28" size="0.03"/>
-        <body name="left_forearm" pos="0 0 -0.28">
-          <joint name="left_elbow" type="hinge" axis="0 -1 0"
-                 range="0 130" damping="1"/>
-          <geom type="capsule" fromto="0 0 0 0 0 -0.25" size="0.025"
-                rgba="0.85 0.75 0.65 1"/>
+            <!-- Neck → Head -->
+            <body name="neck_body" pos="0 0 0.08">
+              <joint name="neck" type="hinge" axis="0 1 0"
+                     range="-30 30" damping="10"/>
+              <geom type="capsule" fromto="0 0 0 0 0 0.04" size="0.035"
+                    rgba="0.85 0.75 0.65 1"/>
+              <body name="head" pos="0 0 0.06">
+                <joint name="head_jnt" type="hinge" axis="0 1 0"
+                       range="-30 30" damping="5"/>
+                <geom type="sphere" size="0.09" rgba="0.85 0.75 0.65 1"/>
+              </body>
+            </body>
+
+            <!-- ── Right arm (clavicle → shoulder → elbow → wrist → fingers) ── -->
+            <body name="right_clavicle" pos="0 -0.12 0.03">
+              <joint name="right_clav" type="hinge" axis="0 -1 0"
+                     range="-20 20" damping="2"/>
+              <geom type="capsule" fromto="0 0 0 0 -0.08 0" size="0.025"/>
+              <body name="right_upper_arm" pos="0 -0.10 0">
+                <joint name="right_shoulder" type="hinge" axis="0 -1 0"
+                       range="-90 90" damping="2"/>
+                <geom type="capsule" fromto="0 0 0 0 0 -0.28" size="0.03"/>
+                <body name="right_forearm" pos="0 0 -0.28">
+                  <joint name="right_elbow" type="hinge" axis="0 -1 0"
+                         range="0 130" damping="1"/>
+                  <geom type="capsule" fromto="0 0 0 0 0 -0.25" size="0.025"
+                        rgba="0.85 0.75 0.65 1"/>
+                  <body name="right_hand" pos="0 0 -0.25">
+                    <joint name="right_wrist" type="hinge" axis="0 -1 0"
+                           range="-60 60" damping="1"/>
+                    <geom type="box" size="0.035 0.015 0.05" pos="0 0 -0.05"
+                          rgba="0.85 0.75 0.65 1"/>
+                    <body name="right_fing_base" pos="0 0 -0.08">
+                      <joint name="right_finger" type="hinge" axis="0 -1 0"
+                             range="0 90" damping="0.5"/>
+                      <geom type="capsule" fromto="0 0 0 0 0 -0.025"
+                            size="0.008" rgba="0.85 0.75 0.65 1"/>
+                      <body name="right_fing_tip" pos="0 0 -0.025">
+                        <joint name="right_fing_idx" type="hinge" axis="0 -1 0"
+                               range="0 90" damping="0.5"/>
+                        <geom type="capsule" fromto="0 0 0 0 0 -0.015"
+                              size="0.006" rgba="0.85 0.75 0.65 1"/>
+                      </body>
+                    </body>
+                    <body name="right_thumb_body" pos="0.01 0.015 -0.03">
+                      <joint name="right_thumb" type="hinge" axis="0 0 1"
+                             range="-30 60" damping="0.5"/>
+                      <geom type="capsule" fromto="0 0 0 0.015 0.01 -0.02"
+                            size="0.007" rgba="0.85 0.75 0.65 1"/>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+
+            <!-- ── Left arm (clavicle → shoulder → elbow → wrist → fingers) ── -->
+            <body name="left_clavicle" pos="0 0.12 0.03">
+              <joint name="left_clav" type="hinge" axis="0 -1 0"
+                     range="-20 20" damping="2"/>
+              <geom type="capsule" fromto="0 0 0 0 0.08 0" size="0.025"/>
+              <body name="left_upper_arm" pos="0 0.10 0">
+                <joint name="left_shoulder" type="hinge" axis="0 -1 0"
+                       range="-90 90" damping="2"/>
+                <geom type="capsule" fromto="0 0 0 0 0 -0.28" size="0.03"/>
+                <body name="left_forearm" pos="0 0 -0.28">
+                  <joint name="left_elbow" type="hinge" axis="0 -1 0"
+                         range="0 130" damping="1"/>
+                  <geom type="capsule" fromto="0 0 0 0 0 -0.25" size="0.025"
+                        rgba="0.85 0.75 0.65 1"/>
+                  <body name="left_hand" pos="0 0 -0.25">
+                    <joint name="left_wrist" type="hinge" axis="0 -1 0"
+                           range="-60 60" damping="1"/>
+                    <geom type="box" size="0.035 0.015 0.05" pos="0 0 -0.05"
+                          rgba="0.85 0.75 0.65 1"/>
+                    <body name="left_fing_base" pos="0 0 -0.08">
+                      <joint name="left_finger" type="hinge" axis="0 -1 0"
+                             range="0 90" damping="0.5"/>
+                      <geom type="capsule" fromto="0 0 0 0 0 -0.025"
+                            size="0.008" rgba="0.85 0.75 0.65 1"/>
+                      <body name="left_fing_tip" pos="0 0 -0.025">
+                        <joint name="left_fing_idx" type="hinge" axis="0 -1 0"
+                               range="0 90" damping="0.5"/>
+                        <geom type="capsule" fromto="0 0 0 0 0 -0.015"
+                              size="0.006" rgba="0.85 0.75 0.65 1"/>
+                      </body>
+                    </body>
+                    <body name="left_thumb_body" pos="0.01 -0.015 -0.03">
+                      <joint name="left_thumb" type="hinge" axis="0 0 -1"
+                             range="-30 60" damping="0.5"/>
+                      <geom type="capsule" fromto="0 0 0 0.015 -0.01 -0.02"
+                            size="0.007" rgba="0.85 0.75 0.65 1"/>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
         </body>
       </body>
     </body>
   </worldbody>
 
   <actuator>
-    <!-- ctrl[0..5]: legs -->
+    <!-- ctrl[0..7]: legs + toes -->
     <position joint="right_hip"      kp="300"/>
     <position joint="left_hip"       kp="300"/>
     <position joint="right_knee"     kp="350"/>
     <position joint="left_knee"      kp="350"/>
     <position joint="right_ankle"    kp="250"/>
     <position joint="left_ankle"     kp="250"/>
-    <!-- ctrl[6..9]: arms -->
+    <position joint="right_toe"      kp="100"/>
+    <position joint="left_toe"       kp="100"/>
+    <!-- ctrl[8..10]: spine chain -->
+    <position joint="lower_back"     kp="200"/>
+    <position joint="spine_jnt"      kp="200"/>
+    <position joint="spine1_jnt"     kp="200"/>
+    <!-- ctrl[11..12]: neck + head -->
+    <position joint="neck"           kp="100"/>
+    <position joint="head_jnt"       kp="80"/>
+    <!-- ctrl[13..14]: clavicles -->
+    <position joint="right_clav"     kp="80"/>
+    <position joint="left_clav"      kp="80"/>
+    <!-- ctrl[15..18]: shoulders + elbows -->
     <position joint="right_shoulder" kp="100"/>
     <position joint="left_shoulder"  kp="100"/>
     <position joint="right_elbow"    kp="80"/>
     <position joint="left_elbow"     kp="80"/>
-    <!-- ctrl[10..11]: root XY tracking (Z has no actuator — free for gravity) -->
+    <!-- ctrl[19..20]: wrists -->
+    <position joint="right_wrist"    kp="60"/>
+    <position joint="left_wrist"     kp="60"/>
+    <!-- ctrl[21..26]: fingers + thumbs -->
+    <position joint="right_finger"   kp="20"/>
+    <position joint="right_fing_idx" kp="20"/>
+    <position joint="right_thumb"    kp="20"/>
+    <position joint="left_finger"    kp="20"/>
+    <position joint="left_fing_idx"  kp="20"/>
+    <position joint="left_thumb"     kp="20"/>
+    <!-- ctrl[27..28]: root XY tracking (Z has no actuator — free for gravity) -->
     <position joint="root_x" kp="100"/>
     <position joint="root_y" kp="100"/>
+    <!-- ctrl[29..31]: root orientation from mocap -->
+    <position joint="root_yaw"   kp="200"/>
+    <position joint="root_pitch" kp="200"/>
+    <position joint="root_roll"  kp="200"/>
   </actuator>
 </mujoco>
 """
@@ -310,110 +445,90 @@ _MJCF = """
 def _build_dual_mjcf() -> str:
     """Build MJCF with both prediction humanoid and a reference humanoid.
 
-    The reference model is semi-transparent blue, offset laterally by
-    REF_Y_OFFSET.  It shares the floor and lighting with the prediction
-    model but uses its own root joints + actuators.
+    The reference model has the same full-body skeleton as the prediction
+    model, semi-transparent blue, offset laterally by REF_Y_OFFSET.
+    It uses a text-replace approach: prefix all names with ``ref_``,
+    change colours, and add the reference actuator block.
     """
+    import re
     ref_y = REF_Y_OFFSET
+    rb = "0.3 0.5 0.8 0.5"  # reference blue (semi-transparent)
+    rg = "0.2 0.7 0.3 0.5"  # reference green (prosthetic side)
 
-    ref_bodies = f"""
-    <!-- ══ Reference humanoid (ground-truth mocap) ═══════════════════════ -->
-    <body name="ref_torso" pos="0 {ref_y} 1.05">
-      <joint name="ref_root_x" type="slide" axis="1 0 0"/>
-      <joint name="ref_root_y" type="slide" axis="0 1 0"/>
-      <joint name="ref_root_z" type="slide" axis="0 0 1" damping="2"/>
-      <joint name="ref_root_ball" type="ball" damping="2"/>
-      <geom type="capsule" fromto="0 0 -0.12 0 0 0.2" size="0.09"
-            rgba="0.3 0.5 0.8 0.5"/>
+    # Extract just the <body name="pelvis" ...> ... </body> block from _MJCF
+    # (everything between the second <body and its matching </body> before </worldbody>)
+    body_start = _MJCF.index('<body name="pelvis"')
+    # Find the </body> that closes the pelvis — it's the last </body> before </worldbody>
+    wb_end = _MJCF.index("</worldbody>")
+    # Count nesting to find the matching close tag
+    body_xml = _MJCF[body_start:wb_end].rstrip()
+    # Remove trailing whitespace/newlines after the last </body>
+    while body_xml.endswith("\n") or body_xml.endswith(" "):
+        body_xml = body_xml.rstrip()
 
-      <body name="ref_head" pos="0 0 0.3">
-        <joint name="ref_neck" type="hinge" axis="0 1 0"
-               range="-30 30" damping="20"/>
-        <geom type="sphere" size="0.09" rgba="0.3 0.5 0.8 0.5"/>
-      </body>
+    # Prefix all name="..." and joint="..." values with ref_
+    def _prefix_attr(match):
+        attr = match.group(1)  # name or joint
+        val = match.group(2)
+        return f'{attr}="ref_{val}"'
+    ref_xml = re.sub(r'(name|joint)="([^"]+)"', _prefix_attr, body_xml)
 
-      <body name="ref_right_thigh" pos="0 -0.10 -0.12">
-        <joint name="ref_right_hip" type="hinge" axis="0 -1 0" range="-70 70"/>
-        <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.05"
-              rgba="0.3 0.5 0.8 0.5"/>
-        <body name="ref_right_shank" pos="0 0 -0.42">
-          <joint name="ref_right_knee" type="hinge" axis="0 1 0" range="0 130"/>
-          <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.045"
-                rgba="0.2 0.7 0.3 0.5"/>
-          <body name="ref_right_foot" pos="0 0 -0.42">
-            <joint name="ref_right_ankle" type="hinge" axis="0 -1 0"
-                   range="-50 40"/>
-            <geom name="ref_right_foot_geom" type="box"
-                  size="0.11 0.05 0.03" pos="0.07 0 -0.02"
-                  rgba="0.2 0.7 0.3 0.5"/>
-          </body>
-        </body>
-      </body>
+    # Change the root position to offset laterally
+    ref_xml = ref_xml.replace(
+        'name="ref_pelvis" pos="0 0 1.05"',
+        f'name="ref_pelvis" pos="0 {ref_y} 1.05"',
+    )
 
-      <body name="ref_left_thigh" pos="0 0.10 -0.12">
-        <joint name="ref_left_hip" type="hinge" axis="0 -1 0" range="-70 70"/>
-        <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.05"
-              rgba="0.3 0.5 0.8 0.5"/>
-        <body name="ref_left_shank" pos="0 0 -0.42">
-          <joint name="ref_left_knee" type="hinge" axis="0 1 0" range="0 130"/>
-          <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.045"
-                rgba="0.3 0.5 0.8 0.5"/>
-          <body name="ref_left_foot" pos="0 0 -0.42">
-            <joint name="ref_left_ankle" type="hinge" axis="0 -1 0"
-                   range="-50 40"/>
-            <geom name="ref_left_foot_geom" type="box"
-                  size="0.11 0.05 0.03" pos="0.07 0 -0.02"
-                  rgba="0.3 0.5 0.8 0.5"/>
-          </body>
-        </body>
-      </body>
+    # Replace all colours with semi-transparent blue/green
+    ref_xml = re.sub(r'rgba="1 0\.5 0\.1 1"', f'rgba="{rg}"', ref_xml)  # orange → green
+    ref_xml = re.sub(r'rgba="0\.6 0\.6 0\.65 1"', f'rgba="{rb}"', ref_xml)  # grey → blue
+    ref_xml = re.sub(r'rgba="0\.85 0\.75 0\.65 1"', f'rgba="{rb}"', ref_xml)  # skin → blue
 
-      <body name="ref_right_upper_arm" pos="0 -0.22 0.16">
-        <joint name="ref_right_shoulder" type="hinge" axis="0 -1 0"
-               range="-90 90" damping="2"/>
-        <geom type="capsule" fromto="0 0 0 0 0 -0.28" size="0.03"
-              rgba="0.3 0.5 0.8 0.5"/>
-        <body name="ref_right_forearm" pos="0 0 -0.28">
-          <joint name="ref_right_elbow" type="hinge" axis="0 -1 0"
-                 range="0 130" damping="1"/>
-          <geom type="capsule" fromto="0 0 0 0 0 -0.25" size="0.025"
-                rgba="0.3 0.5 0.8 0.5"/>
-        </body>
-      </body>
+    ref_body_block = (
+        "\n    <!-- ══ Reference humanoid (ground-truth mocap) "
+        "═══════════════════════ -->\n    "
+        + ref_xml + "\n"
+    )
 
-      <body name="ref_left_upper_arm" pos="0 0.22 0.16">
-        <joint name="ref_left_shoulder" type="hinge" axis="0 -1 0"
-               range="-90 90" damping="2"/>
-        <geom type="capsule" fromto="0 0 0 0 0 -0.28" size="0.03"
-              rgba="0.3 0.5 0.8 0.5"/>
-        <body name="ref_left_forearm" pos="0 0 -0.28">
-          <joint name="ref_left_elbow" type="hinge" axis="0 -1 0"
-                 range="0 130" damping="1"/>
-          <geom type="capsule" fromto="0 0 0 0 0 -0.25" size="0.025"
-                rgba="0.3 0.5 0.8 0.5"/>
-        </body>
-      </body>
-    </body>
-"""
-
-    ref_actuators = """    <!-- Reference model actuators (ctrl[12..23]) -->
+    # Build reference actuator block (same joint order, prefixed names)
+    ref_actuators = """    <!-- Reference model actuators -->
     <position joint="ref_right_hip"      kp="300"/>
     <position joint="ref_left_hip"       kp="300"/>
     <position joint="ref_right_knee"     kp="350"/>
     <position joint="ref_left_knee"      kp="350"/>
     <position joint="ref_right_ankle"    kp="250"/>
     <position joint="ref_left_ankle"     kp="250"/>
+    <position joint="ref_right_toe"      kp="100"/>
+    <position joint="ref_left_toe"       kp="100"/>
+    <position joint="ref_lower_back"     kp="200"/>
+    <position joint="ref_spine_jnt"      kp="200"/>
+    <position joint="ref_spine1_jnt"     kp="200"/>
+    <position joint="ref_neck"           kp="100"/>
+    <position joint="ref_head_jnt"       kp="80"/>
+    <position joint="ref_right_clav"     kp="80"/>
+    <position joint="ref_left_clav"      kp="80"/>
     <position joint="ref_right_shoulder" kp="100"/>
     <position joint="ref_left_shoulder"  kp="100"/>
     <position joint="ref_right_elbow"    kp="80"/>
     <position joint="ref_left_elbow"     kp="80"/>
+    <position joint="ref_right_wrist"    kp="60"/>
+    <position joint="ref_left_wrist"     kp="60"/>
+    <position joint="ref_right_finger"   kp="20"/>
+    <position joint="ref_right_fing_idx" kp="20"/>
+    <position joint="ref_right_thumb"    kp="20"/>
+    <position joint="ref_left_finger"    kp="20"/>
+    <position joint="ref_left_fing_idx"  kp="20"/>
+    <position joint="ref_left_thumb"     kp="20"/>
     <position joint="ref_root_x" kp="100"/>
-    <position joint="ref_root_y" kp="100"/>"""
+    <position joint="ref_root_y" kp="100"/>
+    <position joint="ref_root_yaw"   kp="200"/>
+    <position joint="ref_root_pitch" kp="200"/>
+    <position joint="ref_root_roll"  kp="200"/>"""
 
     base = _MJCF
     base = base.replace(
         "  </worldbody>",
-        ref_bodies + "  </worldbody>",
+        ref_body_block + "  </worldbody>",
     )
     base = base.replace(
         "  </actuator>",
@@ -457,6 +572,11 @@ class _MuJoCoRunner:
             out["mode"] = "mujoco_physics_empty"
             return out
 
+        # ── Helper: get a flexion signal from the mocap segment ──────────
+        def _flex(key, default=180.0):
+            return _included_to_flexion(_pad_or_trim(
+                mocap_segment.get(key, np.full(T, default)), T, default))
+
         # ── Convert joint angles to flexion (degrees) ────────────────────
         pred = _included_to_flexion(np.asarray(predicted_knee, dtype=np.float64)[:T])
         ref = _included_to_flexion(np.asarray(mocap_segment["knee_right"], dtype=np.float64)[:T])
@@ -464,17 +584,17 @@ class _MuJoCoRunner:
         if sample_thigh_right is not None:
             hip_r = _included_to_flexion(np.asarray(sample_thigh_right, dtype=np.float64)[:T])
         else:
-            hip_r = _included_to_flexion(_pad_or_trim(
-                mocap_segment.get("hip_right", np.full(T, 180.0)), T))
+            hip_r = _flex("hip_right")
 
-        hip_l = _included_to_flexion(_pad_or_trim(
-            mocap_segment.get("hip_left", np.full(T, 180.0)), T))
-        knee_l = _included_to_flexion(_pad_or_trim(
-            mocap_segment.get("knee_left", np.full(T, 180.0)), T))
-        ankle_r = _included_to_flexion(_pad_or_trim(
-            mocap_segment.get("ankle_right", np.full(T, 180.0)), T))
-        ankle_l = _included_to_flexion(_pad_or_trim(
-            mocap_segment.get("ankle_left", np.full(T, 180.0)), T))
+        # Root orientation from BVH (raw degrees — NOT included-angle)
+        root_pitch = _pad_or_trim(
+            mocap_segment.get("root_pitch", np.zeros(T)), T, default=0.0)
+        root_yaw = _pad_or_trim(
+            mocap_segment.get("root_yaw", np.zeros(T)), T, default=0.0)
+        root_roll = _pad_or_trim(
+            mocap_segment.get("root_roll", np.zeros(T)), T, default=0.0)
+        # Normalise root yaw so frame-0 starts at 0 (no absolute heading)
+        root_yaw = root_yaw - root_yaw[0]
 
         # ── Root position from BVH (MuJoCo Z-up coords, metres) ─────────
         raw_root = mocap_segment.get("root_pos", np.zeros((T, 3)))
@@ -483,7 +603,6 @@ class _MuJoCoRunner:
             raw_root = np.vstack([raw_root, pad_rows])
         raw_root = raw_root[:T].astype(np.float64)
 
-        # Normalise so frame-0 aligns with the humanoid's initial position.
         has_root_motion = np.any(np.abs(raw_root - raw_root[0]) > 0.001)
         if has_root_motion:
             root_pos = raw_root - raw_root[0] + HUMANOID_INIT_POS
@@ -491,47 +610,66 @@ class _MuJoCoRunner:
             root_pos = np.tile(HUMANOID_INIT_POS, (T, 1))
 
         # ── Pre-compute controls (radians) ────────────────────────────────
-        # Actuator order: right_hip, left_hip, right_knee, left_knee,
-        #   right_ankle, left_ankle, right_shoulder, left_shoulder,
-        #   right_elbow, left_elbow, root_x, root_y
-        n_act = 24 if self.show_reference else 12
+        # Actuator order (N_ACT_PER_HUMANOID = 32 per humanoid):
+        #  0: right_hip      1: left_hip       2: right_knee(PRED)  3: left_knee
+        #  4: right_ankle    5: left_ankle     6: right_toe         7: left_toe
+        #  8: lower_back     9: spine         10: spine1
+        # 11: neck          12: head
+        # 13: right_clav    14: left_clav
+        # 15: right_shoulder 16: left_shoulder 17: right_elbow      18: left_elbow
+        # 19: right_wrist   20: left_wrist
+        # 21: right_finger  22: right_fing_idx 23: right_thumb
+        # 24: left_finger   25: left_fing_idx  26: left_thumb
+        # 27: root_x        28: root_y
+        # 29: root_yaw      30: root_pitch     31: root_roll
+        NA = N_ACT_PER_HUMANOID
+        n_act = NA * 2 if self.show_reference else NA
         controls = np.zeros((T, n_act), dtype=np.float64)
-        controls[:, 0] = np.radians(hip_r)
-        controls[:, 1] = np.radians(hip_l)
-        controls[:, 2] = np.radians(pred)          # RIGHT KNEE = PREDICTION
-        controls[:, 3] = np.radians(knee_l)
-        controls[:, 4] = np.radians(ankle_r)
-        controls[:, 5] = np.radians(ankle_l)
-        # Contralateral arm swing: right arm follows left hip, left arm
-        # follows right hip.  This gives natural human gait patterning.
-        controls[:, 6] = np.radians(0.4 * hip_l)   # right shoulder
-        controls[:, 7] = np.radians(0.4 * hip_r)   # left shoulder
-        controls[:, 8] = np.radians(25.0)           # natural elbow flexion
-        controls[:, 9] = np.radians(25.0)
-        # Root XY tracking (slide joint targets, metres — not radians)
-        controls[:, 10] = root_pos[:, 0]
-        controls[:, 11] = root_pos[:, 1]
+
+        def _fill_humanoid(off, knee_signal):
+            """Fill control columns [off : off+NA] for one humanoid."""
+            controls[:, off + 0] = np.radians(hip_r)
+            controls[:, off + 1] = np.radians(_flex("hip_left"))
+            controls[:, off + 2] = np.radians(knee_signal)
+            controls[:, off + 3] = np.radians(_flex("knee_left"))
+            controls[:, off + 4] = np.radians(_flex("ankle_right"))
+            controls[:, off + 5] = np.radians(_flex("ankle_left"))
+            controls[:, off + 6] = np.radians(_flex("toe_right"))
+            controls[:, off + 7] = np.radians(_flex("toe_left"))
+            controls[:, off + 8] = np.radians(_flex("pelvis_tilt"))
+            controls[:, off + 9] = np.radians(_flex("trunk_lean"))
+            controls[:, off + 10] = np.radians(_flex("upper_trunk"))
+            controls[:, off + 11] = np.radians(_flex("neck"))
+            controls[:, off + 12] = np.radians(_flex("head"))
+            controls[:, off + 13] = np.radians(_flex("clavicle_right"))
+            controls[:, off + 14] = np.radians(_flex("clavicle_left"))
+            controls[:, off + 15] = np.radians(_flex("shoulder_right"))
+            controls[:, off + 16] = np.radians(_flex("shoulder_left"))
+            controls[:, off + 17] = np.radians(_flex("elbow_right"))
+            controls[:, off + 18] = np.radians(_flex("elbow_left"))
+            controls[:, off + 19] = np.radians(_flex("wrist_right"))
+            controls[:, off + 20] = np.radians(_flex("wrist_left"))
+            controls[:, off + 21] = np.radians(_flex("finger_right"))
+            controls[:, off + 22] = np.radians(_flex("finger_index_right"))
+            controls[:, off + 23] = np.radians(_flex("thumb_right"))
+            controls[:, off + 24] = np.radians(_flex("finger_left"))
+            controls[:, off + 25] = np.radians(_flex("finger_index_left"))
+            controls[:, off + 26] = np.radians(_flex("thumb_left"))
+            controls[:, off + 27] = root_pos[:, 0]   # metres, not radians
+            controls[:, off + 28] = root_pos[:, 1]
+            controls[:, off + 29] = np.radians(root_yaw)
+            controls[:, off + 30] = np.radians(root_pitch)
+            controls[:, off + 31] = np.radians(root_roll)
+
+        _fill_humanoid(0, pred)  # prediction model: right knee = PREDICTION
 
         if self.show_reference:
-            # Reference model: identical to prediction except right knee
-            # uses the reference signal (GT label or matched mocap).
             if reference_knee is not None:
                 ref_knee_visual = _included_to_flexion(
                     np.asarray(reference_knee, dtype=np.float64)[:T])
             else:
                 ref_knee_visual = ref
-            controls[:, 12] = np.radians(hip_r)
-            controls[:, 13] = np.radians(hip_l)
-            controls[:, 14] = np.radians(ref_knee_visual)  # RIGHT KNEE = REFERENCE
-            controls[:, 15] = np.radians(knee_l)
-            controls[:, 16] = np.radians(ankle_r)
-            controls[:, 17] = np.radians(ankle_l)
-            controls[:, 18] = np.radians(0.4 * hip_l)
-            controls[:, 19] = np.radians(0.4 * hip_r)
-            controls[:, 20] = np.radians(25.0)
-            controls[:, 21] = np.radians(25.0)
-            controls[:, 22] = root_pos[:, 0]
-            controls[:, 23] = root_pos[:, 1]
+            _fill_humanoid(NA, ref_knee_visual)  # reference: right knee = GT
 
         # ── Physics substeps per data frame ──────────────────────────────
         steps_per_frame = max(1, round(self.dt / model.opt.timestep))
@@ -541,7 +679,7 @@ class _MuJoCoRunner:
         lidx = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "left_foot_geom")
 
         # ── Body ID for CoM metrics ───────────────────────────────────────
-        torso_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "torso")
+        torso_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
 
         metrics = EvalMetrics.empty()
         qpos_history: List[np.ndarray] = []
@@ -930,7 +1068,7 @@ def replay_trajectory(
         key_callback=_key_cb,
     ) as viewer:
         # Side-tracking camera
-        torso_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "torso")
+        torso_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
         viewer.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
         viewer.cam.trackbodyid = torso_id
         viewer.cam.distance = 4.5
