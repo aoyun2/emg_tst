@@ -198,10 +198,11 @@ def _extract_angles_from_bvh(parser: BVHParser) -> Optional[dict]:
         if k in angles:
             angles[k] = (180.0 - angles[k]).astype(np.float32)
 
-    # Spine chain, neck, head: typically small symmetric values
+    # Spine chain, neck, head: preserve sign (positive Xrotation = forward
+    # lean in BVH).  No abs() — these joints move in both directions.
     for k in ("pelvis_tilt", "trunk_lean", "upper_trunk", "neck", "head"):
         if k in angles:
-            angles[k] = np.clip(180.0 - np.abs(angles[k]), 0.0, 180.0).astype(np.float32)
+            angles[k] = (180.0 - angles[k]).astype(np.float32)
 
     # Shoulders & clavicles: sign-flip heuristic, then included-angle
     for k in ("shoulder_right", "shoulder_left",
@@ -235,8 +236,8 @@ def _extract_angles_from_bvh(parser: BVHParser) -> Optional[dict]:
     if root_pos_raw is not None and root_pos_raw.shape[1] >= 3:
         rp = _resample_2d(root_pos_raw[:, :3], src_fps, TARGET_FPS) / 100.0
         rp_zup = np.empty_like(rp)
-        rp_zup[:, 0] = rp[:, 2]   # forward: BVH Z → MuJoCo X
-        rp_zup[:, 1] = rp[:, 0]   # lateral: BVH X → MuJoCo Y
+        rp_zup[:, 0] = rp[:, 2]    # forward: BVH Z → MuJoCo X
+        rp_zup[:, 1] = -rp[:, 0]  # lateral: BVH X(right) → MuJoCo -Y(right)
         rp_zup[:, 2] = rp[:, 1]   # height:  BVH Y → MuJoCo Z
         angles["root_pos"] = rp_zup[:N]
     else:
@@ -382,7 +383,7 @@ _CACHE_KEYS_1D = _ALL_JOINT_KEYS + ["root_pitch", "root_yaw", "root_roll"]
 
 # Bump this when angle extraction or resampling logic changes so that stale
 # caches are automatically invalidated (the fingerprint includes this string).
-_CACHE_VERSION = "v4"
+_CACHE_VERSION = "v5"
 
 
 def _cache_fingerprint(bvh_dir: Path) -> str:
