@@ -14,6 +14,11 @@ the body falls naturally under gravity — there is no invisible hand
 holding it up.  Minimal passive damping on root joints prevents numerical
 jitter without constraining motion.
 
+Multi-DOF joints (hips: 3-DOF, shoulders: 3-DOF, spine: 3-DOF each)
+faithfully reproduce all three BVH rotation channels (flexion, abduction,
+axial rotation) so that arm swing, hip sway, and trunk rotation from the
+original mocap data are properly represented.
+
 Joint actuators use PD position control to track mocap reference angles.
 Leg/spine joints use high kp with matched damping for stable tracking.
 Arm actuators use lower kp for natural swing.
@@ -190,21 +195,21 @@ class SimTrajectory:
 # exception of the right knee (model prediction) and optionally the right
 # hip (sample thigh_angle).
 #
-# Body hierarchy:
+# Body hierarchy (multi-DOF joints where applicable):
 #   Pelvis (root: slide X/Y/Z + hinge yaw/pitch/roll)
-#   ├── Right leg: hip → knee → ankle → toe
-#   ├── Left leg:  hip → knee → ankle → toe
-#   └── Spine chain: LowerBack → Spine → Spine1
+#   ├── Right leg: hip(3-DOF: flex/abd/rot) → knee → ankle → toe
+#   ├── Left leg:  hip(3-DOF: flex/abd/rot) → knee → ankle → toe
+#   └── Spine chain: LowerBack(3-DOF) → Spine(3-DOF) → Spine1(3-DOF)
 #       ├── Neck → Head
-#       ├── Right arm: Clavicle → Shoulder → Elbow → Wrist → Fingers/Thumb
-#       └── Left arm:  Clavicle → Shoulder → Elbow → Wrist → Fingers/Thumb
+#       ├── Right arm: Clavicle → Shoulder(3-DOF: flex/abd/rot) → Elbow → Wrist → Fingers/Thumb
+#       └── Left arm:  Clavicle → Shoulder(3-DOF: flex/abd/rot) → Elbow → Wrist → Fingers/Thumb
 #
 # Collision: body geoms collide with floor but NOT with each other
 # (contype=1/conaffinity=2 for body, contype=2/conaffinity=1 for floor).
 
 # Number of actuators per humanoid (prediction or reference)
 # Body joints only — root has NO actuators (free under physics).
-N_ACT_PER_HUMANOID = 27
+N_ACT_PER_HUMANOID = 41
 
 _MJCF = """
 <mujoco model="prosthetic_eval_humanoid">
@@ -240,6 +245,8 @@ _MJCF = """
       <!-- ── Right leg ── -->
       <body name="right_thigh" pos="0 -0.10 -0.12">
         <joint name="right_hip" type="hinge" axis="0 -1 0" range="-70 70" damping="80"/>
+        <joint name="right_hip_abd" type="hinge" axis="1 0 0" range="-45 45" damping="40"/>
+        <joint name="right_hip_rot" type="hinge" axis="0 0 -1" range="-45 45" damping="30"/>
         <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.05"/>
         <body name="right_shank" pos="0 0 -0.42">
           <joint name="right_knee" type="hinge" axis="0 1 0" range="0 130" damping="70"/>
@@ -264,6 +271,8 @@ _MJCF = """
       <!-- ── Left leg ── -->
       <body name="left_thigh" pos="0 0.10 -0.12">
         <joint name="left_hip" type="hinge" axis="0 -1 0" range="-70 70" damping="80"/>
+        <joint name="left_hip_abd" type="hinge" axis="1 0 0" range="-45 45" damping="40"/>
+        <joint name="left_hip_rot" type="hinge" axis="0 0 1" range="-45 45" damping="30"/>
         <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.05"/>
         <body name="left_shank" pos="0 0 -0.42">
           <joint name="left_knee" type="hinge" axis="0 1 0" range="0 130" damping="70"/>
@@ -286,16 +295,28 @@ _MJCF = """
       <body name="lower_back" pos="0 0 0">
         <joint name="lower_back" type="hinge" axis="0 1 0"
                range="-30 30"/>
+        <joint name="lower_back_lateral" type="hinge" axis="1 0 0"
+               range="-20 20" damping="30"/>
+        <joint name="lower_back_rot" type="hinge" axis="0 0 1"
+               range="-30 30" damping="30"/>
         <geom type="capsule" fromto="0 0 0 0 0 0.07" size="0.075"
               rgba="0.6 0.6 0.65 1"/>
         <body name="spine" pos="0 0 0.07">
           <joint name="spine_jnt" type="hinge" axis="0 1 0"
                  range="-30 30"/>
+          <joint name="spine_lateral" type="hinge" axis="1 0 0"
+                 range="-20 20" damping="30"/>
+          <joint name="spine_rot" type="hinge" axis="0 0 1"
+                 range="-30 30" damping="30"/>
           <geom type="capsule" fromto="0 0 0 0 0 0.06" size="0.07"
                 rgba="0.6 0.6 0.65 1"/>
           <body name="spine1" pos="0 0 0.06">
             <joint name="spine1_jnt" type="hinge" axis="0 1 0"
                    range="-30 30"/>
+            <joint name="spine1_lateral" type="hinge" axis="1 0 0"
+                   range="-20 20" damping="30"/>
+            <joint name="spine1_rot" type="hinge" axis="0 0 1"
+                   range="-30 30" damping="30"/>
             <geom type="capsule" fromto="0 0 0 0 0 0.06" size="0.065"
                   rgba="0.6 0.6 0.65 1"/>
 
@@ -320,6 +341,10 @@ _MJCF = """
               <body name="right_upper_arm" pos="0 -0.10 0">
                 <joint name="right_shoulder" type="hinge" axis="0 -1 0"
                        range="-90 90" damping="12"/>
+                <joint name="right_shoulder_abd" type="hinge" axis="1 0 0"
+                       range="-90 90" damping="12"/>
+                <joint name="right_shoulder_rot" type="hinge" axis="0 0 -1"
+                       range="-90 90" damping="8"/>
                 <geom type="capsule" fromto="0 0 0 0 0 -0.28" size="0.03"/>
                 <body name="right_forearm" pos="0 0 -0.28">
                   <joint name="right_elbow" type="hinge" axis="0 -1 0"
@@ -362,6 +387,10 @@ _MJCF = """
               <body name="left_upper_arm" pos="0 0.10 0">
                 <joint name="left_shoulder" type="hinge" axis="0 -1 0"
                        range="-90 90" damping="12"/>
+                <joint name="left_shoulder_abd" type="hinge" axis="1 0 0"
+                       range="-90 90" damping="12"/>
+                <joint name="left_shoulder_rot" type="hinge" axis="0 0 1"
+                       range="-90 90" damping="8"/>
                 <geom type="capsule" fromto="0 0 0 0 0 -0.28" size="0.03"/>
                 <body name="left_forearm" pos="0 0 -0.28">
                   <joint name="left_elbow" type="hinge" axis="0 -1 0"
@@ -402,34 +431,48 @@ _MJCF = """
   </worldbody>
 
   <actuator>
-    <!-- ctrl[0..7]: legs + toes -->
+    <!-- ctrl[0..11]: legs + toes (with hip abd/rot) -->
     <position joint="right_hip"      kp="400"/>
+    <position joint="right_hip_abd"  kp="250"/>
+    <position joint="right_hip_rot"  kp="200"/>
     <position joint="left_hip"       kp="400"/>
+    <position joint="left_hip_abd"   kp="250"/>
+    <position joint="left_hip_rot"   kp="200"/>
     <position joint="right_knee"     kp="400"/>
     <position joint="left_knee"      kp="400"/>
     <position joint="right_ankle"    kp="300"/>
     <position joint="left_ankle"     kp="300"/>
     <position joint="right_toe"      kp="150"/>
     <position joint="left_toe"       kp="150"/>
-    <!-- ctrl[8..10]: spine chain -->
-    <position joint="lower_back"     kp="300"/>
-    <position joint="spine_jnt"      kp="300"/>
-    <position joint="spine1_jnt"     kp="300"/>
-    <!-- ctrl[11..12]: neck + head -->
+    <!-- ctrl[12..17]: spine chain (flex + lateral + rot each) -->
+    <position joint="lower_back"          kp="300"/>
+    <position joint="lower_back_lateral"  kp="200"/>
+    <position joint="lower_back_rot"      kp="200"/>
+    <position joint="spine_jnt"           kp="300"/>
+    <position joint="spine_lateral"       kp="200"/>
+    <position joint="spine_rot"           kp="200"/>
+    <position joint="spine1_jnt"          kp="300"/>
+    <position joint="spine1_lateral"      kp="200"/>
+    <position joint="spine1_rot"          kp="200"/>
+    <!-- ctrl[21..22]: neck + head -->
     <position joint="neck"           kp="150"/>
     <position joint="head_jnt"       kp="100"/>
-    <!-- ctrl[13..14]: clavicles -->
+    <!-- ctrl[23..24]: clavicles -->
     <position joint="right_clav"     kp="50"/>
     <position joint="left_clav"      kp="50"/>
-    <!-- ctrl[15..18]: shoulders + elbows -->
-    <position joint="right_shoulder" kp="80"/>
-    <position joint="left_shoulder"  kp="80"/>
+    <!-- ctrl[25..32]: shoulders (flex + abd + rot) + elbows -->
+    <position joint="right_shoulder"      kp="80"/>
+    <position joint="right_shoulder_abd"  kp="80"/>
+    <position joint="right_shoulder_rot"  kp="60"/>
+    <position joint="left_shoulder"       kp="80"/>
+    <position joint="left_shoulder_abd"   kp="80"/>
+    <position joint="left_shoulder_rot"   kp="60"/>
     <position joint="right_elbow"    kp="60"/>
     <position joint="left_elbow"     kp="60"/>
-    <!-- ctrl[19..20]: wrists -->
+    <!-- ctrl[33..34]: wrists -->
     <position joint="right_wrist"    kp="40"/>
     <position joint="left_wrist"     kp="40"/>
-    <!-- ctrl[21..26]: fingers + thumbs -->
+    <!-- ctrl[35..40]: fingers + thumbs -->
     <position joint="right_finger"   kp="15"/>
     <position joint="right_fing_idx" kp="15"/>
     <position joint="right_thumb"    kp="15"/>
@@ -493,22 +536,36 @@ def _build_dual_mjcf() -> str:
     # Build reference actuator block (same joint order, prefixed names)
     ref_actuators = """    <!-- Reference model actuators -->
     <position joint="ref_right_hip"      kp="400"/>
+    <position joint="ref_right_hip_abd"  kp="250"/>
+    <position joint="ref_right_hip_rot"  kp="200"/>
     <position joint="ref_left_hip"       kp="400"/>
+    <position joint="ref_left_hip_abd"   kp="250"/>
+    <position joint="ref_left_hip_rot"   kp="200"/>
     <position joint="ref_right_knee"     kp="400"/>
     <position joint="ref_left_knee"      kp="400"/>
     <position joint="ref_right_ankle"    kp="300"/>
     <position joint="ref_left_ankle"     kp="300"/>
     <position joint="ref_right_toe"      kp="150"/>
     <position joint="ref_left_toe"       kp="150"/>
-    <position joint="ref_lower_back"     kp="300"/>
-    <position joint="ref_spine_jnt"      kp="300"/>
-    <position joint="ref_spine1_jnt"     kp="300"/>
+    <position joint="ref_lower_back"          kp="300"/>
+    <position joint="ref_lower_back_lateral"  kp="200"/>
+    <position joint="ref_lower_back_rot"      kp="200"/>
+    <position joint="ref_spine_jnt"           kp="300"/>
+    <position joint="ref_spine_lateral"       kp="200"/>
+    <position joint="ref_spine_rot"           kp="200"/>
+    <position joint="ref_spine1_jnt"          kp="300"/>
+    <position joint="ref_spine1_lateral"      kp="200"/>
+    <position joint="ref_spine1_rot"          kp="200"/>
     <position joint="ref_neck"           kp="150"/>
     <position joint="ref_head_jnt"       kp="100"/>
     <position joint="ref_right_clav"     kp="50"/>
     <position joint="ref_left_clav"      kp="50"/>
-    <position joint="ref_right_shoulder" kp="80"/>
-    <position joint="ref_left_shoulder"  kp="80"/>
+    <position joint="ref_right_shoulder"      kp="80"/>
+    <position joint="ref_right_shoulder_abd"  kp="80"/>
+    <position joint="ref_right_shoulder_rot"  kp="60"/>
+    <position joint="ref_left_shoulder"       kp="80"/>
+    <position joint="ref_left_shoulder_abd"   kp="80"/>
+    <position joint="ref_left_shoulder_rot"   kp="60"/>
     <position joint="ref_right_elbow"    kp="60"/>
     <position joint="ref_left_elbow"     kp="60"/>
     <position joint="ref_right_wrist"    kp="40"/>
@@ -581,63 +638,104 @@ class _MuJoCoRunner:
         else:
             hip_r = _flex("hip_right")
 
-        # Root orientation from BVH (raw degrees — NOT included-angle)
-        root_pitch = _pad_or_trim(
+        # Root orientation from BVH (raw degrees — NOT included-angle).
+        # BVH Y-up convention → MuJoCo Z-up:
+        #   BVH Xrotation (pitch, around lateral axis)  → root_pitch
+        #   BVH Yrotation (yaw, around vertical axis)   → root_yaw
+        #   BVH Zrotation (roll, around forward axis)   → root_roll
+        # Negate pitch because BVH X-axis points right whereas MuJoCo
+        # pitch axis +Y points left, so the rotation sense is inverted.
+        root_pitch = -_pad_or_trim(
             mocap_segment.get("root_pitch", np.zeros(T)), T, default=0.0)
         root_yaw = _pad_or_trim(
             mocap_segment.get("root_yaw", np.zeros(T)), T, default=0.0)
         root_roll = _pad_or_trim(
             mocap_segment.get("root_roll", np.zeros(T)), T, default=0.0)
-        # Normalise root yaw so frame-0 starts at 0 (no absolute heading)
+        # Normalise all root orientations so frame-0 starts at identity.
+        # This prevents the model from spawning at the BVH file's
+        # absolute orientation (which can be sideways or face-down).
+        root_pitch = root_pitch - root_pitch[0]
         root_yaw = root_yaw - root_yaw[0]
+        root_roll = root_roll - root_roll[0]
+
+        # ── Helper: get a raw BVH channel (not included-angle) ────────────
+        def _raw(key, default=0.0):
+            """Get raw-degree channel (abd/rot), convert to radians."""
+            return np.radians(_pad_or_trim(
+                mocap_segment.get(key, np.full(T, default)), T, default))
 
         # ── Pre-compute controls (radians) ────────────────────────────────
         # Body-joint actuators only (root is free — no actuators).
-        # Actuator order (N_ACT_PER_HUMANOID = 27 per humanoid):
-        #  0: right_hip      1: left_hip       2: right_knee(PRED)  3: left_knee
-        #  4: right_ankle    5: left_ankle     6: right_toe         7: left_toe
-        #  8: lower_back     9: spine         10: spine1
-        # 11: neck          12: head
-        # 13: right_clav    14: left_clav
-        # 15: right_shoulder 16: left_shoulder 17: right_elbow      18: left_elbow
-        # 19: right_wrist   20: left_wrist
-        # 21: right_finger  22: right_fing_idx 23: right_thumb
-        # 24: left_finger   25: left_fing_idx  26: left_thumb
+        # Actuator order (N_ACT_PER_HUMANOID = 41 per humanoid):
+        #  0: right_hip       1: right_hip_abd   2: right_hip_rot
+        #  3: left_hip        4: left_hip_abd    5: left_hip_rot
+        #  6: right_knee(PRED) 7: left_knee
+        #  8: right_ankle     9: left_ankle     10: right_toe  11: left_toe
+        # 12: lower_back     13: lower_back_lat 14: lower_back_rot
+        # 15: spine          16: spine_lat      17: spine_rot
+        # 18: spine1         19: spine1_lat     20: spine1_rot
+        # 21: neck           22: head
+        # 23: right_clav     24: left_clav
+        # 25: right_shoulder 26: right_shoulder_abd 27: right_shoulder_rot
+        # 28: left_shoulder  29: left_shoulder_abd  30: left_shoulder_rot
+        # 31: right_elbow    32: left_elbow
+        # 33: right_wrist    34: left_wrist
+        # 35-40: fingers + thumbs
         NA = N_ACT_PER_HUMANOID
         n_act = NA * 2 if self.show_reference else NA
         controls = np.zeros((T, n_act), dtype=np.float64)
 
         def _fill_humanoid(off, knee_signal):
             """Fill control columns [off : off+NA] for one humanoid."""
+            # ── Legs (with hip abduction/rotation) ────────────────────
             controls[:, off + 0] = np.radians(hip_r)
-            controls[:, off + 1] = np.radians(_flex("hip_left"))
-            controls[:, off + 2] = np.radians(knee_signal)
-            controls[:, off + 3] = np.radians(_flex("knee_left"))
-            controls[:, off + 4] = np.radians(_flex("ankle_right"))
-            controls[:, off + 5] = np.radians(_flex("ankle_left"))
-            controls[:, off + 6] = np.radians(_flex("toe_right"))
-            controls[:, off + 7] = np.radians(_flex("toe_left"))
-            # Spine/neck/head: negate because MuJoCo axis +Y = backward lean
-            # but BVH Xrotation positive = forward lean.
-            controls[:, off + 8] = -np.radians(_flex("pelvis_tilt"))
-            controls[:, off + 9] = -np.radians(_flex("trunk_lean"))
-            controls[:, off + 10] = -np.radians(_flex("upper_trunk"))
-            controls[:, off + 11] = -np.radians(_flex("neck"))
-            controls[:, off + 12] = -np.radians(_flex("head"))
-            controls[:, off + 13] = np.radians(_flex("clavicle_right"))
-            controls[:, off + 14] = np.radians(_flex("clavicle_left"))
-            controls[:, off + 15] = np.radians(_flex("shoulder_right"))
-            controls[:, off + 16] = np.radians(_flex("shoulder_left"))
-            controls[:, off + 17] = np.radians(_flex("elbow_right"))
-            controls[:, off + 18] = np.radians(_flex("elbow_left"))
-            controls[:, off + 19] = np.radians(_flex("wrist_right"))
-            controls[:, off + 20] = np.radians(_flex("wrist_left"))
-            controls[:, off + 21] = np.radians(_flex("finger_right"))
-            controls[:, off + 22] = np.radians(_flex("finger_index_right"))
-            controls[:, off + 23] = np.radians(_flex("thumb_right"))
-            controls[:, off + 24] = np.radians(_flex("finger_left"))
-            controls[:, off + 25] = np.radians(_flex("finger_index_left"))
-            controls[:, off + 26] = np.radians(_flex("thumb_left"))
+            controls[:, off + 1] = _raw("hip_right_abd")
+            controls[:, off + 2] = _raw("hip_right_rot")
+            controls[:, off + 3] = np.radians(_flex("hip_left"))
+            controls[:, off + 4] = _raw("hip_left_abd")
+            controls[:, off + 5] = _raw("hip_left_rot")
+            controls[:, off + 6] = np.radians(knee_signal)
+            controls[:, off + 7] = np.radians(_flex("knee_left"))
+            controls[:, off + 8] = np.radians(_flex("ankle_right"))
+            controls[:, off + 9] = np.radians(_flex("ankle_left"))
+            controls[:, off + 10] = np.radians(_flex("toe_right"))
+            controls[:, off + 11] = np.radians(_flex("toe_left"))
+            # ── Spine chain (flex + lateral + rotation) ───────────────
+            # Negate flex because MuJoCo +Y axis = backward lean but
+            # BVH Xrotation positive = forward lean.
+            controls[:, off + 12] = -np.radians(_flex("pelvis_tilt"))
+            controls[:, off + 13] = _raw("pelvis_lateral")
+            controls[:, off + 14] = _raw("pelvis_rotation")
+            controls[:, off + 15] = -np.radians(_flex("trunk_lean"))
+            controls[:, off + 16] = _raw("trunk_lateral")
+            controls[:, off + 17] = _raw("trunk_rotation")
+            controls[:, off + 18] = -np.radians(_flex("upper_trunk"))
+            controls[:, off + 19] = _raw("upper_trunk_lateral")
+            controls[:, off + 20] = _raw("upper_trunk_rotation")
+            controls[:, off + 21] = -np.radians(_flex("neck"))
+            controls[:, off + 22] = -np.radians(_flex("head"))
+            # ── Clavicles ─────────────────────────────────────────────
+            controls[:, off + 23] = np.radians(_flex("clavicle_right"))
+            controls[:, off + 24] = np.radians(_flex("clavicle_left"))
+            # ── Shoulders (flex + abd + rot) + elbows ─────────────────
+            controls[:, off + 25] = np.radians(_flex("shoulder_right"))
+            controls[:, off + 26] = _raw("shoulder_right_abd")
+            controls[:, off + 27] = _raw("shoulder_right_rot")
+            controls[:, off + 28] = np.radians(_flex("shoulder_left"))
+            controls[:, off + 29] = _raw("shoulder_left_abd")
+            controls[:, off + 30] = _raw("shoulder_left_rot")
+            controls[:, off + 31] = np.radians(_flex("elbow_right"))
+            controls[:, off + 32] = np.radians(_flex("elbow_left"))
+            # ── Wrists ────────────────────────────────────────────────
+            controls[:, off + 33] = np.radians(_flex("wrist_right"))
+            controls[:, off + 34] = np.radians(_flex("wrist_left"))
+            # ── Fingers + thumbs ──────────────────────────────────────
+            controls[:, off + 35] = np.radians(_flex("finger_right"))
+            controls[:, off + 36] = np.radians(_flex("finger_index_right"))
+            controls[:, off + 37] = np.radians(_flex("thumb_right"))
+            controls[:, off + 38] = np.radians(_flex("finger_left"))
+            controls[:, off + 39] = np.radians(_flex("finger_index_left"))
+            controls[:, off + 40] = np.radians(_flex("thumb_left"))
 
         _fill_humanoid(0, pred)  # prediction model: right knee = PREDICTION
 
@@ -820,6 +918,12 @@ class _MuJoCoRunner:
                 for i in range(model.nu):
                     jnt_id = model.actuator_trnid[i, 0]
                     data.qpos[model.jnt_qposadr[jnt_id]] = controls[0, i]
+                for rname, rval in [("root_roll", np.radians(root_roll[0])),
+                                    ("root_pitch", np.radians(root_pitch[0])),
+                                    ("root_yaw", np.radians(root_yaw[0]))]:
+                    jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, rname)
+                    if jid >= 0:
+                        data.qpos[model.jnt_qposadr[jid]] = rval
                 for _ in range(200):
                     mujoco.mj_step(model, data)
                 data.qvel[:] = 0
