@@ -7,16 +7,19 @@ driven by the sample's thigh_angle -- allowing evaluation of how well the
 prediction maintains stable, natural gait.
 
 The torso root uses slide joints for translation (X, Y, Z) and three hinge
-joints for orientation (yaw, pitch, roll).  X and Y are driven by stiff
-position actuators (kp=2000, damping=200) from BVH root trajectories.
-Yaw, pitch, and roll are driven by position actuators (kp=500, damping=50)
-from BVH root orientation.  The Z slide joint has **no actuator** and
-minimal damping (2), so the body moves vertically under gravity alone and
-can fall naturally when gait is unstable.
+joints for orientation (roll, pitch, yaw — ordered to match BVH ZXY
+intrinsic rotation mapped to MuJoCo XYZ intrinsic under the Y-up → Z-up
+coordinate transform).  X and Y are driven by stiff position actuators
+(kp=2000, damping=200) from BVH root trajectories.  Roll, pitch, and yaw
+are driven by position actuators (kp=500, damping=50) from BVH root
+orientation.  The Z slide joint has **no actuator** and moderate damping
+(8), so the body moves vertically under gravity and can fall naturally
+when gait is unstable but settles quickly during warmup.
 
-All joint actuators use near-critically-damped PD control (high kp with
-matched joint damping) so the skeleton tracks the mocap reference smoothly
-without oscillation.
+Leg/spine joint actuators use near-critically-damped PD control (high kp
+with matched joint damping) so the skeleton tracks the mocap reference
+smoothly.  Arm actuators use lower kp with proportional damping for
+natural arm swing during walking.
 
 Supports:
 - MuJoCo physics backend with full-body mocap-driven humanoid
@@ -228,10 +231,11 @@ _MJCF = """
     <body name="pelvis" pos="0 0 1.05">
       <joint name="root_x" type="slide" axis="1 0 0" damping="200"/>
       <joint name="root_y" type="slide" axis="0 1 0" damping="200"/>
-      <joint name="root_z" type="slide" axis="0 0 1" damping="2"/>
-      <joint name="root_yaw"   type="hinge" axis="0 0 1" damping="50"/>
-      <joint name="root_pitch" type="hinge" axis="0 1 0" damping="50"/>
+      <joint name="root_z" type="slide" axis="0 0 1" damping="8"/>
+      <!-- BVH ZXY intrinsic (Y-up) maps to XYZ intrinsic (Z-up) -->
       <joint name="root_roll"  type="hinge" axis="1 0 0" damping="50"/>
+      <joint name="root_pitch" type="hinge" axis="0 1 0" damping="50"/>
+      <joint name="root_yaw"   type="hinge" axis="0 0 1" damping="50"/>
       <geom type="capsule" fromto="0 0 -0.12 0 0 0" size="0.085"
             rgba="0.6 0.6 0.65 1"/>
 
@@ -313,37 +317,37 @@ _MJCF = """
             <!-- ── Right arm (clavicle → shoulder → elbow → wrist → fingers) ── -->
             <body name="right_clavicle" pos="0 -0.12 0.03">
               <joint name="right_clav" type="hinge" axis="0 -1 0"
-                     range="-20 20" damping="2"/>
+                     range="-20 20" damping="5"/>
               <geom type="capsule" fromto="0 0 0 0 -0.08 0" size="0.025"/>
               <body name="right_upper_arm" pos="0 -0.10 0">
                 <joint name="right_shoulder" type="hinge" axis="0 -1 0"
-                       range="-90 90" damping="2"/>
+                       range="-90 90" damping="12"/>
                 <geom type="capsule" fromto="0 0 0 0 0 -0.28" size="0.03"/>
                 <body name="right_forearm" pos="0 0 -0.28">
                   <joint name="right_elbow" type="hinge" axis="0 -1 0"
-                         range="0 130" damping="1"/>
+                         range="0 130" damping="8"/>
                   <geom type="capsule" fromto="0 0 0 0 0 -0.25" size="0.025"
                         rgba="0.85 0.75 0.65 1"/>
                   <body name="right_hand" pos="0 0 -0.25">
                     <joint name="right_wrist" type="hinge" axis="0 -1 0"
-                           range="-60 60" damping="1"/>
+                           range="-60 60" damping="4"/>
                     <geom type="box" size="0.035 0.015 0.05" pos="0 0 -0.05"
                           rgba="0.85 0.75 0.65 1"/>
                     <body name="right_fing_base" pos="0 0 -0.08">
                       <joint name="right_finger" type="hinge" axis="0 -1 0"
-                             range="0 90" damping="0.5"/>
+                             range="0 90" damping="1"/>
                       <geom type="capsule" fromto="0 0 0 0 0 -0.025"
                             size="0.008" rgba="0.85 0.75 0.65 1"/>
                       <body name="right_fing_tip" pos="0 0 -0.025">
                         <joint name="right_fing_idx" type="hinge" axis="0 -1 0"
-                               range="0 90" damping="0.5"/>
+                               range="0 90" damping="1"/>
                         <geom type="capsule" fromto="0 0 0 0 0 -0.015"
                               size="0.006" rgba="0.85 0.75 0.65 1"/>
                       </body>
                     </body>
                     <body name="right_thumb_body" pos="0.01 0.015 -0.03">
                       <joint name="right_thumb" type="hinge" axis="0 0 1"
-                             range="-30 60" damping="0.5"/>
+                             range="-30 60" damping="1"/>
                       <geom type="capsule" fromto="0 0 0 0.015 0.01 -0.02"
                             size="0.007" rgba="0.85 0.75 0.65 1"/>
                     </body>
@@ -355,37 +359,37 @@ _MJCF = """
             <!-- ── Left arm (clavicle → shoulder → elbow → wrist → fingers) ── -->
             <body name="left_clavicle" pos="0 0.12 0.03">
               <joint name="left_clav" type="hinge" axis="0 -1 0"
-                     range="-20 20" damping="2"/>
+                     range="-20 20" damping="5"/>
               <geom type="capsule" fromto="0 0 0 0 0.08 0" size="0.025"/>
               <body name="left_upper_arm" pos="0 0.10 0">
                 <joint name="left_shoulder" type="hinge" axis="0 -1 0"
-                       range="-90 90" damping="2"/>
+                       range="-90 90" damping="12"/>
                 <geom type="capsule" fromto="0 0 0 0 0 -0.28" size="0.03"/>
                 <body name="left_forearm" pos="0 0 -0.28">
                   <joint name="left_elbow" type="hinge" axis="0 -1 0"
-                         range="0 130" damping="1"/>
+                         range="0 130" damping="8"/>
                   <geom type="capsule" fromto="0 0 0 0 0 -0.25" size="0.025"
                         rgba="0.85 0.75 0.65 1"/>
                   <body name="left_hand" pos="0 0 -0.25">
                     <joint name="left_wrist" type="hinge" axis="0 -1 0"
-                           range="-60 60" damping="1"/>
+                           range="-60 60" damping="4"/>
                     <geom type="box" size="0.035 0.015 0.05" pos="0 0 -0.05"
                           rgba="0.85 0.75 0.65 1"/>
                     <body name="left_fing_base" pos="0 0 -0.08">
                       <joint name="left_finger" type="hinge" axis="0 -1 0"
-                             range="0 90" damping="0.5"/>
+                             range="0 90" damping="1"/>
                       <geom type="capsule" fromto="0 0 0 0 0 -0.025"
                             size="0.008" rgba="0.85 0.75 0.65 1"/>
                       <body name="left_fing_tip" pos="0 0 -0.025">
                         <joint name="left_fing_idx" type="hinge" axis="0 -1 0"
-                               range="0 90" damping="0.5"/>
+                               range="0 90" damping="1"/>
                         <geom type="capsule" fromto="0 0 0 0 0 -0.015"
                               size="0.006" rgba="0.85 0.75 0.65 1"/>
                       </body>
                     </body>
                     <body name="left_thumb_body" pos="0.01 -0.015 -0.03">
                       <joint name="left_thumb" type="hinge" axis="0 0 -1"
-                             range="-30 60" damping="0.5"/>
+                             range="-30 60" damping="1"/>
                       <geom type="capsule" fromto="0 0 0 0.015 -0.01 -0.02"
                             size="0.007" rgba="0.85 0.75 0.65 1"/>
                     </body>
@@ -417,23 +421,23 @@ _MJCF = """
     <position joint="neck"           kp="150"/>
     <position joint="head_jnt"       kp="100"/>
     <!-- ctrl[13..14]: clavicles -->
-    <position joint="right_clav"     kp="100"/>
-    <position joint="left_clav"      kp="100"/>
+    <position joint="right_clav"     kp="50"/>
+    <position joint="left_clav"      kp="50"/>
     <!-- ctrl[15..18]: shoulders + elbows -->
-    <position joint="right_shoulder" kp="150"/>
-    <position joint="left_shoulder"  kp="150"/>
-    <position joint="right_elbow"    kp="100"/>
-    <position joint="left_elbow"     kp="100"/>
+    <position joint="right_shoulder" kp="80"/>
+    <position joint="left_shoulder"  kp="80"/>
+    <position joint="right_elbow"    kp="60"/>
+    <position joint="left_elbow"     kp="60"/>
     <!-- ctrl[19..20]: wrists -->
-    <position joint="right_wrist"    kp="80"/>
-    <position joint="left_wrist"     kp="80"/>
+    <position joint="right_wrist"    kp="40"/>
+    <position joint="left_wrist"     kp="40"/>
     <!-- ctrl[21..26]: fingers + thumbs -->
-    <position joint="right_finger"   kp="30"/>
-    <position joint="right_fing_idx" kp="30"/>
-    <position joint="right_thumb"    kp="30"/>
-    <position joint="left_finger"    kp="30"/>
-    <position joint="left_fing_idx"  kp="30"/>
-    <position joint="left_thumb"     kp="30"/>
+    <position joint="right_finger"   kp="15"/>
+    <position joint="right_fing_idx" kp="15"/>
+    <position joint="right_thumb"    kp="15"/>
+    <position joint="left_finger"    kp="15"/>
+    <position joint="left_fing_idx"  kp="15"/>
+    <position joint="left_thumb"     kp="15"/>
     <!-- ctrl[27..28]: root XY tracking (Z has no actuator — free for gravity) -->
     <position joint="root_x" kp="2000"/>
     <position joint="root_y" kp="2000"/>
@@ -509,20 +513,20 @@ def _build_dual_mjcf() -> str:
     <position joint="ref_spine1_jnt"     kp="300"/>
     <position joint="ref_neck"           kp="150"/>
     <position joint="ref_head_jnt"       kp="100"/>
-    <position joint="ref_right_clav"     kp="100"/>
-    <position joint="ref_left_clav"      kp="100"/>
-    <position joint="ref_right_shoulder" kp="150"/>
-    <position joint="ref_left_shoulder"  kp="150"/>
-    <position joint="ref_right_elbow"    kp="100"/>
-    <position joint="ref_left_elbow"     kp="100"/>
-    <position joint="ref_right_wrist"    kp="80"/>
-    <position joint="ref_left_wrist"     kp="80"/>
-    <position joint="ref_right_finger"   kp="30"/>
-    <position joint="ref_right_fing_idx" kp="30"/>
-    <position joint="ref_right_thumb"    kp="30"/>
-    <position joint="ref_left_finger"    kp="30"/>
-    <position joint="ref_left_fing_idx"  kp="30"/>
-    <position joint="ref_left_thumb"     kp="30"/>
+    <position joint="ref_right_clav"     kp="50"/>
+    <position joint="ref_left_clav"      kp="50"/>
+    <position joint="ref_right_shoulder" kp="80"/>
+    <position joint="ref_left_shoulder"  kp="80"/>
+    <position joint="ref_right_elbow"    kp="60"/>
+    <position joint="ref_left_elbow"     kp="60"/>
+    <position joint="ref_right_wrist"    kp="40"/>
+    <position joint="ref_left_wrist"     kp="40"/>
+    <position joint="ref_right_finger"   kp="15"/>
+    <position joint="ref_right_fing_idx" kp="15"/>
+    <position joint="ref_right_thumb"    kp="15"/>
+    <position joint="ref_left_finger"    kp="15"/>
+    <position joint="ref_left_fing_idx"  kp="15"/>
+    <position joint="ref_left_thumb"     kp="15"/>
     <position joint="ref_root_x" kp="2000"/>
     <position joint="ref_root_y" kp="2000"/>
     <position joint="ref_root_yaw"   kp="500"/>
@@ -689,10 +693,19 @@ class _MuJoCoRunner:
         qpos_history: List[np.ndarray] = []
 
         # ── Warmup: let actuators settle to frame-0 pose ────────────────
-        # 1000 steps (1.0 s) to fully settle joints + body height.
+        # Two-phase warmup with velocity reset to prevent launching.
+        # Phase 1: Let joints drive toward frame-0 targets (body falls
+        #          under gravity and bounces on the floor).
+        # Phase 2: Clear all velocities (removes residual bounce),
+        #          then let the body re-settle briefly.
+        # Final: zero velocities again so simulation starts clean.
         data.ctrl[:] = controls[0]
         for _ in range(1000):
             mujoco.mj_step(model, data)
+        data.qvel[:] = 0          # kill residual bounce / launch velocity
+        for _ in range(500):
+            mujoco.mj_step(model, data)
+        data.qvel[:] = 0          # final velocity reset
 
         # Reset metrics after warmup
         metrics = EvalMetrics.empty()
@@ -822,6 +835,10 @@ class _MuJoCoRunner:
                 data.ctrl[:] = controls[0]
                 for _ in range(1000):
                     mujoco.mj_step(model, data)
+                data.qvel[:] = 0
+                for _ in range(500):
+                    mujoco.mj_step(model, data)
+                data.qvel[:] = 0
                 metrics = EvalMetrics.empty()
                 qpos_history.clear()
                 _step_loop(None)
