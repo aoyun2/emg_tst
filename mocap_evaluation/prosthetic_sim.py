@@ -5,10 +5,11 @@ All joints track their mocap reference angles *except* the right knee, which
 is driven by the model's predicted knee angle -- allowing evaluation of how
 well the prediction maintains stable, natural gait.
 
-The torso root position is tracked from BVH root trajectories via a MuJoCo
-mocap body + connect constraint (position only), keeping the body on the
-correct walking path while leaving orientation free for physics (the body
-can lean, tilt, and fall naturally based on foot contacts and balance).
+The torso root uses slide joints for translation (X, Y, Z) and a ball joint
+for orientation.  X and Y are driven by position actuators from BVH root
+trajectories — exactly the same mechanism as the limb joints.  The Z slide
+joint has **no actuator** (only damping), so the body moves vertically under
+gravity alone and can fall naturally when gait is unstable.
 
 Supports:
 - MuJoCo physics backend with full-body mocap-driven humanoid
@@ -178,8 +179,7 @@ class SimTrajectory:
 # ── MJCF humanoid model ─────────────────────────────────────────────────────
 #
 # Full-body humanoid with:
-#   - Mocap body "root_target" driven by BVH root position
-#   - Connect constraint: torso position tracks root_target (rotation free)
+#   - Root: slide joints X/Y (actuated), slide joint Z (free), ball joint (free)
 #   - Head (passive, high-damping neck)
 #   - Arms with forearms (shoulder + elbow joints)
 #   - Legs with thigh + shank + foot (hip + knee + ankle joints)
@@ -202,25 +202,17 @@ _MJCF = """
     <global offwidth="1280" offheight="720"/>
   </visual>
 
-  <equality>
-    <connect body1="torso" body2="root_target" anchor="0 0 0"
-             solref="0.02 1" solimp="0.95 0.99 0.01 0.5 2"/>
-  </equality>
-
   <worldbody>
     <geom name="floor" type="plane" size="50 50 0.1"
           rgba="0.8 0.9 0.8 1" contype="2" conaffinity="1"/>
     <light pos="0 0 5" dir="0 0 -1" diffuse="0.9 0.9 0.9"/>
     <light pos="3 3 4" dir="-0.5 -0.5 -1" diffuse="0.4 0.4 0.4"/>
 
-    <!-- Invisible mocap target: driven by BVH root position each frame -->
-    <body name="root_target" mocap="true" pos="0 0 1.05">
-      <geom type="sphere" size="0.001" contype="0" conaffinity="0"
-            rgba="0 0 0 0"/>
-    </body>
-
     <body name="torso" pos="0 0 1.05">
-      <freejoint name="root"/>
+      <joint name="root_x" type="slide" axis="1 0 0"/>
+      <joint name="root_y" type="slide" axis="0 1 0"/>
+      <joint name="root_z" type="slide" axis="0 0 1" damping="50"/>
+      <joint name="root_ball" type="ball" damping="20"/>
       <geom type="capsule" fromto="0 0 -0.12 0 0 0.2" size="0.09"
             rgba="0.6 0.6 0.65 1"/>
 
@@ -306,6 +298,9 @@ _MJCF = """
     <position joint="left_shoulder"  kp="100"/>
     <position joint="right_elbow"    kp="80"/>
     <position joint="left_elbow"     kp="80"/>
+    <!-- ctrl[10..11]: root XY tracking (Z has no actuator — free for gravity) -->
+    <position joint="root_x" kp="300"/>
+    <position joint="root_y" kp="300"/>
   </actuator>
 </mujoco>
 """
@@ -316,24 +311,17 @@ def _build_dual_mjcf() -> str:
 
     The reference model is semi-transparent blue, offset laterally by
     REF_Y_OFFSET.  It shares the floor and lighting with the prediction
-    model but uses its own mocap target + connect constraint + actuators.
+    model but uses its own root joints + actuators.
     """
     ref_y = REF_Y_OFFSET
 
-    ref_equality = (
-        f'    <connect body1="ref_torso" body2="ref_root_target" anchor="0 0 0"\n'
-        f'          solref="0.02 1" solimp="0.95 0.99 0.01 0.5 2"/>'
-    )
-
     ref_bodies = f"""
     <!-- ══ Reference humanoid (ground-truth mocap) ═══════════════════════ -->
-    <body name="ref_root_target" mocap="true" pos="0 {ref_y} 1.05">
-      <geom type="sphere" size="0.001" contype="0" conaffinity="0"
-            rgba="0 0 0 0"/>
-    </body>
-
     <body name="ref_torso" pos="0 {ref_y} 1.05">
-      <freejoint name="ref_root"/>
+      <joint name="ref_root_x" type="slide" axis="1 0 0"/>
+      <joint name="ref_root_y" type="slide" axis="0 1 0"/>
+      <joint name="ref_root_z" type="slide" axis="0 0 1" damping="50"/>
+      <joint name="ref_root_ball" type="ball" damping="20"/>
       <geom type="capsule" fromto="0 0 -0.12 0 0 0.2" size="0.09"
             rgba="0.3 0.5 0.8 0.5"/>
 
@@ -407,7 +395,7 @@ def _build_dual_mjcf() -> str:
     </body>
 """
 
-    ref_actuators = """    <!-- Reference model actuators (ctrl[10..19]) -->
+    ref_actuators = """    <!-- Reference model actuators (ctrl[12..23]) -->
     <position joint="ref_right_hip"      kp="300"/>
     <position joint="ref_left_hip"       kp="300"/>
     <position joint="ref_right_knee"     kp="350"/>
@@ -417,13 +405,11 @@ def _build_dual_mjcf() -> str:
     <position joint="ref_right_shoulder" kp="100"/>
     <position joint="ref_left_shoulder"  kp="100"/>
     <position joint="ref_right_elbow"    kp="80"/>
-    <position joint="ref_left_elbow"     kp="80"/>"""
+    <position joint="ref_left_elbow"     kp="80"/>
+    <position joint="ref_root_x" kp="300"/>
+    <position joint="ref_root_y" kp="300"/>"""
 
     base = _MJCF
-    base = base.replace(
-        "  </equality>",
-        ref_equality + "\n  </equality>",
-    )
     base = base.replace(
         "  </worldbody>",
         ref_bodies + "  </worldbody>",
@@ -438,7 +424,7 @@ def _build_dual_mjcf() -> str:
 # ── MuJoCo physics runner ───────────────────────────────────────────────────
 
 class _MuJoCoRunner:
-    """Run a full-body MuJoCo simulation driven by mocap + predicted knee."""
+    """Run a full-body MuJoCo simulation driven by actuators + predicted knee."""
 
     def __init__(self, use_gui: bool, fps: float, show_reference: bool = False):
         self.use_gui = use_gui
@@ -503,11 +489,11 @@ class _MuJoCoRunner:
         else:
             root_pos = np.tile(HUMANOID_INIT_POS, (T, 1))
 
-        # ── Pre-compute prediction model controls (radians) ──────────────
+        # ── Pre-compute controls (radians) ────────────────────────────────
         # Actuator order: right_hip, left_hip, right_knee, left_knee,
         #   right_ankle, left_ankle, right_shoulder, left_shoulder,
-        #   right_elbow, left_elbow
-        n_act = 20 if self.show_reference else 10
+        #   right_elbow, left_elbow, root_x, root_y
+        n_act = 24 if self.show_reference else 12
         controls = np.zeros((T, n_act), dtype=np.float64)
         controls[:, 0] = np.radians(hip_r)
         controls[:, 1] = np.radians(hip_l)
@@ -521,6 +507,9 @@ class _MuJoCoRunner:
         controls[:, 7] = np.radians(0.4 * hip_r)   # left shoulder
         controls[:, 8] = np.radians(25.0)           # natural elbow flexion
         controls[:, 9] = np.radians(25.0)
+        # Root XY tracking (slide joint targets, metres — not radians)
+        controls[:, 10] = root_pos[:, 0]
+        controls[:, 11] = root_pos[:, 1]
 
         if self.show_reference:
             # Reference model: identical to prediction except right knee
@@ -530,16 +519,18 @@ class _MuJoCoRunner:
                     np.asarray(reference_knee, dtype=np.float64)[:T])
             else:
                 ref_knee_visual = ref
-            controls[:, 10] = np.radians(hip_r)
-            controls[:, 11] = np.radians(hip_l)
-            controls[:, 12] = np.radians(ref_knee_visual)  # RIGHT KNEE = REFERENCE
-            controls[:, 13] = np.radians(knee_l)
-            controls[:, 14] = np.radians(ankle_r)
-            controls[:, 15] = np.radians(ankle_l)
-            controls[:, 16] = np.radians(0.4 * hip_l)
-            controls[:, 17] = np.radians(0.4 * hip_r)
-            controls[:, 18] = np.radians(25.0)
-            controls[:, 19] = np.radians(25.0)
+            controls[:, 12] = np.radians(hip_r)
+            controls[:, 13] = np.radians(hip_l)
+            controls[:, 14] = np.radians(ref_knee_visual)  # RIGHT KNEE = REFERENCE
+            controls[:, 15] = np.radians(knee_l)
+            controls[:, 16] = np.radians(ankle_r)
+            controls[:, 17] = np.radians(ankle_l)
+            controls[:, 18] = np.radians(0.4 * hip_l)
+            controls[:, 19] = np.radians(0.4 * hip_r)
+            controls[:, 20] = np.radians(25.0)
+            controls[:, 21] = np.radians(25.0)
+            controls[:, 22] = root_pos[:, 0]
+            controls[:, 23] = root_pos[:, 1]
 
         # ── Physics substeps per data frame ──────────────────────────────
         steps_per_frame = max(1, round(self.dt / model.opt.timestep))
@@ -548,27 +539,14 @@ class _MuJoCoRunner:
         ridx = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "right_foot_geom")
         lidx = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "left_foot_geom")
 
-        # ── Body IDs for XY-only root tracking ───────────────────────────
-        # We track XY from BVH but let Z (height) be determined by physics
-        # so the connect constraint doesn't fight floor contact forces.
+        # ── Body ID for CoM metrics ───────────────────────────────────────
         torso_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "torso")
-        ref_torso_id = None
-        if self.show_reference:
-            ref_torso_id = mujoco.mj_name2id(
-                model, mujoco.mjtObj.mjOBJ_BODY, "ref_torso")
-
-        # ── Mocap body indices ───────────────────────────────────────────
-        # mocap_pos[0] = prediction root, mocap_pos[1] = reference root
-        ref_root_offset = np.array([0.0, REF_Y_OFFSET, 0.0])
 
         metrics = EvalMetrics.empty()
         qpos_history: List[np.ndarray] = []
 
         # ── Warmup: let actuators settle to frame-0 pose ────────────────
         # 500 steps (0.5 s) to fully settle joints + body height.
-        data.mocap_pos[0] = root_pos[0]
-        if self.show_reference:
-            data.mocap_pos[1] = root_pos[0] + ref_root_offset
         data.ctrl[:] = controls[0]
         for _ in range(500):
             mujoco.mj_step(model, data)
@@ -581,17 +559,7 @@ class _MuJoCoRunner:
                 if viewer_obj is not None and not viewer_obj.is_running():
                     break
 
-                # Drive root position via mocap body.
-                # Track XY from BVH; let Z (height) float with physics
-                # so the connect constraint doesn't fight floor contact forces.
-                data.mocap_pos[0, :2] = root_pos[t, :2]
-                data.mocap_pos[0, 2] = data.xpos[torso_id, 2]
-                if self.show_reference:
-                    data.mocap_pos[1, 0] = root_pos[t, 0]
-                    data.mocap_pos[1, 1] = root_pos[t, 1] + REF_Y_OFFSET
-                    data.mocap_pos[1, 2] = data.xpos[ref_torso_id, 2]
-
-                # Drive joint actuators
+                # Drive all actuators (joints + root XY)
                 data.ctrl[:] = controls[t]
 
                 # Physics substeps
@@ -708,9 +676,6 @@ class _MuJoCoRunner:
                 print(f"[MuJoCo] Viewer failed ({exc}), falling back to headless.")
                 # Reset state for headless re-run
                 data = mujoco.MjData(model)
-                data.mocap_pos[0] = root_pos[0]
-                if self.show_reference:
-                    data.mocap_pos[1] = root_pos[0] + ref_root_offset
                 data.ctrl[:] = controls[0]
                 for _ in range(500):
                     mujoco.mj_step(model, data)
