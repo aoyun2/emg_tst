@@ -13,26 +13,36 @@ Download:
     python -m mocap_evaluation.cmu_downloader
 
 Returned database dict (all angles in **degrees**, all arrays at TARGET_FPS):
-    knee_right      : (N,)   right knee included angle (180 = straight)
-    knee_left       : (N,)   left  knee included angle (180 = straight)
-    hip_right       : (N,)   right hip included angle (180 = neutral/straight)
-    hip_left        : (N,)   left  hip included angle (180 = neutral/straight)
-    ankle_right     : (N,)   right ankle included angle (180 = neutral/straight)
-    ankle_left      : (N,)   left  ankle included angle (180 = neutral/straight)
-    pelvis_tilt     : (N,)   anterior pelvic tilt (+= anterior)
-    trunk_lean      : (N,)   trunk forward lean (+= forward)
-    shoulder_right  : (N,)   right shoulder included angle (180 = neutral)
-    shoulder_left   : (N,)   left  shoulder included angle (180 = neutral)
-    elbow_right     : (N,)   right elbow included angle (180 = straight)
-    elbow_left      : (N,)   left  elbow included angle (180 = straight)
-    root_pitch      : (N,)   root orientation pitch (degrees, BVH Xrotation)
-    root_yaw        : (N,)   root orientation yaw (degrees, BVH Yrotation)
-    root_roll       : (N,)   root orientation roll (degrees, BVH Zrotation)
-    root_pos        : (N, 3) pelvis position in metres
-    fps             : float  always TARGET_FPS after resampling
-    source          : str    e.g. "cmu_bvh+aggregated"
-    categories      : (N,) str array — per-frame motion category label (optional)
-    file_boundaries : list of (start, end, filename, category) tuples
+
+    Legs (included angle: 180 = straight/neutral):
+        hip_right, hip_left, knee_right, knee_left,
+        ankle_right, ankle_left, toe_right, toe_left
+
+    Spine chain (included angle):
+        pelvis_tilt, trunk_lean, upper_trunk
+
+    Head (included angle):
+        neck, head
+
+    Arms (included angle):
+        clavicle_right, clavicle_left,
+        shoulder_right, shoulder_left,
+        elbow_right, elbow_left,
+        wrist_right, wrist_left
+
+    Fingers (included angle):
+        finger_right, finger_index_right, thumb_right,
+        finger_left, finger_index_left, thumb_left
+
+    Root orientation (raw BVH degrees):
+        root_pitch, root_yaw, root_roll
+
+    Other:
+        root_pos        : (N, 3) pelvis position in metres (MuJoCo Z-up)
+        fps             : float  always TARGET_FPS after resampling
+        source          : str    e.g. "cmu_bvh+aggregated"
+        categories      : (N,) str array — per-frame category (optional)
+        file_boundaries : list of (start, end, filename, category) tuples
 """
 from __future__ import annotations
 
@@ -55,20 +65,45 @@ TARGET_FPS: int = 200          # match our IMU / EMG pipeline rate
 MOCAP_DATA_DIR = Path("mocap_data")
 
 # Mapping from CMU BVH joint names → our semantic names.
+# Covers ALL non-root joints in the CMU cgspeed skeleton hierarchy.
 _CMU_JOINT_MAP = {
-    "RightLeg":   "knee_right",   # right knee
-    "LeftLeg":    "knee_left",
-    "RightUpLeg": "hip_right",    # right thigh / hip
+    # Legs
+    "RightUpLeg": "hip_right",
     "LeftUpLeg":  "hip_left",
+    "RightLeg":   "knee_right",
+    "LeftLeg":    "knee_left",
     "RightFoot":  "ankle_right",
     "LeftFoot":   "ankle_left",
+    "RightToeBase": "toe_right",
+    "LeftToeBase":  "toe_left",
+    # Spine chain
     "LowerBack":  "pelvis_tilt",
     "Spine":      "trunk_lean",
-    "RightArm":   "shoulder_right",   # upper-arm flexion/extension
-    "LeftArm":    "shoulder_left",
-    "RightForeArm": "elbow_right",    # elbow flexion
-    "LeftForeArm":  "elbow_left",
+    "Spine1":     "upper_trunk",
+    # Head chain
+    "Neck":       "neck",
+    "Head":       "head",
+    # Shoulder girdle (clavicle) + arms
+    "RightShoulder": "clavicle_right",
+    "LeftShoulder":  "clavicle_left",
+    "RightArm":      "shoulder_right",
+    "LeftArm":       "shoulder_left",
+    "RightForeArm":  "elbow_right",
+    "LeftForeArm":   "elbow_left",
+    # Hands
+    "RightHand":  "wrist_right",
+    "LeftHand":   "wrist_left",
+    # Fingers
+    "RightFingerBase":  "finger_right",
+    "RightHandIndex1":  "finger_index_right",
+    "RThumb":           "thumb_right",
+    "LeftFingerBase":   "finger_left",
+    "LeftHandIndex1":   "finger_index_left",
+    "LThumb":           "thumb_left",
 }
+
+# All semantic joint keys (excluding root_pos and root_pitch/yaw/roll)
+_ALL_JOINT_KEYS = list(_CMU_JOINT_MAP.values())
 
 # ── Normal gait kinematics from Winter (2009) ─────────────────────────────────
 # Each dict maps gait-cycle percentage [0, 100] → angle in degrees.
@@ -152,39 +187,44 @@ def _extract_angles_from_bvh(parser: BVHParser) -> Optional[dict]:
         if k in angles and float(angles[k].mean()) < -5.0:
             angles[k] = -angles[k]
 
-    # Knees: flexion is always positive, abs() is safe
-    for k in ("knee_right", "knee_left"):
+    # Knees & elbows: flexion is always positive, abs() is safe
+    for k in ("knee_right", "knee_left", "elbow_right", "elbow_left"):
         if k in angles:
             angles[k] = np.clip(180.0 - np.abs(angles[k]), 0.0, 180.0).astype(np.float32)
 
-    # Hips & ankles: MUST preserve sign — negative = extension/plantarflexion.
-    # Using abs() here collapsed the 40°+ walking range to ~10° one-directional
-    # motion, making the model appear to stand still.
-    for k in ("hip_right", "hip_left", "ankle_right", "ankle_left"):
+    # Hips, ankles, toes: MUST preserve sign for extension/plantarflexion.
+    for k in ("hip_right", "hip_left", "ankle_right", "ankle_left",
+              "toe_right", "toe_left"):
         if k in angles:
             angles[k] = (180.0 - angles[k]).astype(np.float32)
 
-    # Pelvis/trunk: typically small symmetric values, abs() is fine
-    for k in ("pelvis_tilt", "trunk_lean"):
+    # Spine chain, neck, head: typically small symmetric values
+    for k in ("pelvis_tilt", "trunk_lean", "upper_trunk", "neck", "head"):
         if k in angles:
             angles[k] = np.clip(180.0 - np.abs(angles[k]), 0.0, 180.0).astype(np.float32)
 
-    # Shoulders & elbows: same sign-flip heuristic as hips, then included-angle
-    for k in ("shoulder_right", "shoulder_left"):
+    # Shoulders & clavicles: sign-flip heuristic, then included-angle
+    for k in ("shoulder_right", "shoulder_left",
+              "clavicle_right", "clavicle_left"):
         if k in angles and float(angles[k].mean()) < -5.0:
             angles[k] = -angles[k]
         if k in angles:
             angles[k] = (180.0 - angles[k]).astype(np.float32)
-    for k in ("elbow_right", "elbow_left"):
+
+    # Wrists: preserve sign
+    for k in ("wrist_right", "wrist_left"):
+        if k in angles:
+            angles[k] = (180.0 - angles[k]).astype(np.float32)
+
+    # Fingers & thumbs: flexion, abs() is safe
+    for k in ("finger_right", "finger_index_right", "thumb_right",
+              "finger_left", "finger_index_left", "thumb_left"):
         if k in angles:
             angles[k] = np.clip(180.0 - np.abs(angles[k]), 0.0, 180.0).astype(np.float32)
 
-    # Fill missing signals with zeros (neutral = 180 for included-angle)
+    # Fill missing signals with neutral (180 = straight/neutral)
     N = len(angles["knee_right"])
-    for k in ("hip_right", "hip_left", "ankle_right", "ankle_left",
-              "pelvis_tilt", "trunk_lean",
-              "shoulder_right", "shoulder_left",
-              "elbow_right", "elbow_left"):
+    for k in _ALL_JOINT_KEYS:
         if k not in angles:
             angles[k] = np.full(N, 180.0, dtype=np.float32)
 
@@ -311,10 +351,7 @@ def _concatenate_databases(dbs: list, meta: Optional[list] = None) -> dict:
            When provided, per-frame ``categories`` array and
            ``file_boundaries`` list are added to the result.
     """
-    keys_1d = ["knee_right", "knee_left", "hip_right", "hip_left",
-               "ankle_right", "ankle_left", "pelvis_tilt", "trunk_lean",
-               "shoulder_right", "shoulder_left", "elbow_right", "elbow_left",
-               "root_pitch", "root_yaw", "root_roll"]
+    keys_1d = _ALL_JOINT_KEYS + ["root_pitch", "root_yaw", "root_roll"]
     result: dict = {}
     for k in keys_1d:
         result[k] = np.concatenate([d[k] for d in dbs])
@@ -341,16 +378,11 @@ def _concatenate_databases(dbs: list, meta: Optional[list] = None) -> dict:
 # ── Cache helpers ─────────────────────────────────────────────────────────────
 
 # Keys that are per-frame 1-D arrays in the database dict.
-_CACHE_KEYS_1D = [
-    "knee_right", "knee_left", "hip_right", "hip_left",
-    "ankle_right", "ankle_left", "pelvis_tilt", "trunk_lean",
-    "shoulder_right", "shoulder_left", "elbow_right", "elbow_left",
-    "root_pitch", "root_yaw", "root_roll",
-]
+_CACHE_KEYS_1D = _ALL_JOINT_KEYS + ["root_pitch", "root_yaw", "root_roll"]
 
 # Bump this when angle extraction or resampling logic changes so that stale
 # caches are automatically invalidated (the fingerprint includes this string).
-_CACHE_VERSION = "v3"
+_CACHE_VERSION = "v4"
 
 
 def _cache_fingerprint(bvh_dir: Path) -> str:
