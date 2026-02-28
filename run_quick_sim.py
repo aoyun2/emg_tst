@@ -64,6 +64,8 @@ pred_good = simulate_prosthetic_walking(
     segment, pred_knee_good, use_gui=False,
     sample_thigh_right=thigh_query,
     save_trajectory='pred_good_traj.npz',
+    show_reference=True,
+    reference_knee=knee_query,
 )
 
 # ── Simulate: bad prediction ─────────────────────────────────────────────
@@ -72,6 +74,8 @@ pred_bad = simulate_prosthetic_walking(
     segment, pred_knee_bad, use_gui=False,
     sample_thigh_right=thigh_query,
     save_trajectory='pred_bad_traj.npz',
+    show_reference=True,
+    reference_knee=knee_query,
 )
 
 # ── Results ───────────────────────────────────────────────────────────────

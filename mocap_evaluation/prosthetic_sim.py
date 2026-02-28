@@ -452,6 +452,7 @@ class _MuJoCoRunner:
         predicted_knee: np.ndarray,
         fall_threshold: float,
         sample_thigh_right: Optional[np.ndarray] = None,
+        reference_knee: Optional[np.ndarray] = None,
     ) -> dict:
         mjcf_str = _build_dual_mjcf() if self.show_reference else _MJCF
         model = mujoco.MjModel.from_xml_string(mjcf_str)
@@ -523,10 +524,15 @@ class _MuJoCoRunner:
 
         if self.show_reference:
             # Reference model: identical to prediction except right knee
-            # uses ground-truth mocap angle instead of model prediction.
+            # uses the reference signal (GT label or matched mocap).
+            if reference_knee is not None:
+                ref_knee_visual = _included_to_flexion(
+                    np.asarray(reference_knee, dtype=np.float64)[:T])
+            else:
+                ref_knee_visual = ref
             controls[:, 10] = np.radians(hip_r)
             controls[:, 11] = np.radians(hip_l)
-            controls[:, 12] = np.radians(ref)       # RIGHT KNEE = GROUND TRUTH
+            controls[:, 12] = np.radians(ref_knee_visual)  # RIGHT KNEE = REFERENCE
             controls[:, 13] = np.radians(knee_l)
             controls[:, 14] = np.radians(ankle_r)
             controls[:, 15] = np.radians(ankle_l)
@@ -799,6 +805,7 @@ def simulate_prosthetic_walking(
     save_trajectory: Optional[str | Path] = None,
     render_gif: Optional[str | Path] = None,
     show_reference: bool = False,
+    reference_knee: Optional[np.ndarray] = None,
 ) -> dict:
     """Run prosthetic gait simulation via MuJoCo physics.
 
@@ -822,9 +829,17 @@ def simulate_prosthetic_walking(
     render_gif :
         Path to save an animated GIF of the simulation.
     show_reference :
-        When True (and use_gui is True), show a semi-transparent
-        reference humanoid alongside the prediction model.  The reference
-        follows full ground-truth mocap including the right knee.
+        When True, show a semi-transparent reference humanoid alongside
+        the prediction model.  The reference follows all mocap joints
+        with its right knee driven by *reference_knee* (or the matched
+        mocap knee if *reference_knee* is None).  Works in both GUI and
+        headless modes (GIF renders and trajectory files will include
+        both humanoids).
+    reference_knee :
+        Right knee signal (included-angle, degrees) for the reference
+        humanoid.  Only used when *show_reference* is True.  Typically
+        set to the ground-truth label so the viewer can compare GT vs
+        prediction side by side.
 
     Returns
     -------
@@ -843,6 +858,7 @@ def simulate_prosthetic_walking(
     ).run(
         mocap_segment, predicted_knee, FALL_HEIGHT_THRESHOLD,
         sample_thigh_right=sample_thigh_right,
+        reference_knee=reference_knee,
     )
 
     # Extract trajectory (not JSON-serialisable, handled separately)

@@ -916,6 +916,8 @@ def evaluate_from_curves(
             sample_thigh_right=thigh_angle,
             save_trajectory=pred_traj,
             render_gif=pred_gif,
+            show_reference=True,
+            reference_knee=knee_label_inc,
         )
 
         match_entry = {
@@ -941,6 +943,8 @@ def evaluate_from_curves(
                 sample_thigh_right=thigh_angle,
                 save_trajectory=bad_traj,
                 render_gif=bad_gif,
+                show_reference=True,
+                reference_knee=knee_label_inc,
             )
             match_entry["bad_prediction_replaced_right_knee"] = bad_metrics
             match_entry["bad_pred_vs_label_rmse_deg"] = float(
