@@ -61,8 +61,13 @@ def plot_simulation(
     title: str,
     out_path: str | Path,
     fps: float = 200.0,
+    knee_label: str = "Driving knee signal",
 ) -> None:
-    """Save a 3-panel plot of simulation results (knee angles, CoM, contacts)."""
+    """Save a 3-panel plot of simulation results (knee angles, CoM, contacts).
+
+    *knee_label* is the legend label for the knee signal that drove the
+    simulation's right knee actuator (e.g. "Model prediction", "GT label").
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -83,8 +88,8 @@ def plot_simulation(
 
     # Panel 1: Knee angles (flexion convention as stored)
     ax = axes[0]
-    ax.plot(t, ref, label="Reference (mocap)", linewidth=1.5, alpha=0.8)
-    ax.plot(t, pred, label="Predicted (model)", linewidth=1.5)
+    ax.plot(t, ref, label="Reference (matched mocap)", linewidth=1.5, alpha=0.8)
+    ax.plot(t, pred, label=knee_label, linewidth=1.5)
     if metrics.get("fall_detected") and metrics["fall_frame"] >= 0:
         ff = metrics["fall_frame"] / fps
         ax.axvline(ff, color="red", linestyle="--", alpha=0.6, label=f"Fall @ {ff:.2f}s")
@@ -707,7 +712,8 @@ def evaluate(
         if i < 5:
             plot_dir = Path(out_path).with_suffix("") / "plots"
             plot_simulation(metrics, f"Segment {i} ({actual_eval_sec:.0f}s)",
-                            plot_dir / f"segment_{i:04d}_sim.png")
+                            plot_dir / f"segment_{i:04d}_sim.png",
+                            knee_label="Model prediction")
 
     # ── Aggregate summary ────────────────────────────────────────────────────
     def _agg(key):
@@ -912,12 +918,6 @@ def evaluate_from_curves(
             render_gif=pred_gif,
         )
 
-        # Save simulation plots
-        plot_simulation(gt_metrics, f"Ground Truth -- match #{rank} [{cat}]",
-                        plot_dir / "ground_truth_sim.png", fps=mocap_db["fps"])
-        plot_simulation(pred_metrics, f"Good Prediction -- match #{rank} [{cat}]",
-                        plot_dir / "prediction_sim.png", fps=mocap_db["fps"])
-
         match_entry = {
             "match_rank": rank,
             "start_idx": int(start),
@@ -942,8 +942,6 @@ def evaluate_from_curves(
                 save_trajectory=bad_traj,
                 render_gif=bad_gif,
             )
-            plot_simulation(bad_metrics, f"Bad Prediction -- match #{rank} [{cat}]",
-                            plot_dir / "bad_prediction_sim.png", fps=mocap_db["fps"])
             match_entry["bad_prediction_replaced_right_knee"] = bad_metrics
             match_entry["bad_pred_vs_label_rmse_deg"] = float(
                 np.sqrt(np.mean(
@@ -951,7 +949,7 @@ def evaluate_from_curves(
                 ))
             )
 
-        # Save comparison plot showing all runs side by side
+        # Single comparison plot with all runs (GT vs good vs bad)
         plot_simulation_comparison(
             gt_metrics, pred_metrics, bad_metrics,
             title=f"Match #{rank} [{cat}]",
