@@ -5,7 +5,6 @@ Pipeline
 ========
   1. DATA SOURCE
        Rigtest .npy recording  →  knee angle + thigh angle
-       OR external OpenSim gait file (auto-downloaded, no hardware needed)
 
   2. MODEL PREDICTION
        Real checkpoint (--checkpoint --data)  →  predicted knee angle
@@ -31,11 +30,8 @@ Scenarios
 
 Usage
 -----
-  # Auto-detect: uses first data*.npy recording or falls back to OpenSim
+  # Auto-detect: uses first data*.npy recording found in current directory
   python run_sim.py
-
-  # Force external OpenSim data (no hardware needed):
-  python run_sim.py --test-sample
 
   # Specific rigtest file:
   python run_sim.py --data-file data0.npy
@@ -48,6 +44,8 @@ Usage
 
   # Use a smaller/faster matching database:
   python run_sim.py --subset walk_tiny
+
+Note: to validate the pipeline without hardware, use virtual_sim_test.py instead.
 """
 from __future__ import annotations
 
@@ -64,8 +62,6 @@ import numpy as np
 ap = argparse.ArgumentParser(
     description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
 )
-ap.add_argument("--test-sample", action="store_true",
-                help="Use external OpenSim gait data (no hardware needed)")
 ap.add_argument("--data-file", default=None,
                 help="Specific rigtest .npy recording")
 ap.add_argument("--data", default=None,
@@ -120,14 +116,17 @@ def _resample(arr, src_fps, dst_fps):
 x_for_inference = None   # feature windows if using pre-windowed dataset
 
 # ── Auto-detect data source ───────────────────────────────────────────────────
-if not args.test_sample and not args.data_file and not args.data:
+if not args.data_file and not args.data:
     candidates = sorted(p for p in glob.glob("data*.npy") if "samples" not in p)
     if candidates:
         args.data_file = candidates[0]
         print(f"Found recording: {args.data_file}")
     else:
-        print("No data*.npy found — falling back to external OpenSim gait sample.")
-        args.test_sample = True
+        sys.exit(
+            "No data*.npy recordings found in the current directory.\n"
+            "Record data with rigtest.py first, or use virtual_sim_test.py "
+            "to validate the pipeline without hardware."
+        )
 
 # ── Load data ─────────────────────────────────────────────────────────────────
 if args.data:
@@ -143,72 +142,6 @@ if args.data:
     thigh_query = np.concatenate([X_all[i, :, -1] for i in range(len(X_all))]).astype(np.float32)[:max_frames]
     source_label = f"samples_dataset ({n_wins} windows, {args.data})"
     print(f"Source: {args.data}  →  {len(knee_query)} frames")
-
-elif args.test_sample:
-    # External OpenSim gait file (auto-downloaded)
-    print("Fetching external OpenSim gait sample …")
-    from urllib.error import URLError
-    import urllib.request
-
-    _OPENSIM_URLS = [
-        "https://raw.githubusercontent.com/opensim-org/opensim-core/main/"
-        "Applications/CMC/test/subject01_walk1_ik.mot",
-        "https://raw.githubusercontent.com/opensim-org/opensim-core/main/"
-        "Applications/Forward/test/subject01_walk1_ik.mot",
-        "https://raw.githubusercontent.com/opensim-org/opensim-core/main/"
-        "Applications/RRA/test/subject01_walk1_ik.mot",
-    ]
-
-    raw_text = url_used = None
-    for url in _OPENSIM_URLS:
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "emg-tst/1.0"})
-            with urllib.request.urlopen(req, timeout=20) as r:
-                raw_text = r.read().decode("utf-8", errors="replace")
-            url_used = url
-            break
-        except Exception:
-            pass
-    if raw_text is None:
-        sys.exit("Could not download OpenSim gait file. Check network connection.")
-
-    # Parse OpenSim .mot table
-    lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
-    hdr = None
-    for i, ln in enumerate(lines):
-        if ln.lower().startswith("time") or (ln.lower() == "endheader" and i + 1 < len(lines)):
-            hdr = i if ln.lower().startswith("time") else i + 1
-            break
-    cols = lines[hdr].replace("\t", " ").split()
-    arr  = np.genfromtxt(lines[hdr + 1:], delimiter=None, dtype=np.float64)
-    if arr.ndim == 1:
-        arr = arr.reshape(1, -1)
-    tbl  = {c: arr[:, i] for i, c in enumerate(cols)}
-    t_s  = tbl["time"]
-
-    def _pick(names):
-        for n in names:
-            if n in tbl:
-                return tbl[n]
-        raise KeyError(f"None of {names} found in OpenSim file")
-
-    hip_flex  = _pick(["hip_flexion_r", "hip_flexion_right", "hip_flex_r"])
-    knee_raw  = _pick(["knee_angle_r", "knee_flexion_r", "knee_angle_right"])
-
-    def _to_200hz(time_s, signal):
-        t0, t1 = float(time_s[0]), float(time_s[-1])
-        n = max(2, int(round((t1 - t0) * TARGET_FPS)))
-        return np.interp(np.linspace(t0, t1, n), time_s, signal).astype(np.float32)
-
-    thigh_full = np.clip(180.0 - hip_flex, 0.0, 180.0)
-    knee_full  = np.clip(180.0 - np.abs(knee_raw), 0.0, 180.0)
-    thigh_200  = _to_200hz(t_s, thigh_full)
-    knee_200   = _to_200hz(t_s, knee_full)
-
-    knee_query  = knee_200[:max_frames]
-    thigh_query = thigh_200[:max_frames]
-    source_label = f"external OpenSim ({url_used.split('/')[-1]})"
-    print(f"Source: {url_used}  →  {len(knee_query)} frames")
 
 else:
     # Rigtest .npy recording(s)
