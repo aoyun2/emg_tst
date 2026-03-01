@@ -964,6 +964,20 @@ def _collect_step_metrics(
         metrics.fall_frame = t
 
 
+def _termination_looks_like_fall(info) -> bool:
+    """Best-effort check for terminal transitions caused by instability/fall."""
+    if not isinstance(info, dict):
+        return False
+    text = " ".join(str(v).lower() for v in info.values())
+    keys = " ".join(str(k).lower() for k in info.keys())
+    merged = f"{keys} {text}"
+    if any(tok in merged for tok in ("fall", "unstable", "terminated", "unhealthy", "failure")):
+        return True
+    if info.get("is_healthy") is False:
+        return True
+    return False
+
+
 def _build_sim_result(
     metrics: "MoCapActEvalMetrics",
     match_info,
@@ -976,15 +990,12 @@ def _build_sim_result(
     if match_info is not None:
         out["matched_clip"] = match_info["clip_id"]
         out["matched_category"] = match_info.get("category", "unknown")
-    out["fall_prediction"] = {
-        "predicted_fall": metrics.fall_detected,
-        "time_to_fall_s": float(metrics.fall_frame / fps) if metrics.fall_detected else float("inf"),
-        "confidence": 1.0 if metrics.fall_detected else 0.0,
-        "com_velocity": 0.0,
-        "com_acceleration": 0.0,
-        "min_com": float(min(metrics.com_height)) if metrics.com_height else 1.0,
-        "trend_slope": 0.0,
-    }
+    from mocap_evaluation.prosthetic_sim import predict_fall
+    out["fall_prediction"] = predict_fall(np.asarray(metrics.com_height, dtype=np.float64), fps=fps)
+    if metrics.fall_detected:
+        out["fall_prediction"]["predicted_fall"] = True
+        out["fall_prediction"]["time_to_fall_s"] = float(metrics.fall_frame / fps)
+        out["fall_prediction"]["confidence"] = max(0.95, float(out["fall_prediction"].get("confidence", 0.0)))
     return out
 
 
@@ -1153,6 +1164,20 @@ def simulate_mocapact_prosthetic(
         _collect_step_metrics(metrics, env, float(pred_flex_deg[t]), ref_flex_deg, policy_knee_ctrl, t)
 
         if done:
+            latest_com = metrics.com_height[-1] if metrics.com_height else float("nan")
+            if (not metrics.fall_detected) and (
+                (np.isfinite(latest_com) and latest_com < (FALL_HEIGHT_THRESHOLD + 0.08))
+                or _termination_looks_like_fall(info)
+            ):
+                metrics.fall_detected = True
+                metrics.fall_frame = t
+            # In GUI mode keep playback alive by resetting after terminal states.
+            # This avoids the viewer appearing "frozen" on a terminal pose.
+            if use_gui:
+                obs = env.reset()
+                if is_npmp:
+                    embed = policy.initial_state(deterministic=False)
+                continue
             break
 
     if _viewer is not None:
@@ -1362,6 +1387,7 @@ def simulate_three_scenarios_mocapact(
     is_npmp = hasattr(policy, "initial_state")
     embeds = [policy.initial_state(deterministic=False) if is_npmp else None for _ in range(3)]
     dones = [False, False, False]
+    metrics_open = [True, True, True]
 
     had_running_viewer = False
     loop_announced = False
@@ -1385,7 +1411,15 @@ def simulate_three_scenarios_mocapact(
 
             for i in range(3):
                 if dones[i]:
-                    continue
+                    # In GUI mode immediately reset terminated envs so playback
+                    # does not appear frozen in a terminal pose.
+                    if use_gui and any_running:
+                        obss[i] = envs[i].reset()
+                        dones[i] = False
+                        if is_npmp:
+                            embeds[i] = policy.initial_state(deterministic=False)
+                    else:
+                        continue
                 if is_npmp:
                     action, embeds[i] = policy.predict(obss[i], state=embeds[i], deterministic=False)
                 else:
@@ -1396,12 +1430,19 @@ def simulate_three_scenarios_mocapact(
                     action[hip_idx] = _hip_angle_to_ctrl(
                         pred_hip_rad[min(t, len(pred_hip_rad) - 1)], envs[i]
                     )
-                obss[i], _, dones[i], _ = envs[i].step(action)
-                if cycle_idx == 0:
+                obss[i], _, dones[i], info_i = envs[i].step(action)
+                if cycle_idx == 0 and metrics_open[i]:
                     _collect_step_metrics(
                         metrics_list[i], envs[i],
                         float(deg_arrs[i][0][t]), ref_flex_deg, policy_knee_ctrl, t,
                     )
+                    if dones[i] and (not metrics_list[i].fall_detected):
+                        latest_com = metrics_list[i].com_height[-1] if metrics_list[i].com_height else float("nan")
+                        if (np.isfinite(latest_com) and latest_com < (FALL_HEIGHT_THRESHOLD + 0.08)) or _termination_looks_like_fall(info_i):
+                            metrics_list[i].fall_detected = True
+                            metrics_list[i].fall_frame = t
+                    if dones[i]:
+                        metrics_open[i] = False
 
             for v in viewers:
                 if v is not None and v.is_running():
@@ -1411,6 +1452,8 @@ def simulate_three_scenarios_mocapact(
                 progress.update(1)
 
             t += 1
+            if (not use_gui) and all(dones):
+                break
             if t >= T:
                 # In GUI mode keep replaying until the user closes all windows.
                 if use_gui and open_viewers and any_running:
