@@ -230,7 +230,32 @@ def _extract_clip(clip_id: str, h5_path: Path, target_fps: float) -> Optional[Tu
 # ── Clip ID enumeration ───────────────────────────────────────────────────────
 
 def get_clip_ids(subset: str = "all") -> List[str]:
-    """Return clip IDs for the requested dm_control CMU locomotion subset."""
+    """Return clip IDs for the requested subset.
+
+    For ``subset="all"`` the clip list is read directly from the HDF5 file's
+    top-level keys, which yields all ~2589 MoCapAct clips.  dm_control's own
+    ``cmu_subsets.ALL`` only covers its smaller curated set (~836 clips), so
+    we bypass it here to get the full dataset.
+
+    For all other subsets (``locomotion_small``, ``walk_tiny``,
+    ``run_jump_tiny``) the dm_control ``cmu_subsets`` constants are used as
+    before.
+    """
+    if subset.lower() == "all":
+        h5_path = get_h5_path()
+        if h5_path is not None:
+            try:
+                import h5py
+                with h5py.File(str(h5_path), "r") as f:
+                    ids = sorted(f.keys())
+                if ids:
+                    return ids
+            except Exception as exc:
+                warnings.warn(
+                    f"[db] Could not enumerate HDF5 keys for 'all' subset: {exc}. "
+                    "Falling back to dm_control cmu_subsets.ALL."
+                )
+
     from dm_control.locomotion.tasks.reference_pose import cmu_subsets
     attr  = _SUBSET_MAP.get(subset.lower(), subset.upper())
     clips = getattr(cmu_subsets, attr)
@@ -277,8 +302,17 @@ def load_database(
             db  = {k: raw[k] for k in raw.files}
             if "file_boundaries" in db:
                 db["file_boundaries"] = [tuple(b) for b in db["file_boundaries"].tolist()]
-            n = len(db.get("knee_right", []))
+            n     = len(db.get("knee_right", []))
             clips = len(db.get("file_boundaries", []))
+            # Warn if an "all" cache looks like it was built with the old
+            # dm_control clip list (~836) rather than the full HDF5 (~2589).
+            if subset.lower() == "all" and clips < 1000:
+                warnings.warn(
+                    f"[db] Cache {cache_path} has only {clips} clips — it was "
+                    "probably built with dm_control's cmu_subsets.ALL (836 clips) "
+                    "rather than the full MoCapAct HDF5 (2589 clips). "
+                    f"Delete {cache_path} and re-run to rebuild with all clips."
+                )
             print(f"[db] Loaded {n} frames ({clips} clips) from cache {cache_path}")
             return db
         except Exception as exc:
