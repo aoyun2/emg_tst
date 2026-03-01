@@ -543,21 +543,47 @@ def load_multi_clip_policy(
         checkpoint_path = Path(checkpoint_path)
 
     print(f"[MoCapAct] Loading multi-clip policy from {checkpoint_path}")
-    # PyTorch 2.6+ changed torch.load to default weights_only=True, but
-    # PyTorch Lightning calls torch.load internally without weights_only=False.
-    # Patch torch.load temporarily so nested calls default to weights_only=False.
+    # PyTorch 2.6+ made weights_only=True the default. Gym/dm_control objects
+    # embedded in MoCapAct checkpoints are not in the safe globals list, so
+    # loading fails. Register all gym.spaces classes as safe globals (the
+    # officially supported PyTorch 2.6+ approach), then also patch
+    # torch.serialization.load as a belt-and-suspenders fallback in case
+    # PyTorch Lightning resolves the reference before our patch.
     import torch as _torch
+    import torch.serialization as _ts
+
+    # Register gym.spaces types as safe
+    try:
+        import gym.spaces as _gs
+        _safe = [
+            getattr(_gs, _n)
+            for _n in dir(_gs)
+            if isinstance(getattr(_gs, _n), type)
+        ]
+        if hasattr(_ts, "add_safe_globals"):
+            _ts.add_safe_globals(_safe)
+    except Exception:
+        pass
+
+    # Belt-and-suspenders: patch serialization.load so weights_only=False
+    # is the default regardless of how PL calls it.
+    _orig_sl = _ts.load
+    def _permissive_sl(*args, **kwargs):
+        kwargs.setdefault("weights_only", False)
+        return _orig_sl(*args, **kwargs)
+    _ts.load = _permissive_sl  # type: ignore[assignment]
     _orig_load = _torch.load
     def _permissive_load(*args, **kwargs):
         kwargs.setdefault("weights_only", False)
         return _orig_load(*args, **kwargs)
-    _torch.load = _permissive_load
+    _torch.load = _permissive_load  # type: ignore[assignment]
     try:
         policy = npmp_model.NpmpPolicy.load_from_checkpoint(
             str(checkpoint_path), map_location=device,
         )
     finally:
-        _torch.load = _orig_load
+        _ts.load = _orig_sl  # type: ignore[assignment]
+        _torch.load = _orig_load  # type: ignore[assignment]
     policy.eval()
     return policy
 
