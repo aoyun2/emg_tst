@@ -49,6 +49,53 @@ try:
 except Exception:
     pass
 
+# ── pkg_resources compatibility shim ─────────────────────────────────────────
+# On Python 3.12+ Windows venvs, setuptools may be installed but
+# pkg_resources (which lives inside it) is occasionally not importable.
+# mocapact / stable-baselines3 import pkg_resources for version lookups.
+# Provide a minimal shim so the import succeeds; real version queries fall
+# back to importlib.metadata which is always available in Python 3.8+.
+try:
+    import pkg_resources  # noqa: F401
+except ModuleNotFoundError:
+    import sys as _sys
+    import types as _types
+    import importlib.metadata as _ilm
+
+    _pr = _types.ModuleType("pkg_resources")
+
+    class _Dist:  # minimal Distribution stand-in
+        def __init__(self, name: str) -> None:
+            try:
+                self.version = _ilm.version(name)
+            except _ilm.PackageNotFoundError:
+                self.version = "0.0.0"
+        def __str__(self) -> str:
+            return self.version
+
+    class _DistributionNotFound(Exception):
+        pass
+
+    def _get_distribution(name: str) -> _Dist:
+        try:
+            return _Dist(name)
+        except Exception:
+            raise _DistributionNotFound(name)
+
+    def _require(requirements) -> list:
+        return []
+
+    def _parse_version(v: str):
+        from importlib.metadata import version as _v
+        return v
+
+    _pr.get_distribution = _get_distribution  # type: ignore[attr-defined]
+    _pr.require = _require  # type: ignore[attr-defined]
+    _pr.parse_version = _parse_version  # type: ignore[attr-defined]
+    _pr.DistributionNotFound = _DistributionNotFound  # type: ignore[attr-defined]
+    _pr.VersionConflict = Exception  # type: ignore[attr-defined]
+    _sys.modules["pkg_resources"] = _pr
+
 _MOCAPACT_IMPORT_ERROR: str = ""
 try:
     from mocapact.distillation import model as npmp_model
