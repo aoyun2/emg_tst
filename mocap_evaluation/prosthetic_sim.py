@@ -24,7 +24,6 @@ Supports:
 - Mocap segment visualization (stick-figure kinematic rendering for verification)
 - Fall prediction for short segments via CoM trend analysis
 - Trajectory recording for replay and GIF rendering
-- Deterministic kinematic evaluator (dependency fallback)
 
 Public APIs accept included-angle convention (degrees):
 - 180 = straight / neutral
@@ -60,7 +59,7 @@ except Exception:  # pragma: no cover — headless environments
 
 SIM_FPS_DEFAULT = 200.0
 HUMANOID_INIT_POS = np.array([0.0, 0.0, 1.05])
-HUMANOID_INIT_POS_Z = 1.05      # legacy value used by kinematic evaluator
+HUMANOID_INIT_POS_Z = 1.05      # used for default/empty-result CoM height
 FALL_HEIGHT_THRESHOLD = 0.55
 REF_Y_OFFSET = 1.5              # lateral offset for reference humanoid
 
@@ -654,11 +653,17 @@ class _MuJoCoRunner:
         if sample_thigh_right is not None:
             T = int(min(T, len(sample_thigh_right)))
         if T <= 0:
-            out = run_kinematic_evaluation(
-                mocap_segment, predicted_knee,
-                sample_thigh_right=sample_thigh_right,
-            )
+            out = EvalMetrics.empty().to_dict()
             out["mode"] = "mujoco_physics_empty"
+            out["fall_prediction"] = {
+                "predicted_fall": False,
+                "time_to_fall_s": float("inf"),
+                "confidence": 0.0,
+                "com_velocity": 0.0,
+                "com_acceleration": 0.0,
+                "min_com": HUMANOID_INIT_POS_Z,
+                "trend_slope": 0.0,
+            }
             return out
 
         # ── Helper: get a flexion signal from the mocap segment ──────────
@@ -757,6 +762,15 @@ class _MuJoCoRunner:
 
         # ── Body ID for CoM metrics ───────────────────────────────────────
         torso_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
+        root_pitch_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "root_pitch")
+        root_pitch_qadr = model.jnt_qposadr[root_pitch_id]
+        root_pitch_vadr = model.jnt_dofadr[root_pitch_id]
+
+        # Prediction/reference actuator offsets and key leg actuator indices.
+        pred_off = 0
+        ACT_R_HIP_FLEX = pred_off + 0
+        ACT_R_KNEE = pred_off + 6
+        ACT_R_ANKLE = pred_off + 8
 
         metrics = EvalMetrics.empty()
         qpos_history: List[np.ndarray] = []
@@ -782,12 +796,51 @@ class _MuJoCoRunner:
         metrics = EvalMetrics.empty()
 
         def _step_loop(viewer_obj=None):
+            """Run MuJoCo with mocap tracking + stabilizing balance feedback.
+
+            Inspired by physics-from-mocap control strategies:
+            - feedforward preview from mocap target velocity,
+            - low-pass target tracking to avoid discontinuous impulses,
+            - residual balance feedback on right leg using torso pitch state.
+            """
+            ctrl_applied = np.array(controls[0], copy=True)
+            ctrl_vel = np.gradient(controls, axis=0) / max(self.dt, 1e-6)
+
+            tau = 0.025  # 25ms tracking filter
+            alpha = min(1.0, self.dt / max(tau, 1e-6))
+            preview_gain = 0.35
+
+            # Residual balance gains (acts on right leg where prosthetic lives).
+            kp_pitch = 0.28
+            kd_pitch = 0.06
+            k_com_h = 0.45
+
             for t in tqdm(range(T), desc="Simulating", unit="step", leave=False):
                 if viewer_obj is not None and not viewer_obj.is_running():
                     break
 
-                # Drive all joint actuators
-                data.ctrl[:] = controls[t]
+                target = controls[t] + preview_gain * ctrl_vel[t] * self.dt
+
+                # Balance residual from root pitch dynamics and CoM height.
+                pitch = float(data.qpos[root_pitch_qadr])
+                pitch_vel = float(data.qvel[root_pitch_vadr])
+                com_h = float(data.subtree_com[torso_id, 2])
+                com_ref = 0.92
+                bal = -(kp_pitch * pitch + kd_pitch * pitch_vel + k_com_h * (com_h - com_ref))
+
+                # Apply residual mostly on right knee/ankle, partially on hip.
+                target[ACT_R_KNEE] += 1.00 * bal
+                target[ACT_R_ANKLE] += 0.55 * bal
+                target[ACT_R_HIP_FLEX] += 0.35 * bal
+
+                # Keep targets within physically plausible ranges.
+                target[ACT_R_HIP_FLEX] = float(np.clip(target[ACT_R_HIP_FLEX], -1.2, 1.2))
+                target[ACT_R_KNEE] = float(np.clip(target[ACT_R_KNEE], 0.0, 2.4))
+                target[ACT_R_ANKLE] = float(np.clip(target[ACT_R_ANKLE], -1.0, 1.0))
+
+                # Smoothly track final target.
+                ctrl_applied += alpha * (target - ctrl_applied)
+                data.ctrl[:] = ctrl_applied
 
                 # Physics substeps
                 for _ in range(steps_per_frame):
@@ -813,7 +866,7 @@ class _MuJoCoRunner:
                         lc = True
 
                 metrics.com_height.append(com_h)
-                metrics.pred_knee.append(float(pred[t]))
+                metrics.pred_knee.append(float(np.degrees(ctrl_applied[ACT_R_KNEE])))
                 metrics.ref_knee.append(float(ref[t]))
                 if rc:
                     metrics.right_contact_frames.append(t)
@@ -930,68 +983,6 @@ class _MuJoCoRunner:
         )
         return out
 
-
-# ── Kinematic evaluator (fallback when MuJoCo unavailable) ───────────────────
-
-def run_kinematic_evaluation(
-    mocap_segment: dict,
-    predicted_knee: np.ndarray,
-    sample_thigh_right: Optional[np.ndarray] = None,
-) -> dict:
-    ref = _included_to_flexion(np.asarray(mocap_segment["knee_right"], dtype=np.float64))
-    pred = _included_to_flexion(np.asarray(predicted_knee, dtype=np.float64))
-    T = min(len(ref), len(pred))
-    if sample_thigh_right is not None:
-        T = min(T, len(sample_thigh_right))
-    if T <= 0:
-        return {
-            "com_height_mean": HUMANOID_INIT_POS_Z,
-            "com_height_std": 0.0,
-            "fall_detected": False,
-            "fall_frame": -1,
-            "knee_rmse_deg": 0.0,
-            "knee_mae_deg": 0.0,
-            "step_count": 0,
-            "gait_symmetry": 0.0,
-            "stability_score": 0.0,
-            "mode": "kinematic",
-        }
-
-    ref = ref[:T]
-    pred = pred[:T]
-    if sample_thigh_right is not None:
-        hip = _included_to_flexion(np.asarray(sample_thigh_right, dtype=np.float64)[:T])
-    else:
-        hip = _included_to_flexion(np.asarray(
-            mocap_segment.get("hip_right", np.full(T, 180.0)), dtype=np.float64)[:T])
-
-    dev = np.zeros(T, dtype=np.float64)
-    L1 = L2 = 0.45
-    for i in range(T):
-        h = _rad(hip[i])
-        kr = _rad(ref[i])
-        kp = _rad(pred[i])
-        xr = L1 * math.sin(h) + L2 * math.sin(h - kr)
-        zr = -L1 * math.cos(h) - L2 * math.cos(h - kr)
-        xp = L1 * math.sin(h) + L2 * math.sin(h - kp)
-        zp = -L1 * math.cos(h) - L2 * math.cos(h - kp)
-        dev[i] = math.hypot(xp - xr, zp - zr)
-
-    fall = bool(float(np.max(dev)) > 0.18)
-    return {
-        "com_height_mean": float(HUMANOID_INIT_POS_Z - np.mean(0.5 * dev)),
-        "com_height_std": float(np.std(0.5 * dev)),
-        "fall_detected": fall,
-        "fall_frame": int(np.argmax(dev)) if fall else -1,
-        "knee_rmse_deg": float(np.sqrt(np.mean((pred - ref) ** 2))),
-        "knee_mae_deg": float(np.mean(np.abs(pred - ref))),
-        "step_count": -1,
-        "gait_symmetry": 0.0,
-        "stability_score": float(max(0.0, 1.0 - np.max(dev) / 0.30) * (0.6 if fall else 1.0)),
-        "mode": "kinematic",
-    }
-
-
 # ── Public API ───────────────────────────────────────────────────────────────
 
 def simulate_prosthetic_walking(
@@ -1005,7 +996,7 @@ def simulate_prosthetic_walking(
     show_reference: bool = False,
     reference_knee: Optional[np.ndarray] = None,
 ) -> dict:
-    """Run prosthetic gait simulation via MuJoCo physics.
+    """Run prosthetic gait simulation via MuJoCo physics only.
 
     Parameters
     ----------
