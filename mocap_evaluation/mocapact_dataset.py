@@ -106,9 +106,9 @@ def get_locomotion_clip_ids(subset: str = "all") -> List[str]:
     Parameters
     ----------
     subset : str
-        One of ``"all"`` (1,144 clips, ~3.5 hrs — default),
-        ``"locomotion_small"`` (243 clips, ~40 min walking/running),
-        ``"walk_tiny"`` (35 clips), or ``"run_jump_tiny"`` (50 clips).
+        One of ``"all"`` (836 clips — default),
+        ``"locomotion_small"`` (316 clips walking/running),
+        ``"walk_tiny"`` (36 clips), or ``"run_jump_tiny"`` (50 clips).
 
     Returns
     -------
@@ -515,8 +515,8 @@ def load_mocapact_database(
         Resample all clips to this frame rate (default 200 Hz to match EMG pipeline).
     subset :
         Which dm_control CMU clip collection to use.  One of:
-        ``"all"`` (1,144 clips, ~3.5 hrs — **default**),
-        ``"locomotion_small"`` (243 clips, ~40 min walking/running),
+        ``"all"`` (836 clips — **default**),
+        ``"locomotion_small"`` (316 clips walking/running),
         ``"walk_tiny"`` (35 clips), or ``"run_jump_tiny"`` (50 clips).
         Ignored when *clip_ids* is provided explicitly.
     clip_ids :
