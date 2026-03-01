@@ -36,6 +36,7 @@ class EvalConfig:
     robustness: RobustnessConfig = field(default_factory=RobustnessConfig)
     mocapact_checkpoint: Optional[str] = None
     mocapact_model_dir: str = "mocapact_models"
+    use_gui: bool = False
 
 
 def _load_checkpoint(path: str | Path, device: torch.device):
@@ -156,6 +157,7 @@ def _scenario_metrics_mocapact(
         mocap_db=mocap_db,
         best_start=best_start,
         sample_thigh_right=segment.get("thigh"),
+        use_gui=eval_cfg.use_gui,
     )
 
     gt = simulate_prosthetic_walking_mocapact(
