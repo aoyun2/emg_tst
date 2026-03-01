@@ -190,6 +190,30 @@ try:
 except Exception:
     pass
 
+# ── SB3 1.x → 2.x extract_features signature shim ───────────────────────────
+# SB3 2.x changed BaseModel.extract_features(obs) to
+# BaseModel.extract_features(obs, features_extractor).
+# MoCapAct was built against SB3 1.x and calls the old single-arg form.
+try:
+    import importlib as _il
+    import inspect as _inspect
+    _sb3base_mod = _il.import_module("stable_baselines3.common.policies")
+    if hasattr(_sb3base_mod, "BaseModel"):
+        _ef = _sb3base_mod.BaseModel.extract_features
+        _ef_params = list(_inspect.signature(_ef).parameters.keys())
+        # Only patch if features_extractor is a required param (SB3 2.x behaviour)
+        if "features_extractor" in _ef_params and (
+            _inspect.signature(_ef).parameters["features_extractor"].default
+            is _inspect.Parameter.empty
+        ):
+            def _patched_ef(self, obs, features_extractor=None):
+                if features_extractor is None:
+                    features_extractor = self.features_extractor
+                return _ef(self, obs, features_extractor)
+            _sb3base_mod.BaseModel.extract_features = _patched_ef  # type: ignore[method-assign]
+except Exception:
+    pass
+
 # ── pkg_resources compatibility shim ─────────────────────────────────────────
 # On Python 3.12+ Windows venvs, setuptools may be installed but
 # pkg_resources (which lives inside it) is occasionally not importable.
