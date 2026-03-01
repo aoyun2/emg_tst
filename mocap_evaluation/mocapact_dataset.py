@@ -42,6 +42,11 @@ _CACHE_FILE = ".cache_mocapact.npz"
 _KNEE_QPOS_FALLBACK = 47   # rtibiarx qpos index
 _HIP_QPOS_FALLBACK  = 41   # rfemurry qpos index (was rfemury — corrected)
 
+# Number of root DOFs in the CMU humanoid free joint (3 position + 4 quaternion).
+# HDF5 `walker/joints_pos` stores only hinge DOFs (no root), so the hinge-only
+# index = qpos_addr - _CMU_ROOT_DOFS.
+_CMU_ROOT_DOFS = 7
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -188,26 +193,47 @@ def _load_via_hdf5_loader(clip_id: str, knee_addr: int, hip_addr: int) -> Option
         traj = tl.load(clip_id)
 
         # as_dict() is the canonical API in newer dm_control versions.
-        # Keys are "walker/joints" (hinge-only, no root DOFs).
+        # "walker/joints_pos" / "walker/joints" are hinge-only (no root DOFs);
+        # "qpos" is the full generalized position including root DOFs.
         try:
             d = traj.as_dict()
-            for key in ("walker/joints", "joints", "walker/joints_pos"):
-                if key in d:
-                    data = np.asarray(d[key], dtype=np.float32)
-                    if data.ndim == 2 and data.shape[1] > max(knee_addr, hip_addr):
-                        fps = float(getattr(traj, "fps", _NATIVE_FPS))
-                        return data[:, knee_addr], data[:, hip_addr], fps
+            # (key, is_full_qpos)
+            for key, is_full_qpos in (
+                ("walker/joints_pos", False),
+                ("walker/joints",     False),
+                ("joints",            False),
+                ("qpos",              True),
+            ):
+                if key not in d:
+                    continue
+                data = np.asarray(d[key], dtype=np.float32)
+                if data.ndim != 2:
+                    continue
+                k_idx = knee_addr if is_full_qpos else knee_addr - _CMU_ROOT_DOFS
+                h_idx = hip_addr  if is_full_qpos else hip_addr  - _CMU_ROOT_DOFS
+                if k_idx < 0 or h_idx < 0 or data.shape[1] <= max(k_idx, h_idx):
+                    continue
+                fps = float(getattr(traj, "fps", _NATIVE_FPS))
+                return data[:, k_idx], data[:, h_idx], fps
         except Exception:
             pass
 
         # Fallback: direct attribute access (older dm_control versions).
-        for attr in ("qpos", "joints_pos", "joint_pos", "joints"):
+        # "qpos" contains root DOFs; others are hinge-only.
+        for attr, is_full_qpos in (
+            ("qpos",       True),
+            ("joints_pos", False),
+            ("joint_pos",  False),
+            ("joints",     False),
+        ):
             data = getattr(traj, attr, None)
             if data is not None:
                 data = np.asarray(data, dtype=np.float32)
-                if data.ndim == 2 and data.shape[1] > max(knee_addr, hip_addr):
+                k_idx = knee_addr if is_full_qpos else knee_addr - _CMU_ROOT_DOFS
+                h_idx = hip_addr  if is_full_qpos else hip_addr  - _CMU_ROOT_DOFS
+                if data.ndim == 2 and k_idx >= 0 and h_idx >= 0 and data.shape[1] > max(k_idx, h_idx):
                     fps = float(getattr(traj, "fps", _NATIVE_FPS))
-                    return data[:, knee_addr], data[:, hip_addr], fps
+                    return data[:, k_idx], data[:, h_idx], fps
     except Exception:
         pass
     return None
@@ -217,7 +243,11 @@ def _load_via_hdf5_direct(clip_id: str, knee_addr: int, hip_addr: int) -> Option
     """Read joint data directly from the consolidated CMU mocap H5 file with h5py.
 
     The consolidated file (~/.dm_control/cmu_2020_*.h5) has the structure:
-        clip_id / walkers / walker_0 / joints   (hinge joints, shape [T, J])
+        clip_id / walker / joints_pos   (hinge joints only, shape [T, 56])
+
+    ``walker/joints_pos`` and ``walker/joints`` are hinge-only (no root DOFs),
+    so the index into them is qpos_addr - _CMU_ROOT_DOFS.  ``qpos`` (if present)
+    is the full generalized-position vector and uses qpos addresses directly.
 
     Returns (knee_rad, hip_rad, fps) or None.
     """
@@ -233,21 +263,26 @@ def _load_via_hdf5_direct(clip_id: str, knee_addr: int, hip_addr: int) -> Option
                 return None
             clip_grp = f[clip_id]
 
-            # Try known paths for joint angle data within the clip group.
+            # (key, is_full_qpos) — ordered most-likely-first.
+            # is_full_qpos=False means data is hinge-only; indices need -_CMU_ROOT_DOFS.
             joint_key_candidates = [
-                "walkers/walker_0/joints",
-                "walkers/0/joints",
-                "joints",
-                "qpos",
-                "joints_pos",
+                ("walker/joints_pos",     False),  # dm_control consolidated format
+                ("walker/joints",         False),  # alternative dm_control name
+                ("walkers/walker_0/joints", False),
+                ("walkers/0/joints",      False),
+                ("joints",                False),
+                ("qpos",                  True),   # full qpos including root DOFs
+                ("joints_pos",            False),
             ]
-            for key in joint_key_candidates:
+            for key, is_full_qpos in joint_key_candidates:
                 if key not in clip_grp:
                     continue
                 data = np.asarray(clip_grp[key], dtype=np.float32)
                 if data.ndim != 2:
                     continue
-                if data.shape[1] <= max(knee_addr, hip_addr):
+                k_idx = knee_addr if is_full_qpos else knee_addr - _CMU_ROOT_DOFS
+                h_idx = hip_addr  if is_full_qpos else hip_addr  - _CMU_ROOT_DOFS
+                if k_idx < 0 or h_idx < 0 or data.shape[1] <= max(k_idx, h_idx):
                     continue
                 dt = clip_grp.attrs.get("dt", None) or f.attrs.get("dt", None)
                 fps_attr = clip_grp.attrs.get("fps", None) or f.attrs.get("fps", None)
@@ -257,7 +292,7 @@ def _load_via_hdf5_direct(clip_id: str, knee_addr: int, hip_addr: int) -> Option
                     fps = float(fps_attr)
                 else:
                     fps = _NATIVE_FPS
-                return data[:, knee_addr], data[:, hip_addr], fps
+                return data[:, k_idx], data[:, h_idx], fps
     except Exception:
         pass
     return None
