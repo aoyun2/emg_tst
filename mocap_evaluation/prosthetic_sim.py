@@ -64,6 +64,31 @@ HUMANOID_INIT_POS_Z = 1.05      # legacy value used by kinematic evaluator
 FALL_HEIGHT_THRESHOLD = 0.55
 REF_Y_OFFSET = 1.5              # lateral offset for reference humanoid
 
+# GL rendering may not be available in headless environments.  After the first
+# failure to create a MuJoCo Renderer we set this flag so subsequent calls skip
+# the attempt entirely (avoids C++ recursive-init abort).
+_GL_RENDERER_AVAILABLE: Optional[bool] = None  # None = not yet tested
+
+
+def _gl_available() -> bool:
+    """Test whether MuJoCo's GL renderer can be initialised."""
+    global _GL_RENDERER_AVAILABLE
+    if _GL_RENDERER_AVAILABLE is not None:
+        return _GL_RENDERER_AVAILABLE
+    if not _MUJOCO_AVAILABLE:
+        _GL_RENDERER_AVAILABLE = False
+        return False
+    try:
+        _test_model = mujoco.MjModel.from_xml_string(
+            "<mujoco><worldbody><body><geom size='0.1'/></body></worldbody></mujoco>"
+        )
+        _test_r = mujoco.Renderer(_test_model, height=8, width=8)
+        _test_r.close()
+        _GL_RENDERER_AVAILABLE = True
+    except Exception:
+        _GL_RENDERER_AVAILABLE = False
+    return _GL_RENDERER_AVAILABLE
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1178,19 +1203,19 @@ def _render_gif(
     gif_fps: int = 30,
 ) -> None:
     """Render a SimTrajectory to an animated GIF (headless-safe)."""
+    if not _gl_available():
+        print("[gif] GL renderer not available (headless?), skipping GIF.")
+        return
+
     try:
         from PIL import Image
     except ImportError:
         print("[gif] Pillow not installed, skipping GIF render.")
         return
 
-    try:
-        model = mujoco.MjModel.from_xml_string(traj.mjcf)
-        data = mujoco.MjData(model)
-        renderer = mujoco.Renderer(model, height=height, width=width)
-    except Exception as exc:
-        print(f"[gif] Renderer init failed ({exc}), skipping GIF.")
-        return
+    model = mujoco.MjModel.from_xml_string(traj.mjcf)
+    data = mujoco.MjData(model)
+    renderer = mujoco.Renderer(model, height=height, width=width)
 
     T = len(traj.qpos_history)
     skip = max(1, round(traj.fps / gif_fps))
@@ -1247,7 +1272,276 @@ def render_simulation_gif(
     _render_gif(traj, Path(output_path), width=width, height=height, gif_fps=gif_fps)
 
 
-# ── Mocap segment visualization ──────────────────────────────────────────────
+# ── Kinematic mocap playback (no physics) ────────────────────────────────────
+
+
+def render_mocap_kinematic(
+    mocap_segment: dict,
+    fps: float = SIM_FPS_DEFAULT,
+    save_trajectory: Optional[str | Path] = None,
+    render_gif: Optional[str | Path] = None,
+    use_gui: bool = False,
+    gif_fps: int = 30,
+) -> Optional[SimTrajectory]:
+    """Pose the humanoid kinematically from the mocap segment (NO physics).
+
+    This drives every joint directly from the BVH data — including
+    right knee — so you see exactly what the loaded mocap segment
+    describes.  No gravity, no contacts, no simulation.  Pure data
+    playback.
+
+    Use this to visually verify the loaded segment before comparing
+    with physics simulation output.
+
+    Parameters
+    ----------
+    mocap_segment : dict from motion matching (all joint keys + root_pos)
+    fps : data frame rate
+    save_trajectory : save .npz for later ``replay_trajectory()``
+    render_gif : save an animated GIF of the kinematic playback
+    use_gui : if True, open MuJoCo viewer for interactive viewing
+    gif_fps : frame rate for GIF output
+
+    Returns
+    -------
+    SimTrajectory or None
+    """
+    if not _MUJOCO_AVAILABLE:
+        print("[kinematic] MuJoCo not available, cannot render.")
+        return None
+
+    model = mujoco.MjModel.from_xml_string(_MJCF)
+    data = mujoco.MjData(model)
+
+    T = len(mocap_segment.get("knee_right", []))
+    if T == 0:
+        return None
+
+    dt = 1.0 / max(fps, 1.0)
+
+    # ── Build control signals (same logic as _fill_humanoid) ─────────
+    def _flex(key, default=180.0):
+        return _included_to_flexion(_pad_or_trim(
+            mocap_segment.get(key, np.full(T, default)), T, default))
+
+    def _extra(key):
+        raw = _pad_or_trim(
+            mocap_segment.get(key, np.zeros(T)), T, default=0.0)
+        return np.radians(raw)
+
+    # Root XY
+    root_pos = mocap_segment.get("root_pos", np.zeros((T, 3)))
+    if np.ndim(root_pos) == 2:
+        root_pos = root_pos[:T]
+    else:
+        root_pos = np.zeros((T, 3))
+    root_xy = root_pos[:, :2].copy()
+    root_xy -= root_xy[0]
+
+    # Use mocap hip for right side (kinematic = pure BVH)
+    hip_r = _flex("hip_right")
+
+    NA = N_ACT_PER_HUMANOID
+    controls = np.zeros((T, NA), dtype=np.float64)
+
+    # Legs
+    controls[:, 0] = np.radians(hip_r)
+    controls[:, 1] = _extra("hip_right_abd")
+    controls[:, 2] = _extra("hip_right_rot")
+    controls[:, 3] = np.radians(_flex("hip_left"))
+    controls[:, 4] = _extra("hip_left_abd")
+    controls[:, 5] = _extra("hip_left_rot")
+    controls[:, 6] = np.radians(_flex("knee_right"))  # MOCAP knee (not prediction)
+    controls[:, 7] = np.radians(_flex("knee_left"))
+    controls[:, 8] = np.radians(_flex("ankle_right"))
+    controls[:, 9] = np.radians(_flex("ankle_left"))
+    controls[:, 10] = np.radians(_flex("toe_right"))
+    controls[:, 11] = np.radians(_flex("toe_left"))
+    # Spine
+    controls[:, 12] = np.radians(_flex("pelvis_tilt"))
+    controls[:, 13] = _extra("pelvis_lateral")
+    controls[:, 14] = _extra("pelvis_rotation")
+    controls[:, 15] = np.radians(_flex("trunk_lean"))
+    controls[:, 16] = _extra("trunk_lateral")
+    controls[:, 17] = _extra("trunk_rotation")
+    controls[:, 18] = np.radians(_flex("upper_trunk"))
+    controls[:, 19] = _extra("upper_trunk_lateral")
+    controls[:, 20] = _extra("upper_trunk_rotation")
+    controls[:, 21] = np.radians(_flex("neck"))
+    controls[:, 22] = np.radians(_flex("head"))
+    # Clavicles
+    controls[:, 23] = np.radians(_flex("clavicle_right"))
+    controls[:, 24] = np.radians(_flex("clavicle_left"))
+    # Shoulders + elbows
+    controls[:, 25] = np.radians(_flex("shoulder_right"))
+    controls[:, 26] = _extra("shoulder_right_abd")
+    controls[:, 27] = _extra("shoulder_right_rot")
+    controls[:, 28] = np.radians(_flex("shoulder_left"))
+    controls[:, 29] = _extra("shoulder_left_abd")
+    controls[:, 30] = _extra("shoulder_left_rot")
+    controls[:, 31] = np.radians(_flex("elbow_right"))
+    controls[:, 32] = np.radians(_flex("elbow_left"))
+    # Wrists
+    controls[:, 33] = np.radians(_flex("wrist_right"))
+    controls[:, 34] = np.radians(_flex("wrist_left"))
+    # Fingers
+    controls[:, 35] = np.radians(_flex("finger_right"))
+    controls[:, 36] = np.radians(_flex("finger_index_right"))
+    controls[:, 37] = np.radians(_flex("thumb_right"))
+    controls[:, 38] = np.radians(_flex("finger_left"))
+    controls[:, 39] = np.radians(_flex("finger_index_left"))
+    controls[:, 40] = np.radians(_flex("thumb_left"))
+    # Root XY
+    controls[:, 41] = root_xy[:, 0]
+    controls[:, 42] = root_xy[:, 1]
+
+    # ── Kinematic playback: set qpos directly (no physics) ───────────
+    qpos_history: List[np.ndarray] = []
+
+    for t_idx in range(T):
+        # Set each actuated joint directly to its target value
+        for i in range(model.nu):
+            jnt_id = model.actuator_trnid[i, 0]
+            data.qpos[model.jnt_qposadr[jnt_id]] = controls[t_idx, i]
+        # Forward kinematics only (no dynamics)
+        mujoco.mj_forward(model, data)
+        qpos_history.append(data.qpos.copy())
+
+    traj = SimTrajectory(
+        qpos_history=np.array(qpos_history),
+        fps=fps,
+        mjcf=_MJCF,
+    )
+
+    # ── Save outputs ─────────────────────────────────────────────────
+    if save_trajectory is not None:
+        p = Path(save_trajectory)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        _save_trajectory(p, traj)
+        print(f"[kinematic] Trajectory saved -> {p}")
+
+    if render_gif is not None:
+        p = Path(render_gif)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        _render_gif(traj, p, gif_fps=gif_fps)
+
+    if use_gui and _VIEWER_AVAILABLE:
+        print("[kinematic] Playing mocap segment (kinematic, no physics).")
+        print("[kinematic] This is the RAW BVH data — what the mocap says.")
+        replay_trajectory(traj, speed=1.0)
+
+    return traj
+
+
+def render_mocap_side_by_side_gif(
+    mocap_segment: dict,
+    sim_trajectory: SimTrajectory | str | Path,
+    output_path: str | Path,
+    fps: float = SIM_FPS_DEFAULT,
+    gif_fps: int = 30,
+    width: int = 640,
+    height: int = 480,
+) -> None:
+    """Render a side-by-side GIF: left = kinematic mocap, right = physics sim.
+
+    This is the key visualization for verifying that the physics simulation
+    lines up with what the mocap data actually describes.
+    """
+    if not _MUJOCO_AVAILABLE:
+        print("[side-by-side] MuJoCo not available.")
+        return
+
+    if not _gl_available():
+        print("[side-by-side] GL renderer not available (headless?), skipping.")
+        return
+
+    try:
+        from PIL import Image
+    except ImportError:
+        print("[side-by-side] Pillow not installed, skipping.")
+        return
+
+    # Build kinematic trajectory
+    kinematic_traj = render_mocap_kinematic(mocap_segment, fps=fps)
+    if kinematic_traj is None:
+        return
+
+    # Load sim trajectory if path
+    if isinstance(sim_trajectory, (str, Path)):
+        sim_traj = load_trajectory(sim_trajectory)
+    else:
+        sim_traj = sim_trajectory
+
+    T = min(len(kinematic_traj.qpos_history), len(sim_traj.qpos_history))
+    skip = max(1, round(fps / gif_fps))
+    frame_indices = list(range(0, T, skip))
+
+    # Set up two renderers
+    kin_model = mujoco.MjModel.from_xml_string(kinematic_traj.mjcf)
+    kin_data = mujoco.MjData(kin_model)
+
+    sim_model = mujoco.MjModel.from_xml_string(sim_traj.mjcf)
+    sim_data = mujoco.MjData(sim_model)
+
+    try:
+        kin_renderer = mujoco.Renderer(kin_model, height=height, width=width)
+        sim_renderer = mujoco.Renderer(sim_model, height=height, width=width)
+    except Exception as exc:
+        print(f"[side-by-side] Renderer init failed ({exc}), skipping.")
+        return
+
+    # Cameras
+    def _make_camera(model_obj):
+        cam = mujoco.MjvCamera()
+        cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+        cam.trackbodyid = mujoco.mj_name2id(
+            model_obj, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
+        cam.distance = 3.5
+        cam.elevation = -15.0
+        cam.azimuth = 90.0
+        return cam
+
+    kin_cam = _make_camera(kin_model)
+    sim_cam = _make_camera(sim_model)
+
+    frames: List = []
+    for t_idx in tqdm(frame_indices, desc="Rendering side-by-side", unit="frame",
+                      leave=False):
+        # Kinematic frame
+        kin_data.qpos[:] = kinematic_traj.qpos_history[t_idx]
+        mujoco.mj_forward(kin_model, kin_data)
+        kin_renderer.update_scene(kin_data, camera=kin_cam)
+        kin_pixels = kin_renderer.render()
+
+        # Sim frame
+        sim_data.qpos[:len(sim_traj.qpos_history[t_idx])] = sim_traj.qpos_history[t_idx]
+        mujoco.mj_forward(sim_model, sim_data)
+        sim_renderer.update_scene(sim_data, camera=sim_cam)
+        sim_pixels = sim_renderer.render()
+
+        # Concatenate horizontally with a label bar
+        combined = np.concatenate([kin_pixels, sim_pixels], axis=1)
+        frames.append(Image.fromarray(combined))
+
+    if not frames:
+        return
+
+    duration_ms = int(1000 * skip / fps)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    frames[0].save(
+        output_path,
+        save_all=True,
+        append_images=frames[1:],
+        duration=duration_ms,
+        loop=0,
+    )
+    dur_s = T / fps
+    print(f"[side-by-side] Saved {len(frames)}-frame GIF ({dur_s:.1f}s) -> {output_path}")
+    print(f"[side-by-side] Left = kinematic mocap (raw BVH), Right = physics sim")
+
+
+# ── Mocap segment visualization (plots) ──────────────────────────────────────
 
 
 def visualize_mocap_segment(

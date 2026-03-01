@@ -50,6 +50,8 @@ from mocap_evaluation.prosthetic_sim import (
     render_simulation_gif,
     visualize_mocap_segment,
     visualize_sim_vs_mocap,
+    render_mocap_kinematic,
+    render_mocap_side_by_side_gif,
 )
 from mocap_evaluation.sample_data import extract_real_sample_curves
 from mocap_evaluation.external_sample_data import extract_external_sample_curves
@@ -724,7 +726,7 @@ def evaluate(
         metrics["segment_seconds"] = actual_eval_sec
         per_segment.append(metrics)
 
-        # Save plots for first 5 segments
+        # Save plots and kinematic rendering for first 5 segments
         if i < 5:
             plot_dir = Path(out_path).with_suffix("") / "plots"
             plot_simulation(metrics, f"Segment {i} ({actual_eval_sec:.0f}s)",
@@ -741,6 +743,12 @@ def evaluate(
                 segment, metrics,
                 out_path=plot_dir / f"segment_{i:04d}_sim_vs_mocap.png",
                 title=f"Segment {i} — sim vs mocap",
+            )
+            # Kinematic mocap playback (raw BVH data)
+            render_mocap_kinematic(
+                segment,
+                save_trajectory=plot_dir / f"segment_{i:04d}_mocap_kinematic.traj.npz",
+                render_gif=plot_dir / f"segment_{i:04d}_mocap_kinematic.gif",
             )
 
     # ── Aggregate summary ────────────────────────────────────────────────────
@@ -869,19 +877,15 @@ def play_mocap_match(
     except Exception as exc:
         print(f"[play-match] Could not save comparison plot: {exc}")
 
-    # ── Play in MuJoCo viewer ────────────────────────────────────────────
-    print(f"[play-match] Playing matched mocap motion in MuJoCo viewer...")
-    print(f"[play-match] All joints driven by mocap (including right knee).")
-
-    # Drive ALL joints from mocap — use mocap knee_right as the "prediction"
-    # so the viewer shows the pure matched motion.
+    # ── Kinematic playback (raw BVH) ─────────────────────────────────────
     traj_path = save_trajectory or "play_match_traj.npz"
-    simulate_prosthetic_walking(
+    print(f"[play-match] Playing matched mocap kinematically (raw BVH data)...")
+    render_mocap_kinematic(
         segment,
-        segment["knee_right"],   # mocap knee → "prediction" slot
-        use_gui=True,
-        show_reference=False,
+        fps=mocap_db["fps"],
         save_trajectory=traj_path,
+        render_gif="play_match_mocap.gif",
+        use_gui=True,
     )
     print(f"[play-match] Trajectory saved -> {traj_path}")
 
@@ -932,6 +936,16 @@ def evaluate_from_curves(
         pred_gif = (plot_dir / "prediction_sim.gif") if render_gifs else None
         gt_traj = plot_dir / "ground_truth_sim.traj.npz"
         pred_traj = plot_dir / "prediction_sim.traj.npz"
+        kin_traj_path = plot_dir / "mocap_kinematic.traj.npz"
+        kin_gif = (plot_dir / "mocap_kinematic.gif") if render_gifs else None
+
+        # ── Kinematic mocap playback: see the raw BVH data ─────────
+        render_mocap_kinematic(
+            segment,
+            fps=mocap_db["fps"],
+            save_trajectory=kin_traj_path,
+            render_gif=kin_gif,
+        )
 
         # All simulations use the sample's own thigh angle for the right hip
         # actuator so that the right leg (thigh + knee) is always driven by
@@ -1018,6 +1032,21 @@ def evaluate_from_curves(
                 fps=mocap_db["fps"],
                 title=f"Bad pred sim vs mocap #{rank} [{cat}]",
             )
+
+        # ── Side-by-side GIFs: kinematic mocap vs physics sim ──
+        if render_gifs:
+            render_mocap_side_by_side_gif(
+                segment, pred_traj,
+                output_path=plot_dir / "side_by_side_pred.gif",
+                fps=mocap_db["fps"],
+            )
+            if bad_metrics is not None:
+                render_mocap_side_by_side_gif(
+                    segment,
+                    plot_dir / "bad_prediction_sim.traj.npz",
+                    output_path=plot_dir / "side_by_side_bad.gif",
+                    fps=mocap_db["fps"],
+                )
 
         # Single comparison plot with all runs (GT vs good vs bad)
         plot_simulation_comparison(
