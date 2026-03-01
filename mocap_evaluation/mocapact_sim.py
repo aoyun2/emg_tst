@@ -29,11 +29,7 @@ pip install mocapact dm_control stable-baselines3
 """
 from __future__ import annotations
 
-import math
-import os
 import subprocess
-import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -76,27 +72,25 @@ SIM_FPS = 30.0          # MoCapAct default control freq (dm_control default)
 FALL_HEIGHT_THRESHOLD = 0.55
 DEFAULT_EVAL_SECONDS = 4.0
 
-# dm_control CMU humanoid right knee actuator name
+# dm_control CMU humanoid right knee actuator name and known alphabetical index.
+# The 56 actuators are sorted alphabetically; rtibiarx lands at index 44.
 _RIGHT_KNEE_ACTUATOR = "rtibiarx"
+_RIGHT_KNEE_IDX_FALLBACK = 44
 
-# Default multi-clip policy checkpoint name (relative to model dir)
-_DEFAULT_MULTI_CLIP_CKPT = "multi_clip/all/eval/train_rsi/best_model.ckpt"
+# Right knee joint range in the CMU humanoid V2020 (radians, flexion only).
+# 0.01 rad ≈ fully extended, 2.967 rad ≈ 170° flexion.
+_KNEE_RANGE_RAD = (0.01, 2.96706)
+
+# Default multi-clip policy checkpoint (relative to model dir).
+# The HF repo bundles a tarball with two variants:
+#   multiclip_policy/full_dataset/model/model.ckpt       (trained on ALL clips)
+#   multiclip_policy/locomotion_dataset/model/model.ckpt  (locomotion subset)
+_DEFAULT_MULTI_CLIP_CKPT = "multiclip_policy/locomotion_dataset/model/model.ckpt"
+_DEFAULT_MULTI_CLIP_CKPT_ALT = "multiclip_policy/full_dataset/model/model.ckpt"
 
 # HuggingFace model repo
 _HF_REPO = "microsoft/mocapact-models"
-
-# Walking-related CMU clip subsets (motion categories that involve locomotion)
-_WALKING_CLIPS = [
-    "CMU_016_22",   # walk
-    "CMU_016_25",   # walk
-    "CMU_016_47",   # walk
-    "CMU_035_17",   # walk
-    "CMU_035_26",   # walk
-    "CMU_008_02",   # walk
-    "CMU_008_03",   # walk
-    "CMU_007_01",   # walk
-    "CMU_007_02",   # walk
-]
+_HF_TARBALL = "multiclip_policy.tar.gz"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -195,56 +189,56 @@ class MoCapActEvalMetrics:
 
 # ── Knee-actuator index discovery ────────────────────────────────────────────
 
+def _get_physics(env):
+    """Extract the dm_control physics handle from a Gym-wrapped environment."""
+    if hasattr(env, "unwrapped") and hasattr(env.unwrapped, "_env"):
+        return env.unwrapped._env.physics
+    if hasattr(env, "physics"):
+        return env.physics
+    raise AttributeError("Cannot extract dm_control physics from env")
+
+
 def _find_knee_actuator_index(env) -> int:
     """Find the index of the right knee actuator in dm_control's action array.
 
     The CMU humanoid has 56 actuators sorted alphabetically.  The right knee
-    actuator is named ``rtibiarx``.  We find it by inspecting the physics
-    model rather than hard-coding the index.
+    actuator is named ``rtibiarx`` and sits at index 44.  We verify by
+    inspecting the physics model and fall back to the known index.
     """
-    physics = env.unwrapped._env.physics if hasattr(env, "unwrapped") else env.physics
-    model = physics.model
-    for i in range(model.nu):
-        name = physics.model.id2name(i, "actuator")
-        if name == _RIGHT_KNEE_ACTUATOR:
-            return i
-    # Fallback: search by substring
-    for i in range(model.nu):
-        name = physics.model.id2name(i, "actuator")
-        if "rtibia" in name:
-            return i
-    raise ValueError(
-        f"Could not find right knee actuator ({_RIGHT_KNEE_ACTUATOR}) "
-        f"in the CMU humanoid model (n_actuators={model.nu})"
-    )
+    try:
+        physics = _get_physics(env)
+        for i in range(physics.model.nu):
+            name = physics.model.id2name(i, "actuator")
+            if name == _RIGHT_KNEE_ACTUATOR:
+                return i
+    except Exception:
+        pass
+    # Known alphabetical index for rtibiarx in the CMU humanoid V2020
+    return _RIGHT_KNEE_IDX_FALLBACK
 
 
-def _knee_angle_to_ctrl(angle_flexion_rad: float, env) -> float:
+def _knee_angle_to_ctrl(angle_flexion_rad: float, env=None) -> float:
     """Convert a knee flexion angle (radians) to the normalized [-1, 1] ctrl value.
 
-    MoCapAct's position-controlled humanoid uses normalized actions.  The
-    actual joint range is encoded in the actuator's ctrlrange and gain
-    parameters.  We reverse the mapping:
-
-        ctrl = (2 * angle - offset) / scale
-
-    where offset and scale come from the walker's calibration.
+    The CMU humanoid V2020 uses position actuators with normalised controls
+    in [-1, 1].  The joint range for ``rtibiarx`` is [0.01, 2.967] rad.
+    We read the range from the physics model when available, otherwise use
+    the known constant.
     """
-    physics = env.unwrapped._env.physics if hasattr(env, "unwrapped") else env.physics
-    model = physics.model
-    knee_idx = _find_knee_actuator_index(env)
+    low, high = _KNEE_RANGE_RAD
 
-    # Actuator ctrlrange is [-1, 1] (normalized).  The joint range is stored
-    # in the joint limits.  The position actuator maps ctrl linearly to the
-    # joint range.
-    jnt_id = model.actuator_trnid[knee_idx, 0]
-    jnt_range = model.jnt_range[jnt_id]  # [low, high] in radians
-    low, high = float(jnt_range[0]), float(jnt_range[1])
+    # Try to read the actual range from the physics model
+    if env is not None:
+        try:
+            physics = _get_physics(env)
+            knee_idx = _find_knee_actuator_index(env)
+            jnt_id = physics.model.actuator_trnid[knee_idx, 0]
+            jnt_range = physics.model.jnt_range[jnt_id]
+            low, high = float(jnt_range[0]), float(jnt_range[1])
+        except Exception:
+            pass
 
-    # Clamp the angle to the joint range
     angle_clamped = max(low, min(high, angle_flexion_rad))
-
-    # Linear mapping: joint range [low, high] -> ctrl [-1, 1]
     if abs(high - low) < 1e-10:
         return 0.0
     ctrl = 2.0 * (angle_clamped - low) / (high - low) - 1.0
@@ -254,45 +248,71 @@ def _knee_angle_to_ctrl(angle_flexion_rad: float, env) -> float:
 # ── Policy loading ───────────────────────────────────────────────────────────
 
 def _download_model(model_dir: str | Path) -> Path:
-    """Download the default multi-clip policy from HuggingFace if needed."""
+    """Download the default multi-clip policy from HuggingFace if needed.
+
+    The HF repo ``microsoft/mocapact-models`` hosts a tarball
+    ``multiclip_policy.tar.gz`` that extracts to::
+
+        multiclip_policy/
+            locomotion_dataset/model/model.ckpt   (walking-focused)
+            full_dataset/model/model.ckpt         (all clips)
+    """
     model_dir = Path(model_dir)
-    ckpt_path = model_dir / _DEFAULT_MULTI_CLIP_CKPT
-    if ckpt_path.exists():
-        return ckpt_path
+
+    # Check if either variant already exists
+    for rel in (_DEFAULT_MULTI_CLIP_CKPT, _DEFAULT_MULTI_CLIP_CKPT_ALT):
+        p = model_dir / rel
+        if p.exists():
+            return p
 
     print(f"[MoCapAct] Downloading multi-clip policy to {model_dir} ...")
     model_dir.mkdir(parents=True, exist_ok=True)
 
+    # Try huggingface_hub first
     try:
         from huggingface_hub import hf_hub_download
-        local = hf_hub_download(
+        tarball = hf_hub_download(
             repo_id=_HF_REPO,
-            filename=_DEFAULT_MULTI_CLIP_CKPT,
+            filename=_HF_TARBALL,
             cache_dir=str(model_dir / ".cache"),
             local_dir=str(model_dir),
         )
-        return Path(local)
+        import tarfile
+        with tarfile.open(tarball, "r:gz") as tf:
+            tf.extractall(path=str(model_dir))
+        for rel in (_DEFAULT_MULTI_CLIP_CKPT, _DEFAULT_MULTI_CLIP_CKPT_ALT):
+            p = model_dir / rel
+            if p.exists():
+                return p
     except ImportError:
         pass
+    except Exception as exc:
+        print(f"[MoCapAct] huggingface_hub download failed: {exc}")
 
-    # Fallback: use git lfs
+    # Fallback: huggingface-cli
     try:
         subprocess.check_call(
-            ["git", "lfs", "clone", "--depth=1",
-             f"https://huggingface.co/{_HF_REPO}", str(model_dir)],
+            ["huggingface-cli", "download", _HF_REPO, _HF_TARBALL,
+             "--local-dir", str(model_dir)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-        if ckpt_path.exists():
-            return ckpt_path
+        tarball_path = model_dir / _HF_TARBALL
+        if tarball_path.exists():
+            import tarfile
+            with tarfile.open(str(tarball_path), "r:gz") as tf:
+                tf.extractall(path=str(model_dir))
+        for rel in (_DEFAULT_MULTI_CLIP_CKPT, _DEFAULT_MULTI_CLIP_CKPT_ALT):
+            p = model_dir / rel
+            if p.exists():
+                return p
     except Exception:
         pass
 
     raise FileNotFoundError(
         f"Could not download MoCapAct model.  Please download manually:\n"
         f"  pip install huggingface_hub\n"
-        f"  python -c \"from huggingface_hub import hf_hub_download; "
-        f"hf_hub_download('{_HF_REPO}', '{_DEFAULT_MULTI_CLIP_CKPT}')\"\n"
-        f"Or clone the repo: git lfs clone https://huggingface.co/{_HF_REPO} {model_dir}"
+        f"  huggingface-cli download {_HF_REPO} {_HF_TARBALL} --local-dir {model_dir}\n"
+        f"  cd {model_dir} && tar xzf {_HF_TARBALL}"
     )
 
 
@@ -369,20 +389,23 @@ def load_clip_expert(
 # ── Environment creation ─────────────────────────────────────────────────────
 
 def create_walking_env(
-    dataset: Optional[str] = None,
-    ref_steps: Tuple[int, ...] = (1, 2, 3, 4, 5),
-    clip_id: Optional[str] = None,
+    dataset=None,
+    ref_steps: Optional[Tuple[int, ...]] = None,
+    policy=None,
 ):
     """Create a MoCapAct tracking Gym environment for walking evaluation.
 
     Parameters
     ----------
     dataset :
-        CMU subset key (e.g. ``"ALL"``).  Defaults to ``cmu_subsets.ALL``.
+        A ``ClipCollection`` or subset constant.  Defaults to
+        ``cmu_subsets.LOCOMOTION_SMALL`` (~40 min of walking clips).
     ref_steps :
-        Lookahead steps for the reference pose.
-    clip_id :
-        Specific clip to track (e.g. ``"CMU_016_22"``).
+        Lookahead steps for the reference pose.  If None and *policy*
+        is provided, uses ``policy.ref_steps``.  Otherwise ``(1,2,3,4,5)``.
+    policy :
+        If provided, reads ``ref_steps`` from the policy to ensure
+        compatibility with its observation expectations.
 
     Returns
     -------
@@ -396,7 +419,13 @@ def create_walking_env(
         )
 
     if dataset is None:
-        dataset = cmu_subsets.ALL
+        dataset = cmu_subsets.LOCOMOTION_SMALL
+
+    if ref_steps is None:
+        if policy is not None and hasattr(policy, "ref_steps"):
+            ref_steps = tuple(policy.ref_steps)
+        else:
+            ref_steps = (1, 2, 3, 4, 5)
 
     env = mocapact_tracking.MocapTrackingGymEnv(
         dataset=dataset,
@@ -465,7 +494,7 @@ def simulate_mocapact_prosthetic(
         )
 
     # ── Create environment ────────────────────────────────────────────
-    env = create_walking_env()
+    env = create_walking_env(policy=policy)
     knee_idx = _find_knee_actuator_index(env)
 
     # ── Prepare predicted knee signal ─────────────────────────────────
@@ -486,8 +515,7 @@ def simulate_mocapact_prosthetic(
     obs = env.reset()
 
     # Get the physics handle for metric collection
-    dm_env = env.unwrapped._env if hasattr(env, "unwrapped") else env
-    physics = dm_env.physics
+    physics = _get_physics(env)
 
     # Initialise the policy's recurrent state (embedding for NPMP)
     is_npmp = hasattr(policy, "initial_state")
@@ -503,6 +531,9 @@ def simulate_mocapact_prosthetic(
         else:
             action, _ = policy.predict(obs, deterministic=True)
 
+        # Remember the policy's intended knee action before we override it
+        policy_knee_ctrl = float(action[knee_idx])
+
         # ── Override right knee with prosthetic prediction ────────────
         knee_ctrl = _knee_angle_to_ctrl(pred_flex_rad[t], env)
         action[knee_idx] = knee_ctrl
@@ -511,52 +542,47 @@ def simulate_mocapact_prosthetic(
         obs, reward, done, info = env.step(action)
 
         # ── Collect metrics ───────────────────────────────────────────
-        com_h = float(physics.named.data.subtree_com["root", "z"])
+        # CoM height: use the whole-body subtree_com (body index 0 = root)
+        try:
+            com_h = float(physics.data.subtree_com[0, 2])
+        except Exception:
+            com_h = float(physics.center_of_mass()[2])
         metrics.com_height.append(com_h)
         metrics.pred_knee.append(float(pred_flex_deg[t]))
 
         if ref_flex_deg is not None:
-            ref_val = float(ref_flex_deg[t]) if t < len(ref_flex_deg) else metrics.ref_knee[-1] if metrics.ref_knee else 0.0
+            ref_val = float(ref_flex_deg[min(t, len(ref_flex_deg) - 1)])
             metrics.ref_knee.append(ref_val)
         else:
             # Use the policy's natural action (before override) as reference
-            natural_knee_ctrl = float(action[knee_idx])
-            # Rough inverse mapping: ctrl [-1, 1] -> angle
-            jnt_id = physics.model.actuator_trnid[knee_idx, 0]
-            jnt_range = physics.model.jnt_range[jnt_id]
-            low, high = float(jnt_range[0]), float(jnt_range[1])
-            natural_angle = low + (natural_knee_ctrl + 1.0) * (high - low) / 2.0
-            metrics.ref_knee.append(float(np.degrees(natural_angle)))
+            low, high = _KNEE_RANGE_RAD
+            natural_angle_rad = low + (policy_knee_ctrl + 1.0) * (high - low) / 2.0
+            metrics.ref_knee.append(float(np.degrees(natural_angle_rad)))
 
         # ── Foot contact detection ────────────────────────────────────
-        # dm_control provides contact data through the physics engine
         try:
             ncon = physics.data.ncon
+            r_contact = False
+            l_contact = False
             for c in range(ncon):
-                geom1 = physics.data.contact[c].geom1
-                geom2 = physics.data.contact[c].geom2
-                names = set()
+                geom1 = int(physics.data.contact[c].geom1)
+                geom2 = int(physics.data.contact[c].geom2)
                 try:
-                    names.add(physics.model.id2name(geom1, "geom"))
-                    names.add(physics.model.id2name(geom2, "geom"))
+                    n1 = physics.model.id2name(geom1, "geom")
+                    n2 = physics.model.id2name(geom2, "geom")
                 except Exception:
-                    pass
-                # dm_control CMU humanoid foot geom names
-                if any("rfoot" in n or "rtoes" in n for n in names):
-                    metrics.right_contact_frames.append(t)
+                    continue
+                pair = n1 + " " + n2
+                if not r_contact and ("rfoot" in pair or "rtoes" in pair):
+                    r_contact = True
+                if not l_contact and ("lfoot" in pair or "ltoes" in pair):
+                    l_contact = True
+                if r_contact and l_contact:
                     break
-            for c in range(ncon):
-                geom1 = physics.data.contact[c].geom1
-                geom2 = physics.data.contact[c].geom2
-                names = set()
-                try:
-                    names.add(physics.model.id2name(geom1, "geom"))
-                    names.add(physics.model.id2name(geom2, "geom"))
-                except Exception:
-                    pass
-                if any("lfoot" in n or "ltoes" in n for n in names):
-                    metrics.left_contact_frames.append(t)
-                    break
+            if r_contact:
+                metrics.right_contact_frames.append(t)
+            if l_contact:
+                metrics.left_contact_frames.append(t)
         except Exception:
             pass
 
