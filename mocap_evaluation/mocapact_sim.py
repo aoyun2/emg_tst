@@ -543,9 +543,21 @@ def load_multi_clip_policy(
         checkpoint_path = Path(checkpoint_path)
 
     print(f"[MoCapAct] Loading multi-clip policy from {checkpoint_path}")
-    policy = npmp_model.NpmpPolicy.load_from_checkpoint(
-        str(checkpoint_path), map_location=device,
-    )
+    # PyTorch 2.6+ changed torch.load to default weights_only=True, but
+    # PyTorch Lightning calls torch.load internally without weights_only=False.
+    # Patch torch.load temporarily so nested calls default to weights_only=False.
+    import torch as _torch
+    _orig_load = _torch.load
+    def _permissive_load(*args, **kwargs):
+        kwargs.setdefault("weights_only", False)
+        return _orig_load(*args, **kwargs)
+    _torch.load = _permissive_load
+    try:
+        policy = npmp_model.NpmpPolicy.load_from_checkpoint(
+            str(checkpoint_path), map_location=device,
+        )
+    finally:
+        _torch.load = _orig_load
     policy.eval()
     return policy
 
