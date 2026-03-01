@@ -49,17 +49,46 @@ try:
 except Exception:
     pass
 
-# ── NumPy 2.0 compatibility shim ─────────────────────────────────────────────
-# np.infty was removed in NumPy 2.0; gym/dm_control still reference it.
+# ── NumPy 2.0 compatibility shims ────────────────────────────────────────────
+# Many attributes were removed in NumPy 2.0 that gym/sb3/dm_control still use.
 import numpy as _np
-if not hasattr(_np, "infty"):
-    _np.infty = _np.inf  # type: ignore[attr-defined]
+_NP2_ALIASES = {
+    # scalar type aliases removed in 2.0
+    "bool": _np.bool_,
+    "int": _np.int_,
+    "float": _np.float64,
+    "complex": _np.complex128,
+    "object": _np.object_,
+    "str": _np.str_,
+    # scalar constant aliases removed in 2.0
+    "infty": _np.inf,
+    "Inf": _np.inf,
+    "Infinity": _np.inf,
+    "NaN": float("nan"),
+    "PINF": _np.inf,
+    "NINF": -_np.inf,
+    # reduction aliases removed in 2.0
+    "product": _np.prod,
+    "cumproduct": _np.cumprod,
+    "sometrue": _np.any,
+    "alltrue": _np.all,
+    "row_stack": _np.vstack,
+    # type alias removed in 2.0
+    "VisibleDeprecationWarning": getattr(_np, "exceptions", _np).VisibleDeprecationWarning
+    if hasattr(getattr(_np, "exceptions", None) or object(), "VisibleDeprecationWarning")
+    else DeprecationWarning,
+}
+for _name, _val in _NP2_ALIASES.items():
+    if not hasattr(_np, _name):
+        setattr(_np, _name, _val)
 
-# ── gym.spaces.Box compatibility shim ────────────────────────────────────────
-# gym >= 0.26 added low_repr / high_repr string attributes to Box.
-# Checkpoints saved with newer gym will fail to unpickle on older installs.
+# ── gym.spaces compatibility shims ───────────────────────────────────────────
+# Patch missing attributes introduced in different gym versions so that
+# checkpoints saved with one gym version load correctly on another.
 try:
     import gym.spaces.box as _gsb
+
+    # low_repr / high_repr: added in gym 0.26, missing on older installs
     if not hasattr(_gsb.Box, "low_repr"):
         @property  # type: ignore[misc]
         def _low_repr(self) -> str:
@@ -69,6 +98,36 @@ try:
             return str(self.high)
         _gsb.Box.low_repr = _low_repr   # type: ignore[attr-defined]
         _gsb.Box.high_repr = _high_repr  # type: ignore[attr-defined]
+
+    # is_bounded: added in gym 0.26; older Box had no such method
+    if not hasattr(_gsb.Box, "is_bounded"):
+        def _is_bounded(self, manner: str = "both") -> bool:
+            below = bool(_np.all(_np.isfinite(self.low)))
+            above = bool(_np.all(_np.isfinite(self.high)))
+            if manner == "both":
+                return below and above
+            if manner == "below":
+                return below
+            if manner == "above":
+                return above
+            raise ValueError(f"manner must be 'both', 'below', or 'above', got {manner!r}")
+        _gsb.Box.is_bounded = _is_bounded  # type: ignore[attr-defined]
+except Exception:
+    pass
+
+try:
+    import gym.spaces.space as _gss
+    # np_random property: gym 0.26 renamed _np_random → np_random
+    if not hasattr(_gss.Space, "np_random"):
+        @property  # type: ignore[misc]
+        def _np_random_prop(self):
+            if not hasattr(self, "_np_random"):
+                self._np_random = _np.random.RandomState()
+            return self._np_random
+        @_np_random_prop.setter
+        def _np_random_prop(self, rng):
+            self._np_random = rng
+        _gss.Space.np_random = _np_random_prop  # type: ignore[attr-defined]
 except Exception:
     pass
 
