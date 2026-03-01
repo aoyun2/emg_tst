@@ -4,3 +4,4 @@ __pycache__/
 mocap_data/
 .venv
 .cache_mocapact*.npz
+mocapact_models/
