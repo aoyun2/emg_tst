@@ -155,72 +155,109 @@ def _get_qpos_addresses(env) -> Tuple[int, int]:
 
 # ── Reference data loading ────────────────────────────────────────────────────
 
+def _get_cmu_mocap_path() -> Optional[Path]:
+    """Return path to the consolidated CMU mocap H5 file, downloading if needed.
+
+    dm_control ships without the ~454 MB CMU dataset; it is auto-downloaded to
+    ~/.dm_control/ on first access via cmu_mocap_data.get_path_for_cmu().
+    """
+    try:
+        from dm_control.locomotion.mocap import cmu_mocap_data
+        p = Path(cmu_mocap_data.get_path_for_cmu())
+        return p if p.exists() else None
+    except Exception:
+        return None
+
+
 def _load_via_hdf5_loader(clip_id: str, knee_addr: int, hip_addr: int) -> Optional[Tuple[np.ndarray, np.ndarray, float]]:
     """Try loading via dm_control's HDF5TrajectoryLoader.
 
     Returns (knee_rad, hip_rad, fps) or None.
     """
     try:
-        import dm_control
         from dm_control.locomotion.mocap import loader as mocap_loader
-        assets_dir = Path(dm_control.__file__).parent / "locomotion" / "mocap" / "assets"
 
-        if not assets_dir.is_dir():
+        mocap_path = _get_cmu_mocap_path()
+        if mocap_path is None:
             return None
 
-        if hasattr(mocap_loader, "HDF5TrajectoryLoader"):
-            tl = mocap_loader.HDF5TrajectoryLoader(str(assets_dir))
-            traj = tl.load(clip_id)
-            # Different versions use different attribute names
-            for attr in ("qpos", "joints_pos", "joint_pos"):
-                data = getattr(traj, attr, None)
-                if data is not None:
-                    data = np.asarray(data, dtype=np.float32)
+        if not hasattr(mocap_loader, "HDF5TrajectoryLoader"):
+            return None
+
+        tl = mocap_loader.HDF5TrajectoryLoader(str(mocap_path))
+        traj = tl.load(clip_id)
+
+        # as_dict() is the canonical API in newer dm_control versions.
+        # Keys are "walker/joints" (hinge-only, no root DOFs).
+        try:
+            d = traj.as_dict()
+            for key in ("walker/joints", "joints", "walker/joints_pos"):
+                if key in d:
+                    data = np.asarray(d[key], dtype=np.float32)
                     if data.ndim == 2 and data.shape[1] > max(knee_addr, hip_addr):
                         fps = float(getattr(traj, "fps", _NATIVE_FPS))
                         return data[:, knee_addr], data[:, hip_addr], fps
+        except Exception:
+            pass
+
+        # Fallback: direct attribute access (older dm_control versions).
+        for attr in ("qpos", "joints_pos", "joint_pos", "joints"):
+            data = getattr(traj, attr, None)
+            if data is not None:
+                data = np.asarray(data, dtype=np.float32)
+                if data.ndim == 2 and data.shape[1] > max(knee_addr, hip_addr):
+                    fps = float(getattr(traj, "fps", _NATIVE_FPS))
+                    return data[:, knee_addr], data[:, hip_addr], fps
     except Exception:
         pass
     return None
 
 
 def _load_via_hdf5_direct(clip_id: str, knee_addr: int, hip_addr: int) -> Optional[Tuple[np.ndarray, np.ndarray, float]]:
-    """Read dm_control HDF5 asset files directly with h5py.
+    """Read joint data directly from the consolidated CMU mocap H5 file with h5py.
+
+    The consolidated file (~/.dm_control/cmu_2020_*.h5) has the structure:
+        clip_id / walkers / walker_0 / joints   (hinge joints, shape [T, J])
 
     Returns (knee_rad, hip_rad, fps) or None.
     """
     try:
         import h5py
-        import dm_control
-        assets_dir = Path(dm_control.__file__).parent / "locomotion" / "mocap" / "assets"
 
-        candidates = [
-            assets_dir / f"{clip_id}.hdf5",
-            assets_dir / f"{clip_id.lower()}.hdf5",
-        ]
-        for p in candidates:
-            if not p.exists():
-                continue
-            with h5py.File(str(p), "r") as f:
-                # Try known dataset names
-                for key in ("qpos", "joints_pos", "joint_pos", "walker/joints_pos"):
-                    if key not in f:
-                        continue
-                    data = np.asarray(f[key], dtype=np.float32)
-                    if data.ndim != 2:
-                        continue
-                    if data.shape[1] <= max(knee_addr, hip_addr):
-                        continue
-                    # Read fps from attributes (try dt → fps, or fps directly)
-                    dt = f.attrs.get("dt", None)
-                    fps_attr = f.attrs.get("fps", None)
-                    if dt is not None and float(dt) > 0:
-                        fps = 1.0 / float(dt)
-                    elif fps_attr is not None:
-                        fps = float(fps_attr)
-                    else:
-                        fps = _NATIVE_FPS
-                    return data[:, knee_addr], data[:, hip_addr], fps
+        mocap_path = _get_cmu_mocap_path()
+        if mocap_path is None:
+            return None
+
+        with h5py.File(str(mocap_path), "r") as f:
+            if clip_id not in f:
+                return None
+            clip_grp = f[clip_id]
+
+            # Try known paths for joint angle data within the clip group.
+            joint_key_candidates = [
+                "walkers/walker_0/joints",
+                "walkers/0/joints",
+                "joints",
+                "qpos",
+                "joints_pos",
+            ]
+            for key in joint_key_candidates:
+                if key not in clip_grp:
+                    continue
+                data = np.asarray(clip_grp[key], dtype=np.float32)
+                if data.ndim != 2:
+                    continue
+                if data.shape[1] <= max(knee_addr, hip_addr):
+                    continue
+                dt = clip_grp.attrs.get("dt", None) or f.attrs.get("dt", None)
+                fps_attr = clip_grp.attrs.get("fps", None) or f.attrs.get("fps", None)
+                if dt is not None and float(dt) > 0:
+                    fps = 1.0 / float(dt)
+                elif fps_attr is not None:
+                    fps = float(fps_attr)
+                else:
+                    fps = _NATIVE_FPS
+                return data[:, knee_addr], data[:, hip_addr], fps
     except Exception:
         pass
     return None
