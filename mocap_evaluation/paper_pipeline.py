@@ -10,7 +10,8 @@ import torch
 
 from emg_tst.data import StandardScaler
 from emg_tst.model import TSTEncoder, TSTRegressor
-from mocap_evaluation.mocap_loader import TARGET_FPS, load_aggregated_database
+from mocap_evaluation.mocap_loader import TARGET_FPS
+from mocap_evaluation.mocapact_dataset import load_mocapact_database
 from mocap_evaluation.sample_data import extract_real_sample_curves
 from mocap_evaluation.external_sample_data import extract_external_sample_curves
 
@@ -198,9 +199,9 @@ def evaluate_with_checkpoint(checkpoint_path: str, samples_path: str, cfg: EvalC
     target_frames = int(cfg.robustness.eval_seconds * TARGET_FPS)
     segments = _segment_from_windows(x, y, file_id, start, target_frames=target_frames)
 
-    # Load mocap DB: needed for kinematic path (always), and for MoCapAct
-    # path (to resolve DTW match → specific CMU clip for the policy).
-    mocap_db = load_aggregated_database(mocap_root=cfg.mocap_dir, try_download=True, datasets=["cmu"], use_cache=cfg.use_cache)
+    # Load MocapAct reference database for motion matching.
+    # This replaces the CMU BVH database — no separate download required.
+    mocap_db = load_mocapact_database(use_cache=cfg.use_cache)
 
     out = {"mode": "mocapact_checkpoint_eval", "config": asdict(cfg), "segments": []}
     for seg in segments:
@@ -231,10 +232,7 @@ def evaluate_test_sample(cfg: EvalConfig) -> dict:
     pred = knee + 2.5 * np.sin(np.linspace(0, 4 * np.pi, len(knee))).astype(np.float32)
     seg = {"knee": knee, "thigh": thigh}
 
-    mocap_db = load_aggregated_database(
-        mocap_root=cfg.mocap_dir, try_download=True,
-        datasets=["cmu"], use_cache=cfg.use_cache,
-    )
+    mocap_db = load_mocapact_database(use_cache=cfg.use_cache)
 
     match_metrics = _scenario_metrics_mocapact(
         seg, pred.astype(np.float32), cfg.robustness, cfg, mocap_db=mocap_db,

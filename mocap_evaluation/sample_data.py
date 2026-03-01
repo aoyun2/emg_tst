@@ -6,10 +6,8 @@ from pathlib import Path
 
 import numpy as np
 
-from mocap_evaluation.mocap_loader import (
-    TARGET_FPS,
-    load_aggregated_database,
-)
+from mocap_evaluation.mocap_loader import TARGET_FPS
+from mocap_evaluation.mocapact_dataset import load_mocapact_database
 
 
 @dataclass
@@ -34,7 +32,7 @@ def _select_walk_boundary(db: dict) -> tuple[int, int, str, str]:
 
 
 def extract_real_sample_curves(
-    mocap_dir: str | Path = "mocap_data",
+    mocap_dir: str | Path = "mocap_data",  # kept for API compatibility, unused
     seconds: float = 4.0,
     full_database: bool = True,
     seed: int = 13,
@@ -45,7 +43,7 @@ def extract_real_sample_curves(
     The predicted curve is derived from the label curve + light noise so users can
     exercise the matching/simulation pipeline without synthetic Winter templates.
     """
-    db = load_aggregated_database(mocap_root=mocap_dir)
+    db = load_mocapact_database()
 
     start, end, source_file, cat = _select_walk_boundary(db)
     seg_len = end - start

@@ -82,22 +82,23 @@ _RIGHT_KNEE_IDX_FALLBACK = 44
 _KNEE_RANGE_RAD = (0.01, 2.96706)
 
 # dm_control CMU humanoid right hip (sagittal flexion/extension) actuator.
-# rfemury controls the thigh swing in the sagittal plane.
+# rfemurry controls the thigh swing in the sagittal plane (Y-axis rotation).
 # Alphabetically it sits a few positions before rtibiarx; index 37 is the
 # known fallback — runtime discovery is always attempted first.
-_RIGHT_HIP_ACTUATOR = "rfemury"
+_RIGHT_HIP_ACTUATOR = "rfemurry"
 _RIGHT_HIP_IDX_FALLBACK = 37
 
 # Right hip joint range (radians): −60° (extension) to +75° (flexion).
 # Positive = thigh swings forward, negative = thigh swings back.
 _HIP_RANGE_RAD = (-1.047, 1.309)
 
-# Default multi-clip policy checkpoint (relative to model dir).
+# Default multi-clip policy checkpoint search order (relative to model dir).
 # The HF repo bundles a tarball with two variants:
-#   multiclip_policy/full_dataset/model/model.ckpt       (trained on ALL clips)
-#   multiclip_policy/locomotion_dataset/model/model.ckpt  (locomotion subset)
-_DEFAULT_MULTI_CLIP_CKPT = "multiclip_policy/locomotion_dataset/model/model.ckpt"
-_DEFAULT_MULTI_CLIP_CKPT_ALT = "multiclip_policy/full_dataset/model/model.ckpt"
+#   multiclip_policy/full_dataset/model/model.ckpt       (trained on ALL 1,144 clips)
+#   multiclip_policy/locomotion_dataset/model/model.ckpt  (locomotion subset only)
+# full_dataset is preferred so the policy can follow any CMU clip.
+_DEFAULT_MULTI_CLIP_CKPT = "multiclip_policy/full_dataset/model/model.ckpt"
+_DEFAULT_MULTI_CLIP_CKPT_ALT = "multiclip_policy/locomotion_dataset/model/model.ckpt"
 
 # HuggingFace model repo
 _HF_REPO = "microsoft/mocapact-models"
@@ -160,8 +161,16 @@ def resolve_clip_from_match(
         start, end = int(start), int(end)
         if start <= best_start < end:
             frame_in_file = best_start - start
+            # fname may be a MocapAct clip ID (e.g. "CMU_009_12") stored
+            # directly by mocapact_dataset, or a BVH filename (e.g. "09_12.bvh")
+            # from the legacy CMU loader.
+            fname = str(fname)
+            if fname.startswith("CMU_"):
+                clip_id = fname
+            else:
+                clip_id = _bvh_to_clip_id(fname)
             return {
-                "clip_id": _bvh_to_clip_id(fname),
+                "clip_id": clip_id,
                 "bvh_filename": fname,
                 "category": cat,
                 "frame_in_file": frame_in_file,
@@ -286,7 +295,7 @@ def _get_physics(env):
 
 
 def _find_hip_actuator_index(env) -> int:
-    """Find the index of the right hip (rfemury) actuator in dm_control's action array."""
+    """Find the index of the right hip (rfemurry) actuator in dm_control's action array."""
     try:
         physics = _get_physics(env)
         for i in range(physics.model.nu):
@@ -378,8 +387,8 @@ def _download_model(model_dir: str | Path) -> Path:
     ``multiclip_policy.tar.gz`` that extracts to::
 
         multiclip_policy/
-            locomotion_dataset/model/model.ckpt   (walking-focused)
-            full_dataset/model/model.ckpt         (all clips)
+            full_dataset/model/model.ckpt         (all clips — preferred)
+            locomotion_dataset/model/model.ckpt   (walking-focused — fallback)
     """
     model_dir = Path(model_dir)
 
@@ -593,7 +602,7 @@ def simulate_mocapact_prosthetic(
         Model-predicted right knee angle (included-angle, degrees).
     predicted_thigh :
         Recorded right thigh angle (included-angle, degrees).  When provided,
-        overrides the right hip (rfemury) actuator so the thigh swing comes
+        overrides the right hip (rfemurry) actuator so the thigh swing comes
         entirely from your IMU data rather than the MoCapAct policy.
     policy :
         Pre-loaded MoCapAct policy.  If None, loads from checkpoint.
@@ -807,7 +816,7 @@ def simulate_prosthetic_walking_mocapact(
         Right knee angle prediction (included-angle, degrees).
     sample_thigh_right :
         Recorded right thigh angle (included-angle, degrees).  Overrides the
-        right hip (rfemury) actuator so the thigh swing is driven by your IMU
+        right hip (rfemurry) actuator so the thigh swing is driven by your IMU
         data rather than the MoCapAct policy.
     policy_checkpoint :
         Path to MoCapAct multi-clip checkpoint.
