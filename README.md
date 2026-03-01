@@ -19,7 +19,7 @@ flowchart TD
     B -->|"split_to_samples.py"| C["🗂 samples_dataset.npy<br/>1-second windows @ 200 Hz<br/>Shape: [N, 200, 41]"]
     C -->|"run_experiment.py"| D["🧠 Trained TST<br/>5-fold cross-validation<br/>checkpoints/tst_*/fold_*/reg_best.pt"]
     D -->|"visualize.py"| E["📊 Prediction Plots<br/>Angle trajectory overlay<br/>Per-channel features"]
-    D -->|"run_evaluation.py"| F["🏃 MuJoCo Simulation<br/>Gait quality metrics<br/>CoM height · Step count · Symmetry"]
+    D -->|"run_evaluation.py"| F["🏃 Robustness Evaluation<br/>Nominal · Delayed · Noisy control<br/>Stability-based robustness score"]
     G["📹 CMU Mocap DB<br/>2,435 BVH files"] -->|"DTW motion matching"| F
 
     style A fill:#f0f4ff,stroke:#4a6cf7
@@ -194,10 +194,12 @@ flowchart LR
 
     subgraph Sim["MuJoCo Simulation"]
         S1["All joints → mocap reference"]
-        S2["Right knee → model prediction"]
-        S3["CoM height · fall threshold 0.55m<br/>Gait symmetry · Step count<br/>Stability score"]
+        S2["Right knee → predicted control"]
+        S3["Three scenarios:<br/>nominal · delayed · noisy"]
+        S4["Aggregate robustness score<br/>from stability metrics"]
         S1 --> S3
         S2 --> S3
+        S3 --> S4
     end
 
     Q1 --> F1
@@ -217,7 +219,8 @@ flowchart LR
 | **CoM height** | Center of mass height during gait | Fall if `< 0.55 m` |
 | **Gait symmetry** | Right/left step interval ratio | 1.0 = perfect |
 | **Step count** | Contact events detected | Compared vs reference |
-| **Stability score** | Combined metric | Higher = better |
+| **Stability score** | Per-scenario gait stability | Higher = better |
+| **Robustness score** | Mean stability across nominal/delayed/noisy runs | Higher = better |
 | **Knee RMSE/MAE** | Predicted vs. mocap reference | Degrees |
 
 ---
@@ -269,26 +272,27 @@ python -m emg_tst.visualize
 
 Auto-loads the latest checkpoint. Edit `CKPT_PATH` in `visualize.py` to target a specific run.
 
-### 5. Run Mocap Evaluation
+### 5. Run Mocap Evaluation (paper-style robustness protocol)
 
 ```bash
 # Download CMU database (~2,435 BVH files)
 python -m mocap_evaluation.cmu_downloader --dest mocap_data/cmu
 python -m mocap_evaluation.cmu_downloader --verify --dest mocap_data/cmu
 
-# Quick demo — no real recordings needed
+# Evaluate a trained checkpoint
 python -m mocap_evaluation.run_evaluation \
-  --mock-data --mock-seconds 6 \
-  --top-k 5 --full-db \
+  --checkpoint checkpoints/<run>/fold_01/reg_best.pt \
+  --data samples_dataset.npy \
+  --top-k 5 --eval-seconds 4 \
+  --delay-ms 60 --noise-std-deg 6 \
   --out eval_results.json
 
-# With real walking data (external OpenSim source)
+# Test-sample mode (no checkpoint required)
 python -m mocap_evaluation.run_evaluation \
-  --real-walk-data --full-db --top-k 5 \
-  --out eval_real_results.json
-
-# Quick standalone simulation demo
-python run_quick_sim.py
+  --test-sample --test-sample-source external \
+  --top-k 5 --eval-seconds 4 \
+  --delay-ms 60 --noise-std-deg 6 \
+  --out eval_test_sample.json
 ```
 
 ### 6. Visualize a Motion Match
@@ -320,7 +324,8 @@ emg_tst/
 │   ├── mocap_loader.py             # Load BVH → 200 Hz standardized joint angles
 │   ├── motion_matching.py          # DTW-based mocap-to-IMU signal matching
 │   ├── prosthetic_sim.py           # MuJoCo physics simulation
-│   ├── run_evaluation.py           # End-to-end evaluation orchestrator (argparse)
+│   ├── run_evaluation.py           # CLI entrypoint for the robustness evaluation protocol
+│   ├── paper_pipeline.py           # Core paper-style evaluation logic and scoring
 │   ├── visualize_match.py          # Plot matched mocap vs query curves
 │   ├── sample_data.py              # Extract real walking segments from recordings
 │   ├── external_sample_data.py     # External gait data (OpenSim) handling
@@ -370,7 +375,7 @@ checkpoints/tst_*/fold_*/reg_best.pt  (PyTorch .pt)
 
         ↓  run_evaluation.py
 
-eval_results.json  — per-match simulation metrics
+eval_results.json  — per-match nominal/delayed/noisy metrics + robustness scores
 ```
 
 ---
