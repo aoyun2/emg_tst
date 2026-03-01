@@ -175,14 +175,32 @@ def plot_match_quality(
     fps: float,
     out_path: str = "match_quality.png",
 ) -> None:
-    """Save a 2-panel plot showing how well the matched clip aligns with the query.
+    """Display and save a 2-panel plot showing how well the matched clip aligns.
 
-    Panel 1 – Knee angle: query vs matched clip (lower RMSE = better)
+    Panel 1 – Knee angle: query vs matched clip
     Panel 2 – Hip / Thigh angle: query vs matched clip
+
+    The window is shown immediately (non-blocking) so you can inspect the match
+    quality before the physics simulation starts.  The plot is also saved as a PNG.
     """
     import matplotlib
-    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+
+    # Try an interactive backend; fall back to Agg (headless) if unavailable.
+    _shown = False
+    for backend in ("TkAgg", "Qt5Agg", "Qt4Agg", "GTK3Agg", "wxAgg"):
+        try:
+            matplotlib.use(backend)
+            import importlib
+            importlib.reload(plt)
+            _shown = True
+            break
+        except Exception:
+            pass
+    if not _shown:
+        matplotlib.use("Agg")
+        import importlib
+        importlib.reload(plt)
 
     T   = min(len(knee_query), len(matched_knee))
     t   = np.arange(T) / fps
@@ -191,8 +209,10 @@ def plot_match_quality(
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(13, 6), sharex=True)
 
-    ax1.plot(t, knee_query[:T],   lw=2,   color="steelblue", label="Query (prediction/IMU)")
-    ax1.plot(t, matched_knee[:T], lw=1.5, color="darkorange", ls="--", label=f"Matched clip  RMSE={rmse_knee:.1f}°")
+    ax1.plot(t, knee_query[:T],   lw=2,   color="steelblue",
+             label="Query (prediction/IMU)")
+    ax1.plot(t, matched_knee[:T], lw=1.5, color="darkorange", ls="--",
+             label=f"Matched clip  RMSE={rmse_knee:.1f}°")
     ax1.set_ylabel("Knee included-angle (°)")
     ax1.set_title(
         f"Match quality — clip: {clip_id}   DTW={dtw_dist:.4f}   "
@@ -203,8 +223,10 @@ def plot_match_quality(
     ax1.set_ylim(0, 200)
     ax1.grid(True, alpha=0.3)
 
-    ax2.plot(t, thigh_query[:T],  lw=2,   color="steelblue", label="Query thigh (IMU)")
-    ax2.plot(t, matched_hip[:T],  lw=1.5, color="darkorange", ls="--", label=f"Matched hip  RMSE={rmse_hip:.1f}°")
+    ax2.plot(t, thigh_query[:T],  lw=2,   color="steelblue",
+             label="Query thigh (IMU)")
+    ax2.plot(t, matched_hip[:T],  lw=1.5, color="darkorange", ls="--",
+             label=f"Matched hip  RMSE={rmse_hip:.1f}°")
     ax2.set_xlabel("Time (s)")
     ax2.set_ylabel("Hip / Thigh included-angle (°)")
     ax2.legend(fontsize=8)
@@ -213,8 +235,21 @@ def plot_match_quality(
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
-    plt.close(fig)
     print(f"  Match plot saved → {out_path}")
+
+    # Show interactively (non-blocking) so it's visible during simulation
+    try:
+        plt.show(block=False)
+        plt.pause(0.5)   # give the window time to render
+    except Exception:
+        # Headless environment — just open the saved file with the system viewer
+        try:
+            import subprocess, os
+            if os.environ.get("DISPLAY"):
+                subprocess.Popen(["xdg-open", out_path],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
 
 
 # ── Clip boundary lookup ──────────────────────────────────────────────────────
