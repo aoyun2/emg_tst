@@ -1,14 +1,26 @@
-"""Quick simulation demo: external OpenSim query matched against CMU DB, evaluated with MoCapAct.
+"""Quick simulation demo: sample data matched against CMU DB, evaluated with MoCapAct.
 
-All three scenarios (GT knee / good prediction / bad prediction) are shown
-simultaneously in separate viewer windows.  The DTW motion match locates the
-best-matching position in the CMU DB; consecutive frames from that position are
-then aggregated to TOTAL_SECONDS of non-repeating motion (resampled from the
-DB's 200 Hz to the simulation rate of 30 Hz).
+The query is built by concatenating consecutive 1-second windows from the sample
+source (rigtest recording or external OpenSim data).  DTW matching against the CMU
+database returns a segment of the same length; consecutive frames from that position
+are then used to fill TOTAL_SECONDS of simulation (resampled to 30 Hz).
+
+Usage
+-----
+# Use rigtest recording (default):
+    python run_quick_sim.py [--data-file data0.npy] [--n-windows N]
+
+# Use external OpenSim sample data:
+    python run_quick_sim.py --test-sample [--n-windows N]
 """
+import argparse
+import glob
+import sys
+
 import numpy as np
+
 from mocap_evaluation.external_sample_data import extract_external_sample_curves
-from mocap_evaluation.mocap_loader import load_aggregated_database
+from mocap_evaluation.mocap_loader import load_aggregated_database, TARGET_FPS
 from mocap_evaluation.motion_matching import find_best_match
 from mocap_evaluation.mocapact_sim import (
     SIM_FPS,
@@ -19,8 +31,9 @@ from mocap_evaluation.mocapact_sim import (
 # ── Tunable parameters ────────────────────────────────────────────────────────
 GOOD_NOISE_STD = 5.0    # degrees — realistic model error
 BAD_NOISE_STD  = 25.0   # degrees — poor model, should cause instability
-TOTAL_SECONDS  = 30.0   # how long to simulate (data tiles automatically)
-MATCH_SECONDS  = 4.0    # query window sent to DTW motion matcher
+TOTAL_SECONDS  = 30.0   # total simulation length
+
+WINDOW_FRAMES  = TARGET_FPS   # 1-second window at 200 Hz
 
 
 def resample(arr: np.ndarray, src_fps: float, dst_fps: float) -> np.ndarray:
@@ -34,32 +47,91 @@ def resample(arr: np.ndarray, src_fps: float, dst_fps: float) -> np.ndarray:
     return np.interp(x_dst, x_src, arr).astype(np.float32)
 
 
-# ── External query (OpenSim IK from GitHub, NOT from CMU DB) ─────────────────
-print("Downloading external OpenSim gait data...")
-curves = extract_external_sample_curves(seconds=MATCH_SECONDS, pred_noise_std=GOOD_NOISE_STD)
+# ── CLI args ──────────────────────────────────────────────────────────────────
+parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+parser.add_argument(
+    "--test-sample", action="store_true",
+    help="Use external OpenSim data instead of a rigtest recording",
+)
+parser.add_argument(
+    "--data-file", default=None,
+    help="Rigtest .npy file to use (default: first data*.npy found)",
+)
+parser.add_argument(
+    "--n-windows", type=int, default=None,
+    help="How many 1-second windows to aggregate (default: all available, up to TOTAL_SECONDS)",
+)
+args = parser.parse_args()
 
-src_fps = float(curves.fps)           # 200 Hz from external_sample_data
+max_windows = int(TOTAL_SECONDS)   # cap to avoid extremely long DTW queries
 
-# Resample to simulation rate so walking speed is physiologically correct
-knee_query_sim  = resample(curves.knee_label_included_deg, src_fps, SIM_FPS)
-thigh_query_sim = resample(curves.thigh_angle_deg,         src_fps, SIM_FPS)
+# ── Build the aggregated query from consecutive 1-second windows ──────────────
+if args.test_sample:
+    # ── External OpenSim path ─────────────────────────────────────────────────
+    print("Downloading external OpenSim gait data...")
+    # Request all available data (no cap); the file is ~2-3 s
+    curves = extract_external_sample_curves(seconds=TOTAL_SECONDS, pred_noise_std=GOOD_NOISE_STD)
+    src_fps = float(curves.fps)
+    full_knee  = curves.knee_label_included_deg   # at TARGET_FPS
+    full_thigh = curves.thigh_angle_deg
 
-# Keep 200-Hz versions for motion matching (DTW uses fine-grained timing)
-knee_query_200  = curves.knee_label_included_deg
-thigh_query_200 = curves.thigh_angle_deg
+    n_complete = len(full_knee) // WINDOW_FRAMES
+    if n_complete == 0:
+        # Less than one full window available — use whatever we have
+        knee_query_200  = full_knee
+        thigh_query_200 = full_thigh
+        n_windows_used  = 1
+    else:
+        n_windows_used  = min(n_complete, max_windows) if args.n_windows is None else min(args.n_windows, n_complete)
+        keep = n_windows_used * WINDOW_FRAMES
+        knee_query_200  = full_knee[:keep]
+        thigh_query_200 = full_thigh[:keep]
 
-print(f"Source: {curves.source_file}")
-print(f"At {src_fps:.0f} Hz: {len(knee_query_200)} frames "
-      f"({len(knee_query_200)/src_fps:.2f}s)")
-print(f"Resampled to {SIM_FPS:.0f} Hz: {len(knee_query_sim)} frames "
-      f"({len(knee_query_sim)/SIM_FPS:.2f}s)")
+    source_label = f"OpenSim {curves.source_file.split('/')[-1]}"
+    print(f"Source: {curves.source_file}")
 
-# ── Load CMU DB (cached, no download) ─────────────────────────────────────────
+else:
+    # ── Rigtest recording path ────────────────────────────────────────────────
+    from emg_tst.data import load_recording
+
+    if args.data_file:
+        data_path = args.data_file
+    else:
+        candidates = sorted(glob.glob("data*.npy"))
+        candidates = [p for p in candidates if "samples" not in p]
+        if not candidates:
+            sys.exit("No data*.npy files found. Run rigtest.py first, or use --test-sample.")
+        data_path = candidates[0]
+
+    print(f"Loading rigtest recording: {data_path}")
+    X, y, meta = load_recording(data_path)
+    # y = knee angle (IMU) at ~TARGET_FPS; last column of X = thigh angle
+    full_knee  = y.astype(np.float32)
+    full_thigh = X[:, -1].astype(np.float32)
+
+    n_complete = len(full_knee) // WINDOW_FRAMES
+    if n_complete == 0:
+        sys.exit(f"Recording too short ({len(full_knee)} frames = {len(full_knee)/TARGET_FPS:.1f}s). "
+                 f"Need at least {WINDOW_FRAMES} frames (1 s).")
+
+    n_windows_used = min(n_complete, max_windows) if args.n_windows is None else min(args.n_windows, n_complete)
+    keep = n_windows_used * WINDOW_FRAMES
+    knee_query_200  = full_knee[:keep]
+    thigh_query_200 = full_thigh[:keep]
+
+    source_label = f"rigtest {data_path}"
+    print(f"Effective rate: ~{meta['effective_hz']:.0f} Hz")
+
+query_seconds = len(knee_query_200) / TARGET_FPS
+print(f"Query: {n_windows_used} × 1s window(s) = {len(knee_query_200)} frames "
+      f"({query_seconds:.1f}s) at {TARGET_FPS} Hz")
+
+# ── Load CMU DB ────────────────────────────────────────────────────────────────
 db = load_aggregated_database(mocap_root='mocap_data', try_download=False, use_cache=True)
 print(f"CMU DB: {len(db['knee_right'])/db['fps']:.0f}s, {len(db['file_boundaries'])} files")
 
-# ── Motion matching: use the 200-Hz query for best DTW accuracy ───────────────
-print("\nRunning motion matching (L2 pre-filter + DTW)...")
+# ── Motion matching: DTW on the full aggregated query ─────────────────────────
+print(f"\nRunning motion matching on {query_seconds:.1f}s query (L2 pre-filter + DTW)...")
 best_start, dist, segment = find_best_match(knee_query_200, thigh_query_200, db)
 
 matched_file = "?"
@@ -74,34 +146,33 @@ match_rmse = float(np.sqrt(np.mean((knee_matched[:T_cmp] - knee_query_200[:T_cmp
 print(f"Best match: DTW={dist:.4f}, file={matched_file}")
 print(f"Matched knee vs query RMSE: {match_rmse:.2f} deg")
 
-# ── Resolve DTW match → specific CMU clip ────────────────────────────────────
+# ── Resolve DTW match → specific CMU clip ─────────────────────────────────────
 match_info = resolve_clip_from_match(best_start, len(knee_query_200), db)
 
-# ── Aggregate consecutive CMU DB frames to build the simulation motion ────────
-# Instead of tiling the short OpenSim query, take consecutive frames from the
-# CMU DB starting at the matched position for a realistic, non-repeating motion.
-db_fps = float(db['fps'])                        # 200 Hz
-T_db   = int(round(TOTAL_SECONDS * db_fps))      # frames needed at 200 Hz
+# ── Extend matched position with consecutive CMU frames ───────────────────────
+# The query already spans query_seconds; take consecutive CMU frames from
+# best_start to cover TOTAL_SECONDS of simulation without repeating.
+db_fps  = float(db['fps'])
+T_db    = int(round(TOTAL_SECONDS * db_fps))
 end_idx = min(best_start + T_db, len(db['knee_right']))
+
 cmu_knee  = db['knee_right'][best_start:end_idx]
 cmu_thigh = db['hip_right'][best_start:end_idx]
 
 knee_gt     = resample(cmu_knee,  db_fps, SIM_FPS)
-thigh_tiled = resample(cmu_thigh, db_fps, SIM_FPS)
-T_sim = len(knee_gt)
+thigh_sim   = resample(cmu_thigh, db_fps, SIM_FPS)
+T_sim       = len(knee_gt)
 actual_seconds = T_sim / SIM_FPS
 
-print(f"CMU motion window: {end_idx - best_start} frames @ {db_fps:.0f} Hz "
+print(f"Simulation motion: {end_idx - best_start} frames @ {db_fps:.0f} Hz "
       f"→ {T_sim} frames @ {SIM_FPS:.0f} Hz ({actual_seconds:.1f}s)")
 
-# Good prediction: low noise on the motion signal
+# ── Predictions: add noise to the GT motion signal ───────────────────────────
 rng = np.random.default_rng(42)
 knee_good = np.clip(
     knee_gt + rng.normal(0.0, GOOD_NOISE_STD, T_sim).astype(np.float32),
     0.0, 180.0,
 )
-
-# Bad prediction: high noise
 knee_bad = np.clip(
     knee_gt + rng.normal(0.0, BAD_NOISE_STD, T_sim).astype(np.float32),
     0.0, 180.0,
@@ -117,7 +188,7 @@ gt, pred_good, pred_bad = simulate_three_scenarios_mocapact(
     gt_knee=knee_gt,
     nominal_knee=knee_good,
     bad_knee=knee_bad,
-    sample_thigh_right=thigh_tiled,
+    sample_thigh_right=thigh_sim,
     reference_knee=knee_gt,
     eval_seconds=actual_seconds,
     use_gui=True,
@@ -133,15 +204,15 @@ def show(label, m):
     print(f'  CoM: {m["com_height_mean"]:.3f} +/- {m["com_height_std"]:.3f} m')
     print(f'  knee RMSE: {m["knee_rmse_deg"]:.2f}, MAE: {m["knee_mae_deg"]:.2f}')
 
-T_plot = T_sim
+T_plot    = T_sim
 good_rmse = float(np.sqrt(np.mean((knee_good[:T_plot] - knee_gt[:T_plot]) ** 2)))
 bad_rmse  = float(np.sqrt(np.mean((knee_bad[:T_plot]  - knee_gt[:T_plot]) ** 2)))
 
 print("\n" + "=" * 60)
-print(f"Query: OpenSim subject01_walk1  |  Matched: {matched_file}")
-print(f"DTW: {dist:.4f}  |  Match RMSE: {match_rmse:.2f} deg")
+print(f"Source: {source_label}  |  Matched: {matched_file}")
+print(f"Query: {n_windows_used} × 1s window(s) ({query_seconds:.1f}s)  |  DTW={dist:.4f}  |  MatchRMSE={match_rmse:.2f} deg")
 print()
-show("Ground Truth (OpenSim knee)", gt)
+show("Ground Truth (CMU knee)", gt)
 print()
 show(f"Good Prediction (noise std={GOOD_NOISE_STD}, RMSE={good_rmse:.1f})", pred_good)
 print()
@@ -153,21 +224,22 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-fps = SIM_FPS
+fps  = SIM_FPS
 t_ax = np.arange(T_plot) / fps
 
 fig, axes = plt.subplots(3, 1, figsize=(14, 12), sharex=True)
 
-# Panel 1: Knee angles
-axes[0].plot(t_ax, knee_gt[:T_plot],   label='GT knee (OpenSim)', lw=2, color='blue')
+axes[0].plot(t_ax, knee_gt[:T_plot],   label='GT knee (CMU)', lw=2, color='blue')
 axes[0].plot(t_ax, knee_good[:T_plot], label=f'Good pred (RMSE={good_rmse:.1f})', lw=2, color='orange', alpha=0.8)
 axes[0].plot(t_ax, knee_bad[:T_plot],  label=f'Bad pred (RMSE={bad_rmse:.1f})',  lw=2, color='red',    alpha=0.7)
 axes[0].set_ylabel('Knee flexion (deg)')
-axes[0].set_title(f'OpenSim query -> CMU match: {matched_file}  |  DTW={dist:.4f}  |  MatchRMSE={match_rmse:.1f}')
+axes[0].set_title(
+    f'{source_label} ({n_windows_used}×1s windows) → CMU: {matched_file}  '
+    f'|  DTW={dist:.4f}  |  MatchRMSE={match_rmse:.1f}'
+)
 axes[0].legend(fontsize=8)
 axes[0].grid(True, alpha=0.3)
 
-# Panel 2: CoM height
 axes[1].plot(t_ax, np.asarray(gt['com_height_series'])[:T_plot],
              label='GT CoM', lw=2, color='blue')
 axes[1].plot(t_ax, np.asarray(pred_good['com_height_series'])[:T_plot],
@@ -180,7 +252,6 @@ axes[1].set_title(f'CoM  |  GT stab={gt["stability_score"]:.3f}')
 axes[1].legend(fontsize=8)
 axes[1].grid(True, alpha=0.3)
 
-# Panel 3: Foot contacts
 for i, (label, m, color) in enumerate([('GT', gt, 'blue'), ('Good', pred_good, 'orange'), ('Bad', pred_bad, 'red')]):
     rc = np.asarray(m['right_contact_frames']) / fps
     lc = np.asarray(m['left_contact_frames'])  / fps
