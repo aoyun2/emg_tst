@@ -33,6 +33,13 @@ def _parse_args():
     ap.add_argument("--delay-ms", type=float, default=60.0)
     ap.add_argument("--noise-std-deg", type=float, default=6.0)
     ap.add_argument("--no-cache", action="store_true")
+    # MoCapAct backend
+    ap.add_argument("--mocapact", action="store_true",
+                    help="Use MoCapAct adaptive policy instead of motion-matched PD control")
+    ap.add_argument("--mocapact-checkpoint", default=None,
+                    help="Path to MoCapAct multi-clip policy checkpoint")
+    ap.add_argument("--mocapact-model-dir", default="mocapact_models",
+                    help="Directory for downloaded MoCapAct models")
     return ap.parse_args()
 
 
@@ -53,6 +60,9 @@ def main():
         sample_source=args.test_sample_source,
         external_sample_url=args.external_sample_url,
         robustness=robustness,
+        use_mocapact=args.mocapact,
+        mocapact_checkpoint=args.mocapact_checkpoint,
+        mocapact_model_dir=args.mocapact_model_dir,
     )
 
     if args.test_sample:
