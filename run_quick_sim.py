@@ -65,24 +65,33 @@ args = parser.parse_args()
 
 max_windows = int(TOTAL_SECONDS)   # cap to avoid extremely long DTW queries
 
+# ── Resolve data source: auto-fall-back to external if no recordings found ────
+if not args.test_sample and not args.data_file:
+    candidates = sorted(p for p in glob.glob("data*.npy") if "samples" not in p)
+    if not candidates:
+        print("No data*.npy recording found — using external OpenSim data.")
+        print("Run rigtest.py to capture your own data, or pass --data-file <path>.\n")
+        args.test_sample = True
+    else:
+        args.data_file = candidates[0]
+
 # ── Build the aggregated query from consecutive 1-second windows ──────────────
 if args.test_sample:
     # ── External OpenSim path ─────────────────────────────────────────────────
     print("Downloading external OpenSim gait data...")
-    # Request all available data (no cap); the file is ~2-3 s
     curves = extract_external_sample_curves(seconds=TOTAL_SECONDS, pred_noise_std=GOOD_NOISE_STD)
-    src_fps = float(curves.fps)
     full_knee  = curves.knee_label_included_deg   # at TARGET_FPS
     full_thigh = curves.thigh_angle_deg
 
     n_complete = len(full_knee) // WINDOW_FRAMES
     if n_complete == 0:
-        # Less than one full window available — use whatever we have
+        # Less than one full window — use whatever is available
         knee_query_200  = full_knee
         thigh_query_200 = full_thigh
         n_windows_used  = 1
     else:
-        n_windows_used  = min(n_complete, max_windows) if args.n_windows is None else min(args.n_windows, n_complete)
+        n_windows_used = (min(n_complete, max_windows)
+                          if args.n_windows is None else min(args.n_windows, n_complete))
         keep = n_windows_used * WINDOW_FRAMES
         knee_query_200  = full_knee[:keep]
         thigh_query_200 = full_thigh[:keep]
@@ -94,17 +103,8 @@ else:
     # ── Rigtest recording path ────────────────────────────────────────────────
     from emg_tst.data import load_recording
 
-    if args.data_file:
-        data_path = args.data_file
-    else:
-        candidates = sorted(glob.glob("data*.npy"))
-        candidates = [p for p in candidates if "samples" not in p]
-        if not candidates:
-            sys.exit("No data*.npy files found. Run rigtest.py first, or use --test-sample.")
-        data_path = candidates[0]
-
-    print(f"Loading rigtest recording: {data_path}")
-    X, y, meta = load_recording(data_path)
+    print(f"Loading rigtest recording: {args.data_file}")
+    X, y, meta = load_recording(args.data_file)
     # y = knee angle (IMU) at ~TARGET_FPS; last column of X = thigh angle
     full_knee  = y.astype(np.float32)
     full_thigh = X[:, -1].astype(np.float32)
@@ -114,12 +114,13 @@ else:
         sys.exit(f"Recording too short ({len(full_knee)} frames = {len(full_knee)/TARGET_FPS:.1f}s). "
                  f"Need at least {WINDOW_FRAMES} frames (1 s).")
 
-    n_windows_used = min(n_complete, max_windows) if args.n_windows is None else min(args.n_windows, n_complete)
+    n_windows_used = (min(n_complete, max_windows)
+                      if args.n_windows is None else min(args.n_windows, n_complete))
     keep = n_windows_used * WINDOW_FRAMES
     knee_query_200  = full_knee[:keep]
     thigh_query_200 = full_thigh[:keep]
 
-    source_label = f"rigtest {data_path}"
+    source_label = f"rigtest {args.data_file}"
     print(f"Effective rate: ~{meta['effective_hz']:.0f} Hz")
 
 query_seconds = len(knee_query_200) / TARGET_FPS
