@@ -11,8 +11,6 @@ import torch
 from emg_tst.data import StandardScaler
 from emg_tst.model import TSTEncoder, TSTRegressor
 from mocap_evaluation.mocap_loader import TARGET_FPS, load_aggregated_database
-from mocap_evaluation.motion_matching import find_top_k_matches
-from mocap_evaluation.prosthetic_sim import simulate_prosthetic_walking
 from mocap_evaluation.sample_data import extract_real_sample_curves
 from mocap_evaluation.external_sample_data import extract_external_sample_curves
 
@@ -35,8 +33,6 @@ class EvalConfig:
     sample_source: str = "external"
     external_sample_url: Optional[str] = None
     robustness: RobustnessConfig = field(default_factory=RobustnessConfig)
-    # MoCapAct backend settings
-    use_mocapact: bool = False
     mocapact_checkpoint: Optional[str] = None
     mocapact_model_dir: str = "mocapact_models"
 
@@ -118,33 +114,6 @@ def _apply_delay(sig: np.ndarray, delay_frames: int) -> np.ndarray:
     out[delay_frames:] = sig[:-delay_frames]
     return out
 
-
-def _scenario_metrics(segment: dict, pred: np.ndarray, mocap_db: dict, cfg: RobustnessConfig):
-    matches = find_top_k_matches(segment["knee"], segment["thigh"], mocap_db=mocap_db, k=cfg.top_k_matches)
-    delay_frames = int((cfg.delay_ms / 1000.0) * TARGET_FPS)
-    rng = np.random.default_rng(0)
-    per_match = []
-    for start, dist, match in matches:
-        gt = simulate_prosthetic_walking(match, segment["knee"], sample_thigh_right=segment["thigh"])
-        nominal = simulate_prosthetic_walking(match, pred, sample_thigh_right=segment["thigh"], show_reference=True, reference_knee=segment["knee"])
-        delayed = simulate_prosthetic_walking(match, _apply_delay(pred, delay_frames), sample_thigh_right=segment["thigh"])
-        noisy = simulate_prosthetic_walking(match, pred + rng.normal(0.0, cfg.noise_std_deg, size=len(pred)).astype(np.float32), sample_thigh_right=segment["thigh"])
-        robustness = float(np.mean([
-            nominal.get("stability_score", 0.0),
-            delayed.get("stability_score", 0.0),
-            noisy.get("stability_score", 0.0),
-        ]))
-        per_match.append({
-            "match_start": int(start),
-            "dtw_distance": float(dist),
-            "category": match.get("category", "unknown"),
-            "ground_truth": gt,
-            "nominal": nominal,
-            "delayed": delayed,
-            "noisy": noisy,
-            "robustness_score": robustness,
-        })
-    return per_match
 
 
 def _scenario_metrics_mocapact(
@@ -231,14 +200,10 @@ def evaluate_with_checkpoint(checkpoint_path: str, samples_path: str, cfg: EvalC
     # path (to resolve DTW match → specific CMU clip for the policy).
     mocap_db = load_aggregated_database(mocap_root=cfg.mocap_dir, try_download=True, datasets=["cmu"], use_cache=cfg.use_cache)
 
-    mode = "mocapact_checkpoint_eval" if cfg.use_mocapact else "paper_style_checkpoint_eval"
-    out = {"mode": mode, "config": asdict(cfg), "segments": []}
+    out = {"mode": "mocapact_checkpoint_eval", "config": asdict(cfg), "segments": []}
     for seg in segments:
         pred = _predict(model, scaler, seg["x"], device)
-        if cfg.use_mocapact:
-            match_metrics = _scenario_metrics_mocapact(seg, pred, cfg.robustness, cfg, mocap_db=mocap_db)
-        else:
-            match_metrics = _scenario_metrics(seg, pred, mocap_db, cfg.robustness)
+        match_metrics = _scenario_metrics_mocapact(seg, pred, cfg.robustness, cfg, mocap_db=mocap_db)
         out["segments"].append({
             "window_indices": seg["window_indices"],
             "match_metrics": match_metrics,
@@ -269,14 +234,10 @@ def evaluate_test_sample(cfg: EvalConfig) -> dict:
         datasets=["cmu"], use_cache=cfg.use_cache,
     )
 
-    if cfg.use_mocapact:
-        match_metrics = _scenario_metrics_mocapact(
-            seg, pred.astype(np.float32), cfg.robustness, cfg, mocap_db=mocap_db,
-        )
-        mode = "mocapact_test_sample"
-    else:
-        match_metrics = _scenario_metrics(seg, pred.astype(np.float32), mocap_db, cfg.robustness)
-        mode = "paper_style_test_sample"
+    match_metrics = _scenario_metrics_mocapact(
+        seg, pred.astype(np.float32), cfg.robustness, cfg, mocap_db=mocap_db,
+    )
+    mode = "mocapact_test_sample"
 
     out = {
         "mode": mode,
