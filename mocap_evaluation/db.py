@@ -253,7 +253,7 @@ def load_database(
     Parameters
     ----------
     subset : str
-        ``"all"`` (836 clips), ``"locomotion_small"`` (316, default),
+        ``"all"`` (~2589 clips, default), ``"locomotion_small"`` (316),
         ``"walk_tiny"`` (36), ``"run_jump_tiny"`` (50).
     use_cache : bool
         Load from ``.cache_mocapact_{subset}.npz`` if it exists.

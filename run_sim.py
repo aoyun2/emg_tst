@@ -74,9 +74,9 @@ ap.add_argument("--checkpoint", default=None,
                 help="Trained model checkpoint (.pt). Requires --data for real inference.")
 ap.add_argument("--seconds", type=float, default=5.0,
                 help="Seconds of data to use for matching and simulation (default: 5)")
-ap.add_argument("--subset", default="locomotion_small",
+ap.add_argument("--subset", default="all",
                 choices=["all", "locomotion_small", "walk_tiny", "run_jump_tiny"],
-                help="MoCap Act database subset (default: locomotion_small = 316 clips)")
+                help="MoCap Act database subset (default: all = ~2589 clips)")
 ap.add_argument("--prefilter-k", type=int, default=100,
                 help="Number of DTW candidates after L2 pre-filter (default: 100)")
 ap.add_argument("--no-gui", action="store_true",
