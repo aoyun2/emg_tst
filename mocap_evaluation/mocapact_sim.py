@@ -1287,6 +1287,8 @@ def simulate_three_scenarios_mocapact(
     When *use_gui* is True all three viewer windows are opened **before** any
     stepping begins, so they share the same GLFW session and avoid the WGL
     "context in use" crash that occurs when viewers are opened sequentially.
+    After one pass through the trajectory, playback loops until all viewer
+    windows are closed.
 
     Parameters
     ----------
@@ -1361,33 +1363,69 @@ def simulate_three_scenarios_mocapact(
     embeds = [policy.initial_state(deterministic=False) if is_npmp else None for _ in range(3)]
     dones = [False, False, False]
 
-    for t in tqdm(range(T), desc="3-scenario sim", unit="step", leave=False):
-        open_viewers = [v for v in viewers if v is not None]
-        if open_viewers and all(not v.is_running() for v in open_viewers):
-            break
-
-        for i in range(3):
-            if dones[i]:
-                continue
-            if is_npmp:
-                action, embeds[i] = policy.predict(obss[i], state=embeds[i], deterministic=False)
+    had_running_viewer = False
+    loop_announced = False
+    cycle_idx = 0
+    t = 0
+    progress = tqdm(total=T, desc="3-scenario sim", unit="step", leave=False)
+    try:
+        while True:
+            open_viewers = [v for v in viewers if v is not None]
+            if open_viewers:
+                any_running = any(v.is_running() for v in open_viewers)
+                had_running_viewer = had_running_viewer or any_running
             else:
-                action, _ = policy.predict(obss[i], deterministic=True)
-            policy_knee_ctrl = float(action[knee_idx])
-            action[knee_idx] = _knee_angle_to_ctrl(deg_arrs[i][1][t], envs[i])
-            if pred_hip_rad is not None:
-                action[hip_idx] = _hip_angle_to_ctrl(
-                    pred_hip_rad[min(t, len(pred_hip_rad) - 1)], envs[i]
-                )
-            obss[i], _, dones[i], _ = envs[i].step(action)
-            _collect_step_metrics(
-                metrics_list[i], envs[i],
-                float(deg_arrs[i][0][t]), ref_flex_deg, policy_knee_ctrl, t,
-            )
+                any_running = False
 
-        for v in viewers:
-            if v is not None and v.is_running():
-                v.sync()
+            # A freshly launched viewer can briefly report not-running before the
+            # first sync; avoid interpreting that startup state as "all windows
+            # were closed".
+            if open_viewers and had_running_viewer and not any_running:
+                break
+
+            for i in range(3):
+                if dones[i]:
+                    continue
+                if is_npmp:
+                    action, embeds[i] = policy.predict(obss[i], state=embeds[i], deterministic=False)
+                else:
+                    action, _ = policy.predict(obss[i], deterministic=True)
+                policy_knee_ctrl = float(action[knee_idx])
+                action[knee_idx] = _knee_angle_to_ctrl(deg_arrs[i][1][t], envs[i])
+                if pred_hip_rad is not None:
+                    action[hip_idx] = _hip_angle_to_ctrl(
+                        pred_hip_rad[min(t, len(pred_hip_rad) - 1)], envs[i]
+                    )
+                obss[i], _, dones[i], _ = envs[i].step(action)
+                if cycle_idx == 0:
+                    _collect_step_metrics(
+                        metrics_list[i], envs[i],
+                        float(deg_arrs[i][0][t]), ref_flex_deg, policy_knee_ctrl, t,
+                    )
+
+            for v in viewers:
+                if v is not None and v.is_running():
+                    v.sync()
+
+            if cycle_idx == 0:
+                progress.update(1)
+
+            t += 1
+            if t >= T:
+                # In GUI mode keep replaying until the user closes all windows.
+                if use_gui and open_viewers and any_running:
+                    cycle_idx += 1
+                    if not loop_announced:
+                        print("[MoCapAct] Playback reached end; looping until viewer windows close.")
+                        loop_announced = True
+                    t = 0
+                    dones = [False, False, False]
+                    obss = [e.reset() for e in envs]
+                    embeds = [policy.initial_state(deterministic=False) if is_npmp else None for _ in range(3)]
+                    continue
+                break
+    finally:
+        progress.close()
 
     for v in viewers:
         if v is not None:
