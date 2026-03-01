@@ -5,7 +5,7 @@ Architecture
 ============
   1. Data source      : rigtest .npy recording  OR  external OpenSim gait
   2. Model prediction : noisy-GT baseline (or real checkpoint if provided)
-  3. Motion matching  : DTW on (knee, thigh) against CMU/MoCapAct database
+  3. Motion matching  : DTW on (knee, thigh) against MoCapAct reference database
   4. MoCapAct clip    : resolve matched segment → dm_control clip ID
   5. Physics sim      : dm_control CMU humanoid, knee + hip overridden
   6. Heuristics       : CoM height, foot contacts, fall detection, gait symmetry
@@ -172,18 +172,21 @@ print(f"Bad  prediction RMSE : {bad_rmse:.2f} °  (noise std={BAD_NOISE} °)")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STEP 3 — Motion matching: DTW on (knee, thigh) against CMU/MoCapAct DB
+# STEP 3 — Motion matching: DTW on (knee, thigh) against MoCapAct reference DB
 # ══════════════════════════════════════════════════════════════════════════════
 print("\n" + "═" * 64)
 print("STEP 3  Motion matching")
 print("═" * 64)
 
-from mocap_evaluation.mocap_loader import load_aggregated_database  # noqa: E402
-from mocap_evaluation.motion_matching import find_best_match         # noqa: E402
+# load_mocapact_database uses the same dm_control HDF5 reference trajectories
+# that the physics simulation uses internally.  Every clip ID it returns is
+# guaranteed to exist in the HDF5 file, so create_walking_env will never see a
+# missing-clip KeyError (which happened when using load_aggregated_database and
+# a BVH file was converted to a clip ID not in the HDF5 — e.g. CMU_104_46).
+from mocap_evaluation.mocapact_dataset import load_mocapact_database  # noqa: E402
+from mocap_evaluation.motion_matching import find_best_match           # noqa: E402
 
-db = load_aggregated_database(
-    mocap_root="mocap_data", try_download=False, use_cache=True
-)
+db = load_mocapact_database(use_cache=True)
 db_fps = float(db["fps"])
 print(f"Database : {len(db['knee_right']) / db_fps:.0f} s  |  "
       f"{len(db['file_boundaries'])} clips  @  {db_fps:.0f} Hz")
@@ -279,7 +282,14 @@ for sc_key in run_which:
     print(f"\n  [{sc_key}]  {sc_label}  {'(GUI)' if sc_gui else ''}"
           f"{'(GIF→' + gif_path + ')' if sc_gif else ''}")
 
-    env = create_walking_env(policy=policy, clip_id=match_info["clip_id"])
+    try:
+        env = create_walking_env(policy=policy, clip_id=match_info["clip_id"])
+    except Exception as _env_err:
+        # Safety net: if a stale cache returned a clip not in the HDF5, fall
+        # back to the default locomotion-small dataset so the run still works.
+        print(f"    Warning: clip {match_info['clip_id']!r} failed to load "
+              f"({_env_err}); falling back to default locomotion dataset.")
+        env = create_walking_env(policy=policy)
     try:
         res = simulate_scenario(
             env=env,
