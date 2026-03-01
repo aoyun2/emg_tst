@@ -137,6 +137,7 @@ def _scenario_metrics_mocapact(
     Without *mocap_db* the policy walks an arbitrary locomotion clip.
     """
     from mocap_evaluation.mocapact_sim import (
+        SIM_FPS,
         simulate_three_scenarios_mocapact,
         resolve_clip_from_match,
         load_multi_clip_policy,
@@ -145,7 +146,7 @@ def _scenario_metrics_mocapact(
     delay_frames = int((cfg.delay_ms / 1000.0) * TARGET_FPS)
     rng = np.random.default_rng(0)
 
-    # ── DTW matching ──────────────────────────────────────────────────
+    # ── DTW matching (done at recording rate for best temporal resolution) ─
     best_start = None
     best_dist = float("inf")
     if mocap_db is not None and "thigh" in segment:
@@ -163,6 +164,26 @@ def _scenario_metrics_mocapact(
     bad_pred = (delayed_pred
                 + rng.normal(0.0, cfg.noise_std_deg, size=len(delayed_pred)).astype(np.float32))
 
+    # ── Resample signals from recording rate (TARGET_FPS) to sim rate (SIM_FPS)
+    # The simulation steps at SIM_FPS; each step consumes one frame of the
+    # input signals.  Without resampling, the sim would only consume the first
+    # eval_seconds*SIM_FPS / TARGET_FPS fraction of the recording (≈15% for
+    # 30/200 Hz), effectively slow-motioning the gait.
+    def _rs(arr: np.ndarray) -> np.ndarray:
+        n_src = len(arr)
+        n_dst = max(2, int(round(n_src * SIM_FPS / TARGET_FPS)))
+        return np.interp(
+            np.linspace(0.0, 1.0, n_dst),
+            np.linspace(0.0, 1.0, n_src),
+            arr,
+        ).astype(np.float32)
+
+    gt_knee_sim    = _rs(segment["knee"])
+    nominal_sim    = _rs(pred)
+    bad_sim        = _rs(bad_pred)
+    thigh_sim      = _rs(segment["thigh"]) if "thigh" in segment else None
+    eval_secs_sim  = len(gt_knee_sim) / SIM_FPS   # ≈ cfg.eval_seconds
+
     policy = load_multi_clip_policy(
         checkpoint_path=eval_cfg.mocapact_checkpoint,
         model_dir=eval_cfg.mocapact_model_dir,
@@ -170,14 +191,14 @@ def _scenario_metrics_mocapact(
     )
 
     gt, nominal, bad = simulate_three_scenarios_mocapact(
-        gt_knee=segment["knee"],
-        nominal_knee=pred,
-        bad_knee=bad_pred,
-        sample_thigh_right=segment.get("thigh"),
+        gt_knee=gt_knee_sim,
+        nominal_knee=nominal_sim,
+        bad_knee=bad_sim,
+        sample_thigh_right=thigh_sim,
         policy=policy,
-        eval_seconds=cfg.eval_seconds,
+        eval_seconds=eval_secs_sim,
         device=eval_cfg.device,
-        reference_knee=segment["knee"],
+        reference_knee=gt_knee_sim,
         use_gui=eval_cfg.use_gui,
         match_info=match_info,
     )

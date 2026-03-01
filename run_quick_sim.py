@@ -100,28 +100,46 @@ if args.test_sample:
     print(f"Source: {curves.source_file}")
 
 else:
-    # ── Rigtest recording path ────────────────────────────────────────────────
+    # ── Rigtest recording path — all data*.npy files ──────────────────────────
     from emg_tst.data import load_recording
 
-    print(f"Loading rigtest recording: {args.data_file}")
-    X, y, meta = load_recording(args.data_file)
-    # y = knee angle (IMU) at ~TARGET_FPS; last column of X = thigh angle
-    full_knee  = y.astype(np.float32)
-    full_thigh = X[:, -1].astype(np.float32)
+    if args.data_file:
+        all_data_files = [args.data_file]
+    else:
+        all_data_files = sorted(p for p in glob.glob("data*.npy") if "samples" not in p)
 
-    n_complete = len(full_knee) // WINDOW_FRAMES
-    if n_complete == 0:
-        sys.exit(f"Recording too short ({len(full_knee)} frames = {len(full_knee)/TARGET_FPS:.1f}s). "
-                 f"Need at least {WINDOW_FRAMES} frames (1 s).")
+    knee_chunks: list[np.ndarray] = []
+    thigh_chunks: list[np.ndarray] = []
+    total_windows = 0
 
-    n_windows_used = (min(n_complete, max_windows)
-                      if args.n_windows is None else min(args.n_windows, n_complete))
+    for data_path in all_data_files:
+        X, y, meta = load_recording(data_path)
+        fk = y.astype(np.float32)
+        ft = X[:, -1].astype(np.float32)
+        n_complete = len(fk) // WINDOW_FRAMES
+        if n_complete == 0:
+            print(f"  {data_path}: too short ({len(fk)} frames), skipping")
+            continue
+        keep = n_complete * WINDOW_FRAMES
+        knee_chunks.append(fk[:keep])
+        thigh_chunks.append(ft[:keep])
+        total_windows += n_complete
+        print(f"  {data_path}: {n_complete} window(s), ~{meta['effective_hz']:.0f} Hz")
+
+    if not knee_chunks:
+        sys.exit("No usable windows found in any recording file.")
+
+    # Concatenate windows across all files into one long query
+    full_knee_all  = np.concatenate(knee_chunks)
+    full_thigh_all = np.concatenate(thigh_chunks)
+
+    n_windows_used = (min(total_windows, max_windows)
+                      if args.n_windows is None else min(args.n_windows, total_windows))
     keep = n_windows_used * WINDOW_FRAMES
-    knee_query_200  = full_knee[:keep]
-    thigh_query_200 = full_thigh[:keep]
+    knee_query_200  = full_knee_all[:keep]
+    thigh_query_200 = full_thigh_all[:keep]
 
-    source_label = f"rigtest {args.data_file}"
-    print(f"Effective rate: ~{meta['effective_hz']:.0f} Hz")
+    source_label = f"rigtest ({len(all_data_files)} file(s))"
 
 query_seconds = len(knee_query_200) / TARGET_FPS
 print(f"Query: {n_windows_used} × 1s window(s) = {len(knee_query_200)} frames "
