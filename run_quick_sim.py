@@ -56,6 +56,7 @@ _sim_kwargs = dict(
     mocap_db=db,
     best_start=best_start,
     sample_thigh_right=thigh_query,
+    use_gui=True,
 )
 
 # ── Simulate: GT knee ────────────────────────────────────────────────────
