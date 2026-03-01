@@ -136,12 +136,16 @@ def _scenario_metrics_mocapact(
 
     Without *mocap_db* the policy walks an arbitrary locomotion clip.
     """
-    from mocap_evaluation.mocapact_sim import simulate_prosthetic_walking_mocapact
+    from mocap_evaluation.mocapact_sim import (
+        simulate_three_scenarios_mocapact,
+        resolve_clip_from_match,
+        load_multi_clip_policy,
+    )
 
     delay_frames = int((cfg.delay_ms / 1000.0) * TARGET_FPS)
     rng = np.random.default_rng(0)
 
-    # ── DTW matching (reuses the same logic as the kinematic path) ────
+    # ── DTW matching ──────────────────────────────────────────────────
     best_start = None
     if mocap_db is not None and "thigh" in segment:
         from mocap_evaluation.motion_matching import find_best_match
@@ -149,37 +153,37 @@ def _scenario_metrics_mocapact(
             segment["knee"], segment["thigh"], mocap_db,
         )
 
-    sim_kwargs = dict(
-        policy_checkpoint=eval_cfg.mocapact_checkpoint,
+    match_info = None
+    if mocap_db is not None and best_start is not None:
+        match_info = resolve_clip_from_match(best_start, len(pred), mocap_db)
+
+    # ── Build the three knee signals ──────────────────────────────────
+    delayed_pred = _apply_delay(pred, delay_frames)
+    bad_pred = (delayed_pred
+                + rng.normal(0.0, cfg.noise_std_deg, size=len(delayed_pred)).astype(np.float32))
+
+    policy = load_multi_clip_policy(
+        checkpoint_path=eval_cfg.mocapact_checkpoint,
         model_dir=eval_cfg.mocapact_model_dir,
-        eval_seconds=cfg.eval_seconds,
         device=eval_cfg.device,
-        mocap_db=mocap_db,
-        best_start=best_start,
-        sample_thigh_right=segment.get("thigh"),
     )
 
-    gt = simulate_prosthetic_walking_mocapact(
-        segment["knee"], reference_knee=segment["knee"], **sim_kwargs,
-    )
-    # Only open the viewer for the nominal run; opening it for all four
-    # scenarios causes a WGL "context in use" crash on the second launch.
-    nominal = simulate_prosthetic_walking_mocapact(
-        pred, reference_knee=segment["knee"], use_gui=eval_cfg.use_gui, **sim_kwargs,
-    )
-    delayed = simulate_prosthetic_walking_mocapact(
-        _apply_delay(pred, delay_frames), reference_knee=segment["knee"],
-        **sim_kwargs,
-    )
-    noisy_pred = pred + rng.normal(0.0, cfg.noise_std_deg, size=len(pred)).astype(np.float32)
-    noisy = simulate_prosthetic_walking_mocapact(
-        noisy_pred, reference_knee=segment["knee"], **sim_kwargs,
+    gt, nominal, bad = simulate_three_scenarios_mocapact(
+        gt_knee=segment["knee"],
+        nominal_knee=pred,
+        bad_knee=bad_pred,
+        sample_thigh_right=segment.get("thigh"),
+        policy=policy,
+        eval_seconds=cfg.eval_seconds,
+        device=eval_cfg.device,
+        reference_knee=segment["knee"],
+        use_gui=eval_cfg.use_gui,
+        match_info=match_info,
     )
 
     robustness = float(np.mean([
         nominal.get("stability_score", 0.0),
-        delayed.get("stability_score", 0.0),
-        noisy.get("stability_score", 0.0),
+        bad.get("stability_score", 0.0),
     ]))
 
     category = gt.get("matched_category", "mocapact_policy")
@@ -189,8 +193,7 @@ def _scenario_metrics_mocapact(
         "category": category,
         "ground_truth": gt,
         "nominal": nominal,
-        "delayed": delayed,
-        "noisy": noisy,
+        "bad": bad,
         "robustness_score": robustness,
     }]
 

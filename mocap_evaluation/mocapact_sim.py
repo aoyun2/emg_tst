@@ -846,6 +846,85 @@ def create_walking_env(
     return env
 
 
+# ── Shared step helpers ──────────────────────────────────────────────────────
+
+def _collect_step_metrics(
+    metrics: "MoCapActEvalMetrics",
+    physics,
+    pred_deg: float,
+    ref_flex_deg,
+    policy_knee_ctrl: float,
+    t: int,
+) -> None:
+    """Append per-step data to *metrics* (CoM, knee, contacts, fall detection)."""
+    try:
+        com_h = float(physics.data.subtree_com[0, 2])
+    except Exception:
+        com_h = float(physics.center_of_mass()[2])
+    metrics.com_height.append(com_h)
+    metrics.pred_knee.append(pred_deg)
+
+    if ref_flex_deg is not None:
+        metrics.ref_knee.append(float(ref_flex_deg[min(t, len(ref_flex_deg) - 1)]))
+    else:
+        low, high = _KNEE_RANGE_RAD
+        natural_rad = low + (policy_knee_ctrl + 1.0) * (high - low) / 2.0
+        metrics.ref_knee.append(float(np.degrees(natural_rad)))
+
+    try:
+        ncon = physics.data.ncon
+        r_contact = l_contact = False
+        for c in range(ncon):
+            geom1 = int(physics.data.contact[c].geom1)
+            geom2 = int(physics.data.contact[c].geom2)
+            try:
+                n1 = physics.model.id2name(geom1, "geom")
+                n2 = physics.model.id2name(geom2, "geom")
+            except Exception:
+                continue
+            pair = n1 + " " + n2
+            if not r_contact and ("rfoot" in pair or "rtoes" in pair):
+                r_contact = True
+            if not l_contact and ("lfoot" in pair or "ltoes" in pair):
+                l_contact = True
+            if r_contact and l_contact:
+                break
+        if r_contact:
+            metrics.right_contact_frames.append(t)
+        if l_contact:
+            metrics.left_contact_frames.append(t)
+    except Exception:
+        pass
+
+    if (not metrics.fall_detected) and com_h < FALL_HEIGHT_THRESHOLD:
+        metrics.fall_detected = True
+        metrics.fall_frame = t
+
+
+def _build_sim_result(
+    metrics: "MoCapActEvalMetrics",
+    match_info,
+    fps: float,
+    mode: str = "mocapact_policy",
+) -> dict:
+    """Convert *metrics* into the result dict used by the evaluation pipeline."""
+    out = metrics.to_dict()
+    out["mode"] = mode
+    if match_info is not None:
+        out["matched_clip"] = match_info["clip_id"]
+        out["matched_category"] = match_info.get("category", "unknown")
+    out["fall_prediction"] = {
+        "predicted_fall": metrics.fall_detected,
+        "time_to_fall_s": float(metrics.fall_frame / fps) if metrics.fall_detected else float("inf"),
+        "confidence": 1.0 if metrics.fall_detected else 0.0,
+        "com_velocity": 0.0,
+        "com_acceleration": 0.0,
+        "min_com": float(min(metrics.com_height)) if metrics.com_height else 1.0,
+        "trend_slope": 0.0,
+    }
+    return out
+
+
 # ── Core simulation loop ─────────────────────────────────────────────────────
 
 def simulate_mocapact_prosthetic(
@@ -1009,55 +1088,7 @@ def simulate_mocapact_prosthetic(
         if _viewer is not None and _viewer.is_running():
             _viewer.sync()
 
-        # ── Collect metrics ───────────────────────────────────────────
-        # CoM height: use the whole-body subtree_com (body index 0 = root)
-        try:
-            com_h = float(physics.data.subtree_com[0, 2])
-        except Exception:
-            com_h = float(physics.center_of_mass()[2])
-        metrics.com_height.append(com_h)
-        metrics.pred_knee.append(float(pred_flex_deg[t]))
-
-        if ref_flex_deg is not None:
-            ref_val = float(ref_flex_deg[min(t, len(ref_flex_deg) - 1)])
-            metrics.ref_knee.append(ref_val)
-        else:
-            # Use the policy's natural action (before override) as reference
-            low, high = _KNEE_RANGE_RAD
-            natural_angle_rad = low + (policy_knee_ctrl + 1.0) * (high - low) / 2.0
-            metrics.ref_knee.append(float(np.degrees(natural_angle_rad)))
-
-        # ── Foot contact detection ────────────────────────────────────
-        try:
-            ncon = physics.data.ncon
-            r_contact = False
-            l_contact = False
-            for c in range(ncon):
-                geom1 = int(physics.data.contact[c].geom1)
-                geom2 = int(physics.data.contact[c].geom2)
-                try:
-                    n1 = physics.model.id2name(geom1, "geom")
-                    n2 = physics.model.id2name(geom2, "geom")
-                except Exception:
-                    continue
-                pair = n1 + " " + n2
-                if not r_contact and ("rfoot" in pair or "rtoes" in pair):
-                    r_contact = True
-                if not l_contact and ("lfoot" in pair or "ltoes" in pair):
-                    l_contact = True
-                if r_contact and l_contact:
-                    break
-            if r_contact:
-                metrics.right_contact_frames.append(t)
-            if l_contact:
-                metrics.left_contact_frames.append(t)
-        except Exception:
-            pass
-
-        # ── Fall detection ────────────────────────────────────────────
-        if (not metrics.fall_detected) and com_h < FALL_HEIGHT_THRESHOLD:
-            metrics.fall_detected = True
-            metrics.fall_frame = t
+        _collect_step_metrics(metrics, physics, float(pred_flex_deg[t]), ref_flex_deg, policy_knee_ctrl, t)
 
         if done:
             break
@@ -1069,23 +1100,7 @@ def simulate_mocapact_prosthetic(
             pass
 
     env.close()
-
-    # ── Build result (same contract as prosthetic_sim.py) ─────────────
-    out = metrics.to_dict()
-    out["mode"] = "mocapact_policy"
-    if match_info is not None:
-        out["matched_clip"] = match_info["clip_id"]
-        out["matched_category"] = match_info.get("category", "unknown")
-    out["fall_prediction"] = {
-        "predicted_fall": metrics.fall_detected,
-        "time_to_fall_s": float(metrics.fall_frame / fps) if metrics.fall_detected else float("inf"),
-        "confidence": 1.0 if metrics.fall_detected else 0.0,
-        "com_velocity": 0.0,
-        "com_acceleration": 0.0,
-        "min_com": float(min(metrics.com_height)) if metrics.com_height else 1.0,
-        "trend_slope": 0.0,
-    }
-    return out
+    return _build_sim_result(metrics, match_info, fps)
 
 
 # ── Pipeline-compatible wrapper ───────────────────────────────────────────────
@@ -1187,6 +1202,141 @@ def simulate_prosthetic_walking_mocapact(
         use_gui=use_gui,
         match_info=match_info,
     )
+
+
+# ── Three-scenario comparison ────────────────────────────────────────────────
+
+def simulate_three_scenarios_mocapact(
+    gt_knee: np.ndarray,
+    nominal_knee: np.ndarray,
+    bad_knee: np.ndarray,
+    sample_thigh_right: Optional[np.ndarray] = None,
+    policy=None,
+    policy_checkpoint: Optional[str | Path] = None,
+    model_dir: str | Path = "mocapact_models",
+    eval_seconds: float = DEFAULT_EVAL_SECONDS,
+    device: str = "cpu",
+    reference_knee: Optional[np.ndarray] = None,
+    use_gui: bool = False,
+    match_info: Optional[dict] = None,
+) -> Tuple[dict, dict, dict]:
+    """Run ground-truth, nominal, and bad scenarios in lock-step.
+
+    When *use_gui* is True all three viewer windows are opened **before** any
+    stepping begins, so they share the same GLFW session and avoid the WGL
+    "context in use" crash that occurs when viewers are opened sequentially.
+
+    Parameters
+    ----------
+    gt_knee, nominal_knee, bad_knee :
+        Right knee signals for each scenario (included-angle, degrees).
+    reference_knee :
+        Ground-truth knee for error metrics (usually the same as *gt_knee*).
+
+    Returns
+    -------
+    Tuple of (gt_result, nominal_result, bad_result) dicts.
+    """
+    if not _MOCAPACT_AVAILABLE or not _DM_CONTROL_AVAILABLE:
+        raise RuntimeError(
+            "MoCapAct + dm_control required.  Install with:\n"
+            "  pip install mocapact dm_control stable-baselines3\n"
+            + (f"Import error was: {_MOCAPACT_IMPORT_ERROR}" if _MOCAPACT_IMPORT_ERROR else "")
+        )
+
+    if policy is None:
+        policy = load_multi_clip_policy(
+            checkpoint_path=policy_checkpoint,
+            model_dir=model_dir,
+            device=device,
+        )
+
+    clip_id = match_info["clip_id"] if match_info else None
+    envs = [create_walking_env(policy=policy, clip_id=clip_id) for _ in range(3)]
+
+    knee_idx = _find_knee_actuator_index(envs[0])
+    hip_idx = _find_hip_actuator_index(envs[0])
+
+    def _prep(arr):
+        deg = _included_to_flexion(np.asarray(arr, dtype=np.float64)).astype(np.float32)
+        return deg, np.radians(deg)
+
+    deg_arrs = [_prep(k) for k in (gt_knee, nominal_knee, bad_knee)]
+    # deg_arrs[i] = (deg, rad)
+
+    ref_flex_deg = (
+        _included_to_flexion(np.asarray(reference_knee, dtype=np.float64))
+        if reference_knee is not None else None
+    )
+    pred_hip_rad = (
+        np.radians(_included_to_flexion(np.asarray(sample_thigh_right, dtype=np.float64)))
+        if sample_thigh_right is not None else None
+    )
+
+    T = min(int(eval_seconds * SIM_FPS), *(len(d[0]) for d in deg_arrs))
+    metrics_list = [MoCapActEvalMetrics.empty() for _ in range(3)]
+    physics_list = [_get_physics(e) for e in envs]
+    obss = [e.reset() for e in envs]
+
+    # Open all viewers before stepping to keep contexts alive simultaneously
+    viewers: List[Optional[object]] = [None, None, None]
+    if use_gui:
+        labels = ["Ground Truth", "Nominal", "Bad (delay+noise)"]
+        for i, (phys, label) in enumerate(zip(physics_list, labels)):
+            try:
+                import mujoco.viewer as _mv
+                viewers[i] = _mv.launch_passive(phys.model, phys.data)
+                print(f"[MoCapAct] {label} viewer opened.")
+            except Exception as exc:
+                print(f"[MoCapAct] Could not open {label} viewer: {exc}")
+
+    is_npmp = hasattr(policy, "initial_state")
+    embeds = [policy.initial_state(deterministic=False) if is_npmp else None for _ in range(3)]
+    dones = [False, False, False]
+
+    for t in tqdm(range(T), desc="3-scenario sim", unit="step", leave=False):
+        open_viewers = [v for v in viewers if v is not None]
+        if open_viewers and all(not v.is_running() for v in open_viewers):
+            break
+
+        for i in range(3):
+            if dones[i]:
+                continue
+            if is_npmp:
+                action, embeds[i] = policy.predict(obss[i], state=embeds[i], deterministic=False)
+            else:
+                action, _ = policy.predict(obss[i], deterministic=True)
+            policy_knee_ctrl = float(action[knee_idx])
+            action[knee_idx] = _knee_angle_to_ctrl(deg_arrs[i][1][t], envs[i])
+            if pred_hip_rad is not None:
+                action[hip_idx] = _hip_angle_to_ctrl(
+                    pred_hip_rad[min(t, len(pred_hip_rad) - 1)], envs[i]
+                )
+            obss[i], _, dones[i], _ = envs[i].step(action)
+            _collect_step_metrics(
+                metrics_list[i], physics_list[i],
+                float(deg_arrs[i][0][t]), ref_flex_deg, policy_knee_ctrl, t,
+            )
+
+        for v in viewers:
+            if v is not None and v.is_running():
+                v.sync()
+
+    for v in viewers:
+        if v is not None:
+            try:
+                v.close()
+            except Exception:
+                pass
+    for e in envs:
+        e.close()
+
+    labels_mode = ["mocapact_gt", "mocapact_nominal", "mocapact_bad"]
+    results = tuple(
+        _build_sim_result(m, match_info, SIM_FPS, mode)
+        for m, mode in zip(metrics_list, labels_mode)
+    )
+    return results  # type: ignore[return-value]
 
 
 # ── Availability check ───────────────────────────────────────────────────────
