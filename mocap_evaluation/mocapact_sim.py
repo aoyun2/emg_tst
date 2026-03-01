@@ -88,24 +88,21 @@ for _name, _val in _NP2_ALIASES.items():
 try:
     import gym.spaces.box as _gsb
 
-    # low_repr / high_repr: added in gym 0.26 as plain instance attrs (not
-    # properties). Patch __init__ so fresh Box objects have them, and define
-    # __setstate__ so pickle restores them directly into __dict__ without any
-    # descriptor interference (which caused "property of 'Box' has no setter").
+    # low_repr / high_repr: added in gym 0.26 as plain instance attrs.
+    # Use __getattr__ (fallback-only lookup) so the attribute is synthesised
+    # whenever it's missing — regardless of whether the Box was created fresh,
+    # unpickled from an old checkpoint, or restored via __new__.
     if not hasattr(_gsb.Box, "low_repr"):
-        _orig_box_init = _gsb.Box.__init__
-        def _box_init_with_repr(self, *args, **kwargs):
-            _orig_box_init(self, *args, **kwargs)
-            if "low_repr" not in self.__dict__:
-                self.__dict__["low_repr"] = str(self.low)
-            if "high_repr" not in self.__dict__:
-                self.__dict__["high_repr"] = str(self.high)
-        _gsb.Box.__init__ = _box_init_with_repr  # type: ignore[method-assign]
-
-        if not hasattr(_gsb.Box, "__setstate__"):
-            def _box_setstate(self, state):
-                self.__dict__.update(state)
-            _gsb.Box.__setstate__ = _box_setstate  # type: ignore[attr-defined]
+        _orig_box_getattr = _gsb.Box.__getattr__ if hasattr(_gsb.Box, "__getattr__") else None
+        def _box_getattr(self, name: str):
+            if name == "low_repr":
+                return str(self.low)
+            if name == "high_repr":
+                return str(self.high)
+            if _orig_box_getattr is not None:
+                return _orig_box_getattr(self, name)
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+        _gsb.Box.__getattr__ = _box_getattr  # type: ignore[attr-defined]
 
     # is_bounded: added in gym 0.26; older Box had no such method
     if not hasattr(_gsb.Box, "is_bounded"):
