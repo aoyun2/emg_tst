@@ -88,20 +88,24 @@ for _name, _val in _NP2_ALIASES.items():
 try:
     import gym.spaces.box as _gsb
 
-    # low_repr / high_repr: added in gym 0.26, missing on older installs.
-    # Must include setters: pickle restores these as instance attrs, which
-    # raises "property has no setter" if only a getter is defined.
+    # low_repr / high_repr: added in gym 0.26 as plain instance attrs (not
+    # properties). Patch __init__ so fresh Box objects have them, and define
+    # __setstate__ so pickle restores them directly into __dict__ without any
+    # descriptor interference (which caused "property of 'Box' has no setter").
     if not hasattr(_gsb.Box, "low_repr"):
-        def _low_repr_get(self) -> str:
-            return str(self.low)
-        def _low_repr_set(self, v) -> None:
-            pass  # computed from self.low; stored value from pickle is discarded
-        def _high_repr_get(self) -> str:
-            return str(self.high)
-        def _high_repr_set(self, v) -> None:
-            pass  # computed from self.high
-        _gsb.Box.low_repr  = property(_low_repr_get,  _low_repr_set)   # type: ignore[attr-defined]
-        _gsb.Box.high_repr = property(_high_repr_get, _high_repr_set)  # type: ignore[attr-defined]
+        _orig_box_init = _gsb.Box.__init__
+        def _box_init_with_repr(self, *args, **kwargs):
+            _orig_box_init(self, *args, **kwargs)
+            if "low_repr" not in self.__dict__:
+                self.__dict__["low_repr"] = str(self.low)
+            if "high_repr" not in self.__dict__:
+                self.__dict__["high_repr"] = str(self.high)
+        _gsb.Box.__init__ = _box_init_with_repr  # type: ignore[method-assign]
+
+        if not hasattr(_gsb.Box, "__setstate__"):
+            def _box_setstate(self, state):
+                self.__dict__.update(state)
+            _gsb.Box.__setstate__ = _box_setstate  # type: ignore[attr-defined]
 
     # is_bounded: added in gym 0.26; older Box had no such method
     if not hasattr(_gsb.Box, "is_bounded"):
