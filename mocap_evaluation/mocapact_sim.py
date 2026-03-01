@@ -1127,7 +1127,7 @@ def simulate_mocapact_prosthetic(
     # Initialise the policy's recurrent state (embedding for NPMP)
     is_npmp = hasattr(policy, "initial_state")
     if is_npmp:
-        embed = policy.initial_state(deterministic=False)
+        embed = policy.initial_state(deterministic=True)
     else:
         embed = None
 
@@ -1138,7 +1138,7 @@ def simulate_mocapact_prosthetic(
 
         # ── Policy proposes action for all 56 joints ──────────────────
         if is_npmp:
-            action, embed = policy.predict(obs, state=embed, deterministic=False)
+            action, embed = policy.predict(obs, state=embed, deterministic=True)
         else:
             action, _ = policy.predict(obs, deterministic=True)
 
@@ -1176,7 +1176,7 @@ def simulate_mocapact_prosthetic(
             if use_gui:
                 obs = env.reset()
                 if is_npmp:
-                    embed = policy.initial_state(deterministic=False)
+                    embed = policy.initial_state(deterministic=True)
                 continue
             break
 
@@ -1385,7 +1385,7 @@ def simulate_three_scenarios_mocapact(
                 print(f"[MoCapAct] Could not open {label} viewer: {exc}")
 
     is_npmp = hasattr(policy, "initial_state")
-    embeds = [policy.initial_state(deterministic=False) if is_npmp else None for _ in range(3)]
+    embeds = [policy.initial_state(deterministic=True) if is_npmp else None for _ in range(3)]
     dones = [False, False, False]
     metrics_open = [True, True, True]
 
@@ -1417,11 +1417,11 @@ def simulate_three_scenarios_mocapact(
                         obss[i] = envs[i].reset()
                         dones[i] = False
                         if is_npmp:
-                            embeds[i] = policy.initial_state(deterministic=False)
+                            embeds[i] = policy.initial_state(deterministic=True)
                     else:
                         continue
                 if is_npmp:
-                    action, embeds[i] = policy.predict(obss[i], state=embeds[i], deterministic=False)
+                    action, embeds[i] = policy.predict(obss[i], state=embeds[i], deterministic=True)
                 else:
                     action, _ = policy.predict(obss[i], deterministic=True)
                 policy_knee_ctrl = float(action[knee_idx])
@@ -1456,7 +1456,7 @@ def simulate_three_scenarios_mocapact(
                 break
             if t >= T:
                 # In GUI mode keep replaying until the user closes all windows.
-                if use_gui and open_viewers and any_running:
+                if use_gui and open_viewers:
                     cycle_idx += 1
                     if not loop_announced:
                         print("[MoCapAct] Playback reached end; looping until viewer windows close.")
@@ -1464,7 +1464,7 @@ def simulate_three_scenarios_mocapact(
                     t = 0
                     dones = [False, False, False]
                     obss = [e.reset() for e in envs]
-                    embeds = [policy.initial_state(deterministic=False) if is_npmp else None for _ in range(3)]
+                    embeds = [policy.initial_state(deterministic=True) if is_npmp else None for _ in range(3)]
                     continue
                 break
     finally:
