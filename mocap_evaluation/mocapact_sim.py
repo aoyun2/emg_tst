@@ -1477,7 +1477,7 @@ def simulate_three_scenarios_mocapact(
                 break
             if t >= T:
                 # In GUI mode keep replaying until the user closes all windows.
-                if use_gui and open_viewers and any_running:
+                if use_gui:
                     cycle_idx += 1
                     if not loop_announced:
                         print("[MoCapAct] Playback reached end; looping until viewer windows close.")
