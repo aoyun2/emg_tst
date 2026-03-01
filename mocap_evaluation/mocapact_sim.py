@@ -850,17 +850,28 @@ def create_walking_env(
 
 def _collect_step_metrics(
     metrics: "MoCapActEvalMetrics",
-    physics,
+    env,
     pred_deg: float,
     ref_flex_deg,
     policy_knee_ctrl: float,
     t: int,
 ) -> None:
     """Append per-step data to *metrics* (CoM, knee, contacts, fall detection)."""
+    com_h = float("nan")
+    physics = None
     try:
+        physics = _get_physics(env)
         com_h = float(physics.data.subtree_com[0, 2])
     except Exception:
-        com_h = float(physics.center_of_mass()[2])
+        try:
+            if physics is None:
+                physics = _get_physics(env)
+            com_h = float(physics.center_of_mass()[2])
+        except Exception:
+            # dm_control may replace physics handles when wrapped envs auto-reset
+            # at terminal steps. Reacquire from env each frame and keep NaN if the
+            # handle is temporarily unavailable.
+            pass
     metrics.com_height.append(com_h)
     metrics.pred_knee.append(pred_deg)
 
@@ -871,7 +882,15 @@ def _collect_step_metrics(
         natural_rad = low + (policy_knee_ctrl + 1.0) * (high - low) / 2.0
         metrics.ref_knee.append(float(np.degrees(natural_rad)))
 
+    if physics is None:
+        try:
+            physics = _get_physics(env)
+        except Exception:
+            physics = None
+
     try:
+        if physics is None:
+            raise RuntimeError("physics unavailable")
         ncon = physics.data.ncon
         r_contact = l_contact = False
         for c in range(ncon):
@@ -1027,7 +1046,7 @@ def simulate_mocapact_prosthetic(
     metrics = MoCapActEvalMetrics.empty()
     obs = env.reset()
 
-    # Get the physics handle for metric collection
+    # Get the physics handle for viewer wiring (reacquired later for metrics)
     physics = _get_physics(env)
 
     # ── Open interactive MuJoCo viewer (use_gui=True) ─────────────────
@@ -1088,7 +1107,7 @@ def simulate_mocapact_prosthetic(
         if _viewer is not None and _viewer.is_running():
             _viewer.sync()
 
-        _collect_step_metrics(metrics, physics, float(pred_flex_deg[t]), ref_flex_deg, policy_knee_ctrl, t)
+        _collect_step_metrics(metrics, env, float(pred_flex_deg[t]), ref_flex_deg, policy_knee_ctrl, t)
 
         if done:
             break
@@ -1314,7 +1333,7 @@ def simulate_three_scenarios_mocapact(
                 )
             obss[i], _, dones[i], _ = envs[i].step(action)
             _collect_step_metrics(
-                metrics_list[i], physics_list[i],
+                metrics_list[i], envs[i],
                 float(deg_arrs[i][0][t]), ref_flex_deg, policy_knee_ctrl, t,
             )
 
