@@ -28,17 +28,19 @@ from tqdm import tqdm
 TARGET_FPS: float = 200.0   # match EMG/IMU pipeline rate
 _NATIVE_FPS: float = 30.0   # dm_control default control frequency
 
-# Joint names in the dm_control CMU humanoid MuJoCo model
+# Joint names in the dm_control CMU humanoid MuJoCo model (V2020).
+# rfemurry = right femur Y-axis rotation (sagittal hip flex/ext).
+# Note: the name has a double-r — "rfemur" body + "ry" axis suffix.
 _KNEE_JOINT = "rtibiarx"   # right tibia around x-axis (knee flexion)
-_HIP_JOINT  = "rfemury"    # right femur around y-axis (hip flex/ext)
+_HIP_JOINT  = "rfemurry"   # right femur around y-axis (hip flex/ext)
 
 _CACHE_FILE = ".cache_mocapact.npz"
 
 # Fallback joint qpos addresses if physics model query fails.
 # These are the known values for the dm_control CMU humanoid (V2020).
-# qpos layout: 7 free-joint DOFs (pos+quat) then hinge joints alphabetically.
+# qpos layout: 7 free-joint DOFs (pos+quat) then hinge joints in model order.
 _KNEE_QPOS_FALLBACK = 47   # rtibiarx qpos index
-_HIP_QPOS_FALLBACK  = 40   # rfemury qpos index
+_HIP_QPOS_FALLBACK  = 41   # rfemurry qpos index (was rfemury — corrected)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -61,7 +63,7 @@ def _rad_knee_to_included_deg(rad: np.ndarray) -> np.ndarray:
 
 
 def _rad_hip_to_included_deg(rad: np.ndarray) -> np.ndarray:
-    """MuJoCo rfemury (rad, 0=neutral, +flex/-ext) → included-angle degrees."""
+    """MuJoCo rfemurry (rad, 0=neutral, +flex/-ext) → included-angle degrees."""
     deg = np.degrees(np.asarray(rad, dtype=np.float64))
     return (180.0 - deg).astype(np.float32)
 
@@ -241,7 +243,7 @@ def _load_via_env_stepping(clip_id: str) -> Optional[Tuple[np.ndarray, np.ndarra
             # starts exactly at the reference pose)
             try:
                 k = float(physics.named.data.qpos[_KNEE_JOINT])
-                h = float(physics.named.data.qpos[_HIP_JOINT])
+                h = float(physics.named.data.qpos[_HIP_JOINT]  # rfemurry)
             except Exception:
                 k = float(physics.data.qpos[_KNEE_QPOS_FALLBACK])
                 h = float(physics.data.qpos[_HIP_QPOS_FALLBACK])

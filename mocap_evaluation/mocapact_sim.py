@@ -82,10 +82,10 @@ _RIGHT_KNEE_IDX_FALLBACK = 44
 _KNEE_RANGE_RAD = (0.01, 2.96706)
 
 # dm_control CMU humanoid right hip (sagittal flexion/extension) actuator.
-# rfemury controls the thigh swing in the sagittal plane.
+# rfemurry controls the thigh swing in the sagittal plane (Y-axis rotation).
 # Alphabetically it sits a few positions before rtibiarx; index 37 is the
 # known fallback — runtime discovery is always attempted first.
-_RIGHT_HIP_ACTUATOR = "rfemury"
+_RIGHT_HIP_ACTUATOR = "rfemurry"
 _RIGHT_HIP_IDX_FALLBACK = 37
 
 # Right hip joint range (radians): −60° (extension) to +75° (flexion).
@@ -294,7 +294,7 @@ def _get_physics(env):
 
 
 def _find_hip_actuator_index(env) -> int:
-    """Find the index of the right hip (rfemury) actuator in dm_control's action array."""
+    """Find the index of the right hip (rfemurry) actuator in dm_control's action array."""
     try:
         physics = _get_physics(env)
         for i in range(physics.model.nu):
@@ -601,7 +601,7 @@ def simulate_mocapact_prosthetic(
         Model-predicted right knee angle (included-angle, degrees).
     predicted_thigh :
         Recorded right thigh angle (included-angle, degrees).  When provided,
-        overrides the right hip (rfemury) actuator so the thigh swing comes
+        overrides the right hip (rfemurry) actuator so the thigh swing comes
         entirely from your IMU data rather than the MoCapAct policy.
     policy :
         Pre-loaded MoCapAct policy.  If None, loads from checkpoint.
@@ -815,7 +815,7 @@ def simulate_prosthetic_walking_mocapact(
         Right knee angle prediction (included-angle, degrees).
     sample_thigh_right :
         Recorded right thigh angle (included-angle, degrees).  Overrides the
-        right hip (rfemury) actuator so the thigh swing is driven by your IMU
+        right hip (rfemurry) actuator so the thigh swing is driven by your IMU
         data rather than the MoCapAct policy.
     policy_checkpoint :
         Path to MoCapAct multi-clip checkpoint.
