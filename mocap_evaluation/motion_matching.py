@@ -21,7 +21,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from tqdm import tqdm
 
-from mocap_evaluation.mocap_loader import _ALL_JOINT_KEYS
+from mocap_evaluation.mocap_loader import _ALL_JOINT_KEYS, _EXTRA_CHANNEL_KEYS
 
 
 # ── Normalisation ─────────────────────────────────────────────────────────────
@@ -190,7 +190,7 @@ def find_best_match(
             best_start = int(s)
 
     # ── extract all joints for best segment ───────────────────────────────
-    keys_1d = _ALL_JOINT_KEYS + ["root_pitch", "root_yaw", "root_roll"]
+    keys_1d = _ALL_JOINT_KEYS + _EXTRA_CHANNEL_KEYS + ["root_pitch", "root_yaw", "root_roll"]
     matched: dict = {}
     for k in keys_1d:
         if k in mocap_db:
@@ -287,7 +287,7 @@ def find_top_k_matches(
     selected: List[Tuple[int, float, dict]] = []
     chosen_starts: List[int] = []
 
-    keys_1d = _ALL_JOINT_KEYS + ["root_pitch", "root_yaw", "root_roll"]
+    keys_1d = _ALL_JOINT_KEYS + _EXTRA_CHANNEL_KEYS + ["root_pitch", "root_yaw", "root_roll"]
 
     for dist, s in dtw_scores:
         if len(selected) >= k:
@@ -339,8 +339,7 @@ def build_predicted_sequence(
                       keys same as find_best_match's `matched` output
     """
     N = len(imu_knee_full)
-    keys_1d = ["knee_right", "knee_left", "hip_right", "hip_left",
-               "ankle_right", "ankle_left", "pelvis_tilt", "trunk_lean"]
+    keys_1d = _ALL_JOINT_KEYS + _EXTRA_CHANNEL_KEYS + ["root_pitch", "root_yaw", "root_roll"]
 
     chunks = []
     dists  = []
@@ -359,7 +358,7 @@ def build_predicted_sequence(
         _, d, seg = find_best_match(knee_q, thigh_q, mocap_db, **match_kwargs)
         # Keep only the non-padded portion
         actual_len = end - start
-        trimmed = {k: seg[k][:actual_len] for k in keys_1d}
+        trimmed = {k: seg[k][:actual_len] for k in keys_1d if k in seg}
         trimmed["root_pos"] = seg["root_pos"][:actual_len]
         chunks.append(trimmed)
         dists.append(d)
@@ -367,7 +366,8 @@ def build_predicted_sequence(
     # Concatenate chunks
     stitched: dict = {}
     for k in keys_1d:
-        stitched[k] = np.concatenate([c[k] for c in chunks])
+        if k in chunks[0]:
+            stitched[k] = np.concatenate([c[k] for c in chunks])
     stitched["root_pos"] = np.concatenate([c["root_pos"] for c in chunks], axis=0)
 
     return np.array(dists, dtype=np.float32), stitched

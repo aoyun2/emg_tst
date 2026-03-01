@@ -105,6 +105,33 @@ _CMU_JOINT_MAP = {
 # All semantic joint keys (excluding root_pos and root_pitch/yaw/roll)
 _ALL_JOINT_KEYS = list(_CMU_JOINT_MAP.values())
 
+# Extra rotation channels for multi-DOF joints.
+# Maps (BVH joint, BVH channel) → semantic key.
+# These give abduction/adduction (Zrotation) and internal/external rotation
+# (Yrotation) on top of the primary flexion/extension (Xrotation) already
+# captured by the main _CMU_JOINT_MAP via get_flexion().
+_EXTRA_CHANNEL_MAP = {
+    # Hips: abduction + rotation
+    ("RightUpLeg", "Yrotation"): "hip_right_rot",
+    ("RightUpLeg", "Zrotation"): "hip_right_abd",
+    ("LeftUpLeg",  "Yrotation"): "hip_left_rot",
+    ("LeftUpLeg",  "Zrotation"): "hip_left_abd",
+    # Shoulders: abduction + rotation
+    ("RightArm", "Yrotation"): "shoulder_right_rot",
+    ("RightArm", "Zrotation"): "shoulder_right_abd",
+    ("LeftArm",  "Yrotation"): "shoulder_left_rot",
+    ("LeftArm",  "Zrotation"): "shoulder_left_abd",
+    # Spine chain: lateral bend (Zrotation) + axial rotation (Yrotation)
+    ("LowerBack", "Yrotation"): "pelvis_rotation",
+    ("LowerBack", "Zrotation"): "pelvis_lateral",
+    ("Spine",     "Yrotation"): "trunk_rotation",
+    ("Spine",     "Zrotation"): "trunk_lateral",
+    ("Spine1",    "Yrotation"): "upper_trunk_rotation",
+    ("Spine1",    "Zrotation"): "upper_trunk_lateral",
+}
+
+_EXTRA_CHANNEL_KEYS = list(_EXTRA_CHANNEL_MAP.values())
+
 # ── Normal gait kinematics from Winter (2009) ─────────────────────────────────
 # Each dict maps gait-cycle percentage [0, 100] → angle in degrees.
 # Right side only; left side is phase-shifted by 50%.
@@ -223,11 +250,24 @@ def _extract_angles_from_bvh(parser: BVHParser) -> Optional[dict]:
         if k in angles:
             angles[k] = np.clip(180.0 - np.abs(angles[k]), 0.0, 180.0).astype(np.float32)
 
+    # ── Extra rotation channels (abduction, rotation) for multi-DOF joints ──
+    # These are raw BVH degrees (NOT included-angle) — stored directly as
+    # signed angles where 0 = neutral.  The simulation converts to radians.
+    for (bvh_joint, bvh_channel), key in _EXTRA_CHANNEL_MAP.items():
+        ch = parser.get_channel(bvh_joint, bvh_channel)
+        if ch is not None:
+            angles[key] = _resample(ch, src_fps, TARGET_FPS)[:len(angles.get("knee_right", []))]
+        # (missing channels will be filled with zeros below)
+
     # Fill missing signals with neutral (180 = straight/neutral)
     N = len(angles["knee_right"])
     for k in _ALL_JOINT_KEYS:
         if k not in angles:
             angles[k] = np.full(N, 180.0, dtype=np.float32)
+    # Extra channels: 0 = neutral (raw degrees, not included-angle)
+    for k in _EXTRA_CHANNEL_KEYS:
+        if k not in angles:
+            angles[k] = np.zeros(N, dtype=np.float32)
 
     # Root position (metres; BVH positions are typically in cm)
     # BVH uses Y-up: Xposition=lateral, Yposition=height, Zposition=forward.
@@ -352,7 +392,7 @@ def _concatenate_databases(dbs: list, meta: Optional[list] = None) -> dict:
            When provided, per-frame ``categories`` array and
            ``file_boundaries`` list are added to the result.
     """
-    keys_1d = _ALL_JOINT_KEYS + ["root_pitch", "root_yaw", "root_roll"]
+    keys_1d = _ALL_JOINT_KEYS + _EXTRA_CHANNEL_KEYS + ["root_pitch", "root_yaw", "root_roll"]
     result: dict = {}
     for k in keys_1d:
         result[k] = np.concatenate([d[k] for d in dbs])
@@ -379,11 +419,11 @@ def _concatenate_databases(dbs: list, meta: Optional[list] = None) -> dict:
 # ── Cache helpers ─────────────────────────────────────────────────────────────
 
 # Keys that are per-frame 1-D arrays in the database dict.
-_CACHE_KEYS_1D = _ALL_JOINT_KEYS + ["root_pitch", "root_yaw", "root_roll"]
+_CACHE_KEYS_1D = _ALL_JOINT_KEYS + _EXTRA_CHANNEL_KEYS + ["root_pitch", "root_yaw", "root_roll"]
 
 # Bump this when angle extraction or resampling logic changes so that stale
 # caches are automatically invalidated (the fingerprint includes this string).
-_CACHE_VERSION = "v5"
+_CACHE_VERSION = "v6"
 
 
 def _cache_fingerprint(bvh_dir: Path) -> str:
