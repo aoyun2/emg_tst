@@ -6,12 +6,13 @@ is driven by the model's predicted knee angle, and the right hip, which is
 driven by the sample's thigh_angle -- allowing evaluation of how well the
 prediction maintains stable, natural gait.
 
-The torso root uses 6 separate joints (3 slide + 3 hinge) with XY-only
-position tracking from the BVH root trajectory.  The XY actuators keep the
-model following the correct walking path, while the Z slide joint is
-unactuated — the body's height is determined entirely by gravity and ground
-reaction forces.  If the predicted knee angle is bad, the body falls
-naturally.  Root orientation joints have passive damping only (no actuators).
+The torso root uses 6 separate joints (3 slide + 3 hinge) with XY position
+tracking and orientation tracking from the BVH root trajectory.  The XY
+actuators keep the model following the correct walking path, the orientation
+actuators (yaw/pitch/roll) maintain proper posture, while the Z slide joint
+is unactuated — the body's height is determined entirely by gravity and
+ground reaction forces.  If the predicted knee angle is bad, the body falls
+naturally.
 
 Multi-DOF joints use separate hinge joints per axis (MuJoCo has no ball
 joint with position actuators).  Hips have flex + abd + rot (3 DOF),
@@ -243,8 +244,9 @@ class SimTrajectory:
 #   Arms:  2*1(clav) + 2*3(shoulder) + 2*1(elbow) + 2*1(wrist) = 12
 #   Fingers: 6 (3 per hand)
 #   Root XY: 2
-#   Total: 12 + 9 + 2 + 12 + 6 + 2 = 43
-N_ACT_PER_HUMANOID = 43
+#   Root orientation (yaw, pitch, roll): 3
+#   Total: 12 + 9 + 2 + 12 + 6 + 2 + 3 = 46
+N_ACT_PER_HUMANOID = 46
 
 _MJCF = """
 <mujoco model="prosthetic_eval_humanoid">
@@ -267,12 +269,12 @@ _MJCF = """
     <light pos="3 3 4" dir="-0.5 -0.5 -1" diffuse="0.4 0.4 0.4"/>
 
     <body name="pelvis" pos="0 0 1.05">
-      <joint name="root_x" type="slide" axis="1 0 0" damping="5"/>
-      <joint name="root_y" type="slide" axis="0 1 0" damping="10"/>
-      <joint name="root_z" type="slide" axis="0 0 1" damping="2"/>
-      <joint name="root_yaw"   type="hinge" axis="0 0 1" damping="3"/>
-      <joint name="root_pitch" type="hinge" axis="0 1 0" damping="3"/>
-      <joint name="root_roll"  type="hinge" axis="1 0 0" damping="3"/>
+      <joint name="root_x" type="slide" axis="1 0 0" damping="500"/>
+      <joint name="root_y" type="slide" axis="0 1 0" damping="500"/>
+      <joint name="root_z" type="slide" axis="0 0 1" damping="80"/>
+      <joint name="root_yaw"   type="hinge" axis="0 0 1" damping="40"/>
+      <joint name="root_pitch" type="hinge" axis="0 1 0" damping="40"/>
+      <joint name="root_roll"  type="hinge" axis="1 0 0" damping="40"/>
       <geom type="capsule" fromto="0 0 -0.12 0 0 0" size="0.085"
             rgba="0.6 0.6 0.65 1"/>
 
@@ -473,7 +475,7 @@ _MJCF = """
   </worldbody>
 
   <actuator>
-    <!-- 43 actuators: 41 body joints + 2 root XY tracking. -->
+    <!-- 46 actuators: 41 body joints + 2 root XY + 3 root orientation. -->
     <!-- ctrl[0..11]: legs (hips 3-DOF each + knee + ankle + toe) -->
     <position joint="right_hip"          kp="400"/>
     <position joint="right_hip_abd"      kp="200"/>
@@ -522,8 +524,12 @@ _MJCF = """
     <position joint="left_fing_idx"      kp="15"/>
     <position joint="left_thumb"         kp="15"/>
     <!-- ctrl[41..42]: root XY tracking (Z free for physics) -->
-    <position joint="root_x"            kp="2000"/>
-    <position joint="root_y"            kp="2000"/>
+    <position joint="root_x"            kp="1000"/>
+    <position joint="root_y"            kp="1000"/>
+    <!-- ctrl[43..45]: root orientation tracking -->
+    <position joint="root_yaw"          kp="300"/>
+    <position joint="root_pitch"        kp="300"/>
+    <position joint="root_roll"         kp="300"/>
   </actuator>
 </mujoco>
 """
@@ -571,8 +577,8 @@ def _build_dual_mjcf() -> str:
         + ref_xml + "\n"
     )
 
-    # Reference actuator block (same 43 actuators, prefixed names)
-    ref_actuators = """    <!-- Reference model actuators (43 actuators) -->
+    # Reference actuator block (same 46 actuators, prefixed names)
+    ref_actuators = """    <!-- Reference model actuators (46 actuators) -->
     <position joint="ref_right_hip"          kp="400"/>
     <position joint="ref_right_hip_abd"      kp="200"/>
     <position joint="ref_right_hip_rot"      kp="150"/>
@@ -614,8 +620,11 @@ def _build_dual_mjcf() -> str:
     <position joint="ref_left_finger"        kp="15"/>
     <position joint="ref_left_fing_idx"      kp="15"/>
     <position joint="ref_left_thumb"         kp="15"/>
-    <position joint="ref_root_x"            kp="2000"/>
-    <position joint="ref_root_y"            kp="2000"/>"""
+    <position joint="ref_root_x"            kp="1000"/>
+    <position joint="ref_root_y"            kp="1000"/>
+    <position joint="ref_root_yaw"          kp="300"/>
+    <position joint="ref_root_pitch"        kp="300"/>
+    <position joint="ref_root_roll"         kp="300"/>"""
 
     base = _MJCF
     base = base.replace(
@@ -689,8 +698,23 @@ class _MuJoCoRunner:
         root_xy = root_pos[:, :2].copy()
         root_xy -= root_xy[0]  # start at (0, 0)
 
+        # ── Root orientation tracking from BVH ─────────────────────────────
+        # BVH Y-up → MuJoCo Z-up coordinate mapping:
+        #   root_yaw  = BVH Yrotation (same sign)
+        #   root_pitch = -BVH Xrotation (negated: BVH X-right → MuJoCo -Y)
+        #   root_roll  = BVH Zrotation (same sign)
+        # Normalise so frame 0 starts at neutral (0, 0, 0).
+        root_ori = np.zeros((T, 3), dtype=np.float64)
+        root_ori[:, 0] = np.radians(_pad_or_trim(
+            mocap_segment.get("root_yaw", np.zeros(T)), T, default=0.0))
+        root_ori[:, 1] = np.radians(-_pad_or_trim(
+            mocap_segment.get("root_pitch", np.zeros(T)), T, default=0.0))
+        root_ori[:, 2] = np.radians(_pad_or_trim(
+            mocap_segment.get("root_roll", np.zeros(T)), T, default=0.0))
+        root_ori -= root_ori[0]  # start at neutral
+
         # ── Pre-compute controls (radians / metres) ───────────────────────
-        # 29 actuators per humanoid: 27 body joints + 2 root XY.
+        # 46 actuators per humanoid: 41 body joints + 2 root XY + 3 root ori.
         NA = N_ACT_PER_HUMANOID
         n_act = NA * 2 if self.show_reference else NA
         controls = np.zeros((T, n_act), dtype=np.float64)
@@ -754,6 +778,10 @@ class _MuJoCoRunner:
             # ── Root XY tracking ───────────────────────────────────
             controls[:, off + 41] = root_xy[:, 0]  # root_x (metres)
             controls[:, off + 42] = root_xy[:, 1]  # root_y (metres)
+            # ── Root orientation tracking ─────────────────────────
+            controls[:, off + 43] = root_ori[:, 0]  # root_yaw (radians)
+            controls[:, off + 44] = root_ori[:, 1]  # root_pitch (radians)
+            controls[:, off + 45] = root_ori[:, 2]  # root_roll (radians)
 
         _fill_humanoid(0, pred)  # prediction model: right knee = PREDICTION
 
@@ -780,18 +808,18 @@ class _MuJoCoRunner:
 
         # ── Warmup: initialise pose from frame-0 data, then settle ────
         # All root joints start at qpos=0 (body pos sets initial position).
-        # Root orientation stays at zero (upright) — no BVH orientation
-        # tracking, preventing the model from spawning horizontal.
+        # Root orientation starts at zero (upright) — frame-0 orientation
+        # is normalised to zero, so the model spawns upright.
         # We set body joint angles from frame-0 controls, then let
         # physics settle to resolve floor contact.
         data.ctrl[:] = controls[0]
         for i in range(model.nu):
             jnt_id = model.actuator_trnid[i, 0]
             data.qpos[model.jnt_qposadr[jnt_id]] = controls[0, i]
-        for _ in range(200):
+        for _ in range(500):
             mujoco.mj_step(model, data)
         data.qvel[:] = 0
-        for _ in range(100):
+        for _ in range(300):
             mujoco.mj_step(model, data)
         data.qvel[:] = 0
 
@@ -911,10 +939,10 @@ class _MuJoCoRunner:
                 for i in range(model.nu):
                     jnt_id = model.actuator_trnid[i, 0]
                     data.qpos[model.jnt_qposadr[jnt_id]] = controls[0, i]
-                for _ in range(200):
+                for _ in range(500):
                     mujoco.mj_step(model, data)
                 data.qvel[:] = 0
-                for _ in range(100):
+                for _ in range(300):
                     mujoco.mj_step(model, data)
                 data.qvel[:] = 0
                 metrics = EvalMetrics.empty()
@@ -1338,6 +1366,16 @@ def render_mocap_kinematic(
     root_xy = root_pos[:, :2].copy()
     root_xy -= root_xy[0]
 
+    # Root orientation (same BVH→MuJoCo mapping as _MuJoCoRunner)
+    root_ori = np.zeros((T, 3), dtype=np.float64)
+    root_ori[:, 0] = np.radians(_pad_or_trim(
+        mocap_segment.get("root_yaw", np.zeros(T)), T, default=0.0))
+    root_ori[:, 1] = np.radians(-_pad_or_trim(
+        mocap_segment.get("root_pitch", np.zeros(T)), T, default=0.0))
+    root_ori[:, 2] = np.radians(_pad_or_trim(
+        mocap_segment.get("root_roll", np.zeros(T)), T, default=0.0))
+    root_ori -= root_ori[0]
+
     # Use mocap hip for right side (kinematic = pure BVH)
     hip_r = _flex("hip_right")
 
@@ -1394,6 +1432,10 @@ def render_mocap_kinematic(
     # Root XY
     controls[:, 41] = root_xy[:, 0]
     controls[:, 42] = root_xy[:, 1]
+    # Root orientation
+    controls[:, 43] = root_ori[:, 0]
+    controls[:, 44] = root_ori[:, 1]
+    controls[:, 45] = root_ori[:, 2]
 
     # ── Kinematic playback: set qpos directly (no physics) ───────────
     qpos_history: List[np.ndarray] = []
