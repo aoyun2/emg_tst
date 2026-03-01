@@ -92,12 +92,13 @@ _RIGHT_HIP_IDX_FALLBACK = 37
 # Positive = thigh swings forward, negative = thigh swings back.
 _HIP_RANGE_RAD = (-1.047, 1.309)
 
-# Default multi-clip policy checkpoint (relative to model dir).
+# Default multi-clip policy checkpoint search order (relative to model dir).
 # The HF repo bundles a tarball with two variants:
-#   multiclip_policy/full_dataset/model/model.ckpt       (trained on ALL clips)
-#   multiclip_policy/locomotion_dataset/model/model.ckpt  (locomotion subset)
-_DEFAULT_MULTI_CLIP_CKPT = "multiclip_policy/locomotion_dataset/model/model.ckpt"
-_DEFAULT_MULTI_CLIP_CKPT_ALT = "multiclip_policy/full_dataset/model/model.ckpt"
+#   multiclip_policy/full_dataset/model/model.ckpt       (trained on ALL 1,144 clips)
+#   multiclip_policy/locomotion_dataset/model/model.ckpt  (locomotion subset only)
+# full_dataset is preferred so the policy can follow any CMU clip.
+_DEFAULT_MULTI_CLIP_CKPT = "multiclip_policy/full_dataset/model/model.ckpt"
+_DEFAULT_MULTI_CLIP_CKPT_ALT = "multiclip_policy/locomotion_dataset/model/model.ckpt"
 
 # HuggingFace model repo
 _HF_REPO = "microsoft/mocapact-models"
@@ -386,8 +387,8 @@ def _download_model(model_dir: str | Path) -> Path:
     ``multiclip_policy.tar.gz`` that extracts to::
 
         multiclip_policy/
-            locomotion_dataset/model/model.ckpt   (walking-focused)
-            full_dataset/model/model.ckpt         (all clips)
+            full_dataset/model/model.ckpt         (all clips — preferred)
+            locomotion_dataset/model/model.ckpt   (walking-focused — fallback)
     """
     model_dir = Path(model_dir)
 
