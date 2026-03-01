@@ -170,13 +170,15 @@ def evaluate_with_checkpoint(checkpoint_path: str, samples_path: str, cfg: EvalC
 def evaluate_test_sample(cfg: EvalConfig) -> dict:
     sec = cfg.robustness.eval_seconds
     if cfg.sample_source == "external":
-        curves = extract_external_sample_curves(duration_sec=sec, url=cfg.external_sample_url)
+        curves = extract_external_sample_curves(seconds=sec, source_url=cfg.external_sample_url)
     else:
-        curves = extract_real_sample_curves(duration_sec=sec)
+        curves = extract_real_sample_curves(mocap_dir=cfg.mocap_dir, seconds=sec)
     mocap_db = load_aggregated_database(mocap_root=cfg.mocap_dir, try_download=True, datasets=["cmu"], use_cache=cfg.use_cache)
+    knee = curves.knee_label_included_deg.astype(np.float32)
+    thigh = curves.thigh_angle_deg.astype(np.float32)
     # controlled degradation baseline for stress test
-    pred = curves.knee + 2.5 * np.sin(np.linspace(0, 4 * np.pi, len(curves.knee))).astype(np.float32)
-    seg = {"knee": curves.knee.astype(np.float32), "thigh": curves.thigh.astype(np.float32)}
+    pred = knee + 2.5 * np.sin(np.linspace(0, 4 * np.pi, len(knee))).astype(np.float32)
+    seg = {"knee": knee, "thigh": thigh}
     match_metrics = _scenario_metrics(seg, pred.astype(np.float32), mocap_db, cfg.robustness)
     out = {
         "mode": "paper_style_test_sample",
