@@ -76,22 +76,51 @@ def _clip_id_to_subject_trial(clip_id: str) -> Tuple[int, int]:
     return int(parts[1]), int(parts[2])
 
 
-def get_locomotion_clip_ids() -> List[str]:
-    """Return list of clip IDs from dm_control's LOCOMOTION_SMALL subset."""
+_SUBSET_MAP = {
+    "all":              "ALL",
+    "locomotion_small": "LOCOMOTION_SMALL",
+    "locomotion":       "LOCOMOTION_SMALL",
+    "walk_tiny":        "WALK_TINY",
+    "run_jump_tiny":    "RUN_JUMP_TINY",
+}
+
+
+def get_locomotion_clip_ids(subset: str = "all") -> List[str]:
+    """Return clip IDs for the requested dm_control CMU subset.
+
+    Parameters
+    ----------
+    subset : str
+        One of ``"all"`` (1,144 clips, ~3.5 hrs — default),
+        ``"locomotion_small"`` (243 clips, ~40 min walking/running),
+        ``"walk_tiny"`` (35 clips), or ``"run_jump_tiny"`` (50 clips).
+
+    Returns
+    -------
+    List[str]
+        Clip IDs like ``["CMU_001_01", ...]``.
+    """
     from dm_control.locomotion.tasks.reference_pose import cmu_subsets
-    clips = cmu_subsets.LOCOMOTION_SMALL
+
+    attr = _SUBSET_MAP.get(subset.lower(), subset.upper())
+    if not hasattr(cmu_subsets, attr):
+        raise ValueError(
+            f"Unknown subset {subset!r}.  "
+            f"Available: {list(_SUBSET_MAP)}"
+        )
+    clips = getattr(cmu_subsets, attr)
+
     # Different dm_control versions expose the collection differently
     if hasattr(clips, "ids"):
         return list(clips.ids)
     if hasattr(clips, "_clips"):
         return [c.id if hasattr(c, "id") else str(c) for c in clips._clips]
-    # Fallback: iterate
     try:
         return [c.id if hasattr(c, "id") else str(c) for c in clips]
     except TypeError:
         pass
     raise RuntimeError(
-        "Cannot enumerate clips from dm_control LOCOMOTION_SMALL.  "
+        f"Cannot enumerate clips from dm_control {attr}.  "
         "Check your dm_control version."
     )
 
@@ -243,7 +272,7 @@ def _load_via_env_stepping(clip_id: str) -> Optional[Tuple[np.ndarray, np.ndarra
             # starts exactly at the reference pose)
             try:
                 k = float(physics.named.data.qpos[_KNEE_JOINT])
-                h = float(physics.named.data.qpos[_HIP_JOINT]  # rfemurry)
+                h = float(physics.named.data.qpos[_HIP_JOINT])  # rfemurry
             except Exception:
                 k = float(physics.data.qpos[_KNEE_QPOS_FALLBACK])
                 h = float(physics.data.qpos[_HIP_QPOS_FALLBACK])
@@ -331,9 +360,10 @@ def _get_joint_addresses_once() -> Tuple[int, int]:
 # ── Main public API ───────────────────────────────────────────────────────────
 
 def load_mocapact_database(
-    cache_path: str = _CACHE_FILE,
+    cache_path: Optional[str] = None,
     use_cache: bool = True,
     target_fps: float = TARGET_FPS,
+    subset: str = "all",
     clip_ids: Optional[List[str]] = None,
     quiet: bool = False,
 ) -> dict:
@@ -346,14 +376,20 @@ def load_mocapact_database(
     Parameters
     ----------
     cache_path :
-        Path for the ``.npz`` cache file (speeds up subsequent calls).
+        Path for the ``.npz`` cache file.  Defaults to
+        ``.cache_mocapact_{subset}.npz``.
     use_cache :
         If True and cache exists, load from cache.
     target_fps :
         Resample all clips to this frame rate (default 200 Hz to match EMG pipeline).
+    subset :
+        Which dm_control CMU clip collection to use.  One of:
+        ``"all"`` (1,144 clips, ~3.5 hrs — **default**),
+        ``"locomotion_small"`` (243 clips, ~40 min walking/running),
+        ``"walk_tiny"`` (35 clips), or ``"run_jump_tiny"`` (50 clips).
+        Ignored when *clip_ids* is provided explicitly.
     clip_ids :
-        Explicit list of MocapAct clip IDs (e.g. ``["CMU_009_12"]``).
-        If None, uses ``dm_control``'s ``LOCOMOTION_SMALL`` subset.
+        Explicit list of clip IDs (overrides *subset*).
     quiet :
         Suppress progress bars.
 
@@ -368,6 +404,8 @@ def load_mocapact_database(
         ``fps``            : float
         ``source``         : str
     """
+    if cache_path is None:
+        cache_path = f".cache_mocapact_{subset}.npz"
     cache = Path(cache_path)
 
     # ── Try loading from cache ─────────────────────────────────────────────────
@@ -387,9 +425,10 @@ def load_mocapact_database(
 
     # ── Enumerate clips ────────────────────────────────────────────────────────
     if clip_ids is None:
-        clip_ids = get_locomotion_clip_ids()
+        clip_ids = get_locomotion_clip_ids(subset=subset)
     if not quiet:
-        print(f"[mocapact_dataset] Building database from {len(clip_ids)} clips …")
+        print(f"[mocapact_dataset] Building database from {len(clip_ids)} clips "
+              f"(subset={subset!r}) …")
 
     # ── Discover joint indices from physics model ──────────────────────────────
     knee_addr, hip_addr = _get_joint_addresses_once()
@@ -445,7 +484,7 @@ def load_mocapact_database(
         "categories":      cats,
         "root_pos":        root_pos,
         "fps":             np.float32(target_fps),
-        "source":          np.array("mocapact_reference"),
+        "source":          np.array(f"mocapact_reference/{subset}"),
     }
 
     # ── Save cache ─────────────────────────────────────────────────────────────
