@@ -49,14 +49,15 @@ try:
 except Exception:
     pass
 
+_MOCAPACT_IMPORT_ERROR: str = ""
 try:
     from mocapact.distillation import model as npmp_model
     from mocapact.envs import tracking as mocapact_tracking
     from mocapact.sb3 import utils as mocapact_utils
     from mocapact import observables as mocapact_obs
     _MOCAPACT_AVAILABLE = True
-except Exception:
-    pass
+except Exception as _e:
+    _MOCAPACT_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
 
 # MuJoCo (for metric collection from dm_control's physics)
 try:
@@ -474,7 +475,8 @@ def load_multi_clip_policy(
     if not _MOCAPACT_AVAILABLE:
         raise RuntimeError(
             "MoCapAct is required.  Install with:\n"
-            "  pip install mocapact dm_control stable-baselines3"
+            "  pip install mocapact dm_control stable-baselines3\n"
+            f"Import error was: {_MOCAPACT_IMPORT_ERROR}"
         )
 
     if checkpoint_path is None:
@@ -893,6 +895,7 @@ def check_requirements() -> str:
     """Return a human-readable status of MoCapAct requirements."""
     lines = []
     lines.append(f"dm_control:  {'OK' if _DM_CONTROL_AVAILABLE else 'MISSING (pip install dm_control)'}")
-    lines.append(f"mocapact:    {'OK' if _MOCAPACT_AVAILABLE else 'MISSING (pip install mocapact)'}")
+    mocapact_status = "OK" if _MOCAPACT_AVAILABLE else f"FAILED ({_MOCAPACT_IMPORT_ERROR})"
+    lines.append(f"mocapact:    {mocapact_status}")
     lines.append(f"mujoco:      {'OK' if _MUJOCO_AVAILABLE else 'MISSING (pip install mujoco)'}")
     return "\n".join(lines)
