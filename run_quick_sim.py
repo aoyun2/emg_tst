@@ -1,292 +1,400 @@
-"""Quick simulation demo: sample data matched against CMU DB, evaluated with MoCapAct.
+#!/usr/bin/env python3
+"""EMG prosthetic simulation pipeline — clean rewrite.
 
-The query is built by concatenating consecutive 1-second windows from the sample
-source (rigtest recording or external OpenSim data).  DTW matching against the CMU
-database returns a segment of the same length; consecutive frames from that position
-are then used to fill TOTAL_SECONDS of simulation (resampled to 30 Hz).
+Architecture
+============
+  1. Data source      : rigtest .npy recording  OR  external OpenSim gait
+  2. Model prediction : noisy-GT baseline (or real checkpoint if provided)
+  3. Motion matching  : DTW on (knee, thigh) against CMU/MoCapAct database
+  4. MoCapAct clip    : resolve matched segment → dm_control clip ID
+  5. Physics sim      : dm_control CMU humanoid, knee + hip overridden
+  6. Heuristics       : CoM height, foot contacts, fall detection, gait symmetry
+  7. Visualisation    : mujoco viewer (GUI) + matplotlib summary plot + optional GIF
+
+The simulation loop is implemented in ``mocapact_sim.simulate_scenario``, which
+fixes the infinite-spin bug in the old ``simulate_three_scenarios_mocapact``
+(that bug: when viewers failed to open ``open_viewers=[]`` → falsy → the looping
+branch always triggered → infinite loop with nothing visible).
 
 Usage
 -----
-# Use rigtest recording (default):
-    python run_quick_sim.py [--data-file data0.npy] [--n-windows N]
+  # Auto-detect data source (rigtest recording or OpenSim fallback):
+    python run_quick_sim.py
 
-# Use external OpenSim sample data:
-    python run_quick_sim.py --test-sample [--n-windows N]
+  # Force external OpenSim data:
+    python run_quick_sim.py --test-sample
+
+  # Use a specific recording:
+    python run_quick_sim.py --data-file data0.npy
+
+  # Headless (no viewer window) + save a GIF:
+    python run_quick_sim.py --no-gui --render-gif
+
+  # Tune simulation length / noise:
+    python run_quick_sim.py --seconds 15 --good-noise 4 --bad-noise 30
 """
+from __future__ import annotations
+
 import argparse
 import glob
 import sys
+import time
+from pathlib import Path
 
 import numpy as np
 
-from mocap_evaluation.external_sample_data import extract_external_sample_curves
-from mocap_evaluation.mocap_loader import load_aggregated_database, TARGET_FPS
-from mocap_evaluation.motion_matching import find_best_match
-from mocap_evaluation.mocapact_sim import (
-    SIM_FPS,
-    simulate_three_scenarios_mocapact,
-    resolve_clip_from_match,
+# ── CLI ────────────────────────────────────────────────────────────────────────
+_ap = argparse.ArgumentParser(
+    description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
 )
+_ap.add_argument("--test-sample", action="store_true",
+                 help="Use external OpenSim data (ignore local recordings)")
+_ap.add_argument("--data-file", default=None,
+                 help="Specific rigtest .npy file to use")
+_ap.add_argument("--n-windows", type=int, default=None,
+                 help="Number of 1-second windows to use (default: all up to --seconds)")
+_ap.add_argument("--no-gui", action="store_true",
+                 help="Skip interactive viewer; still save plot + optional GIF")
+_ap.add_argument("--render-gif", action="store_true",
+                 help="Render every frame offscreen and save animated GIFs")
+_ap.add_argument("--seconds", type=float, default=10.0,
+                 help="Simulation duration in seconds (default: 10)")
+_ap.add_argument("--good-noise", type=float, default=5.0,
+                 help="Knee noise std (deg) for the 'good' prediction scenario")
+_ap.add_argument("--bad-noise", type=float, default=25.0,
+                 help="Knee noise std (deg) for the 'bad' prediction scenario")
+_ap.add_argument("--scenarios", choices=["all", "gt", "good", "bad"], default="all",
+                 help="Which scenarios to simulate (default: all three)")
+_ap.add_argument("--gui-scenario", choices=["gt", "good", "bad", "all"], default="gt",
+                 help="Which scenario(s) get the interactive viewer (default: gt)")
+args = _ap.parse_args()
 
-# ── Tunable parameters ────────────────────────────────────────────────────────
-GOOD_NOISE_STD = 5.0    # degrees — realistic model error
-BAD_NOISE_STD  = 25.0   # degrees — poor model, should cause instability
-TOTAL_SECONDS  = 30.0   # total simulation length
+USE_GUI      = not args.no_gui
+RENDER_GIF   = args.render_gif
+TOTAL_SECS   = args.seconds
+GOOD_NOISE   = args.good_noise
+BAD_NOISE    = args.bad_noise
 
-WINDOW_FRAMES  = TARGET_FPS   # 1-second window at 200 Hz
 
-
-def resample(arr: np.ndarray, src_fps: float, dst_fps: float) -> np.ndarray:
-    """Linear resample *arr* from *src_fps* to *dst_fps*."""
+def _resample(arr: np.ndarray, src_fps: float, dst_fps: float) -> np.ndarray:
     if src_fps == dst_fps:
         return arr
-    n_src = len(arr)
-    n_dst = max(2, int(round(n_src * dst_fps / src_fps)))
-    x_src = np.linspace(0.0, 1.0, n_src)
-    x_dst = np.linspace(0.0, 1.0, n_dst)
-    return np.interp(x_dst, x_src, arr).astype(np.float32)
+    n_dst = max(2, int(round(len(arr) * dst_fps / src_fps)))
+    return np.interp(
+        np.linspace(0.0, 1.0, n_dst),
+        np.linspace(0.0, 1.0, len(arr)),
+        arr,
+    ).astype(np.float32)
 
 
-# ── CLI args ──────────────────────────────────────────────────────────────────
-parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-parser.add_argument(
-    "--test-sample", action="store_true",
-    help="Use external OpenSim data instead of a rigtest recording",
-)
-parser.add_argument(
-    "--data-file", default=None,
-    help="Rigtest .npy file to use (default: first data*.npy found)",
-)
-parser.add_argument(
-    "--n-windows", type=int, default=None,
-    help="How many 1-second windows to aggregate (default: all available, up to TOTAL_SECONDS)",
-)
-args = parser.parse_args()
+# ══════════════════════════════════════════════════════════════════════════════
+# STEP 1 — Data source: rigtest recording or external OpenSim gait
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n" + "═" * 64)
+print("STEP 1  Data source")
+print("═" * 64)
 
-max_windows = int(TOTAL_SECONDS)   # cap to avoid extremely long DTW queries
+from mocap_evaluation.mocap_loader import TARGET_FPS   # noqa: E402
+WINDOW_FRAMES = int(TARGET_FPS)  # 1 second at TARGET_FPS (200)
 
-# ── Resolve data source: auto-fall-back to external if no recordings found ────
+# Auto-select data source
 if not args.test_sample and not args.data_file:
     candidates = sorted(p for p in glob.glob("data*.npy") if "samples" not in p)
-    if not candidates:
-        print("No data*.npy recording found — using external OpenSim data.")
-        print("Run rigtest.py to capture your own data, or pass --data-file <path>.\n")
-        args.test_sample = True
-    else:
+    if candidates:
         args.data_file = candidates[0]
+        print(f"Found recording: {args.data_file}")
+    else:
+        print("No data*.npy recording found — falling back to external OpenSim data.")
+        print("Tip: run  uMyo_python_tools/rigtest.py  to capture your own data.")
+        args.test_sample = True
 
-# ── Build the aggregated query from consecutive 1-second windows ──────────────
+max_frames = int(TOTAL_SECS * TARGET_FPS)
+if args.n_windows is not None:
+    max_frames = min(max_frames, args.n_windows * WINDOW_FRAMES)
+
 if args.test_sample:
-    # ── External OpenSim path ─────────────────────────────────────────────────
-    print("Downloading external OpenSim gait data...")
-    curves = extract_external_sample_curves(seconds=TOTAL_SECONDS, pred_noise_std=GOOD_NOISE_STD)
-    full_knee  = curves.knee_label_included_deg   # at TARGET_FPS
-    full_thigh = curves.thigh_angle_deg
-
-    n_complete = len(full_knee) // WINDOW_FRAMES
-    if n_complete == 0:
-        # Less than one full window — use whatever is available
-        knee_query_200  = full_knee
-        thigh_query_200 = full_thigh
-        n_windows_used  = 1
-    else:
-        n_windows_used = (min(n_complete, max_windows)
-                          if args.n_windows is None else min(args.n_windows, n_complete))
-        keep = n_windows_used * WINDOW_FRAMES
-        knee_query_200  = full_knee[:keep]
-        thigh_query_200 = full_thigh[:keep]
-
-    source_label = f"OpenSim {curves.source_file.split('/')[-1]}"
-    print(f"Source: {curves.source_file}")
-
+    from mocap_evaluation.external_sample_data import extract_external_sample_curves
+    print("Downloading external OpenSim gait sample …")
+    curves = extract_external_sample_curves(seconds=TOTAL_SECS)
+    knee_query  = curves.knee_label_included_deg[:max_frames]
+    thigh_query = curves.thigh_angle_deg[:max_frames]
+    source_label = f"external OpenSim  ({curves.source_file.split('/')[-1]})"
+    print(f"Source : {curves.source_file}")
 else:
-    # ── Rigtest recording path — all data*.npy files ──────────────────────────
     from emg_tst.data import load_recording
-
-    if args.data_file:
-        all_data_files = [args.data_file]
-    else:
-        all_data_files = sorted(p for p in glob.glob("data*.npy") if "samples" not in p)
-
+    all_files = (
+        [args.data_file] if args.data_file
+        else sorted(p for p in glob.glob("data*.npy") if "samples" not in p)
+    )
     knee_chunks: list[np.ndarray] = []
     thigh_chunks: list[np.ndarray] = []
-    total_windows = 0
-
-    for data_path in all_data_files:
-        X, y, meta = load_recording(data_path)
-        fk = y.astype(np.float32)
-        ft = X[:, -1].astype(np.float32)
-        n_complete = len(fk) // WINDOW_FRAMES
+    for fpath in all_files:
+        X, y, meta = load_recording(fpath)
+        n_complete = (len(y) // WINDOW_FRAMES) * WINDOW_FRAMES
         if n_complete == 0:
-            print(f"  {data_path}: too short ({len(fk)} frames), skipping")
+            print(f"  {fpath}: too short ({len(y)} frames), skipping")
             continue
-        keep = n_complete * WINDOW_FRAMES
-        knee_chunks.append(fk[:keep])
-        thigh_chunks.append(ft[:keep])
-        total_windows += n_complete
-        print(f"  {data_path}: {n_complete} window(s), ~{meta['effective_hz']:.0f} Hz")
-
+        knee_chunks.append(y[:n_complete].astype(np.float32))
+        thigh_chunks.append(X[:n_complete, -1].astype(np.float32))
+        print(f"  {fpath}: {n_complete // WINDOW_FRAMES} window(s)  "
+              f"@ {meta['effective_hz']:.0f} Hz")
     if not knee_chunks:
         sys.exit("No usable windows found in any recording file.")
+    knee_query  = np.concatenate(knee_chunks)[:max_frames]
+    thigh_query = np.concatenate(thigh_chunks)[:max_frames]
+    source_label = f"rigtest ({len(all_files)} file(s))"
 
-    # Concatenate windows across all files into one long query
-    full_knee_all  = np.concatenate(knee_chunks)
-    full_thigh_all = np.concatenate(thigh_chunks)
+query_sec = len(knee_query) / TARGET_FPS
+n_windows_used = len(knee_query) // WINDOW_FRAMES
+print(f"Query  : {n_windows_used} × 1 s = {len(knee_query)} frames ({query_sec:.1f} s @ {TARGET_FPS} Hz)")
 
-    n_windows_used = (min(total_windows, max_windows)
-                      if args.n_windows is None else min(args.n_windows, total_windows))
-    keep = n_windows_used * WINDOW_FRAMES
-    knee_query_200  = full_knee_all[:keep]
-    thigh_query_200 = full_thigh_all[:keep]
 
-    source_label = f"rigtest ({len(all_data_files)} file(s))"
+# ══════════════════════════════════════════════════════════════════════════════
+# STEP 2 — Model prediction  (noisy-GT baseline; swap for real checkpoint here)
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n" + "═" * 64)
+print("STEP 2  Model prediction")
+print("═" * 64)
 
-query_seconds = len(knee_query_200) / TARGET_FPS
-print(f"Query: {n_windows_used} × 1s window(s) = {len(knee_query_200)} frames "
-      f"({query_seconds:.1f}s) at {TARGET_FPS} Hz")
+rng = np.random.default_rng(42)
+knee_good_pred = np.clip(
+    knee_query + rng.normal(0.0, GOOD_NOISE, len(knee_query)).astype(np.float32),
+    0.0, 180.0,
+)
+knee_bad_pred = np.clip(
+    knee_query + rng.normal(0.0, BAD_NOISE, len(knee_query)).astype(np.float32),
+    0.0, 180.0,
+)
+good_rmse = float(np.sqrt(np.mean((knee_good_pred - knee_query) ** 2)))
+bad_rmse  = float(np.sqrt(np.mean((knee_bad_pred  - knee_query) ** 2)))
+print(f"Good prediction RMSE : {good_rmse:.2f} °  (noise std={GOOD_NOISE} °)")
+print(f"Bad  prediction RMSE : {bad_rmse:.2f} °  (noise std={BAD_NOISE} °)")
 
-# ── Load CMU DB ────────────────────────────────────────────────────────────────
-db = load_aggregated_database(mocap_root='mocap_data', try_download=False, use_cache=True)
-print(f"CMU DB: {len(db['knee_right'])/db['fps']:.0f}s, {len(db['file_boundaries'])} files")
 
-# ── Motion matching: DTW on the full aggregated query ─────────────────────────
-print(f"\nRunning motion matching on {query_seconds:.1f}s query (L2 pre-filter + DTW)...")
-best_start, dist, segment = find_best_match(knee_query_200, thigh_query_200, db)
+# ══════════════════════════════════════════════════════════════════════════════
+# STEP 3 — Motion matching: DTW on (knee, thigh) against CMU/MoCapAct DB
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n" + "═" * 64)
+print("STEP 3  Motion matching")
+print("═" * 64)
 
+from mocap_evaluation.mocap_loader import load_aggregated_database  # noqa: E402
+from mocap_evaluation.motion_matching import find_best_match         # noqa: E402
+
+db = load_aggregated_database(
+    mocap_root="mocap_data", try_download=False, use_cache=True
+)
+db_fps = float(db["fps"])
+print(f"Database : {len(db['knee_right']) / db_fps:.0f} s  |  "
+      f"{len(db['file_boundaries'])} clips  @  {db_fps:.0f} Hz")
+
+print(f"Running DTW on {query_sec:.1f} s query …")
+best_start, dtw_dist, matched_seg = find_best_match(knee_query, thigh_query, db)
+
+# Identify matched file
 matched_file = "?"
 for s, e, f, c in db["file_boundaries"]:
-    if s <= best_start < e:
-        matched_file = f
+    if int(s) <= best_start < int(e):
+        matched_file = str(f)
         break
 
-knee_matched = segment["knee_right"]
-T_cmp = min(len(knee_matched), len(knee_query_200))
-match_rmse = float(np.sqrt(np.mean((knee_matched[:T_cmp] - knee_query_200[:T_cmp]) ** 2)))
-print(f"Best match: DTW={dist:.4f}, file={matched_file}")
-print(f"Matched knee vs query RMSE: {match_rmse:.2f} deg")
+T_cmp = min(len(matched_seg["knee_right"]), len(knee_query))
+match_rmse = float(np.sqrt(np.mean(
+    (matched_seg["knee_right"][:T_cmp] - knee_query[:T_cmp]) ** 2
+)))
+print(f"Best match : {matched_file}  DTW={dtw_dist:.4f}  RMSE={match_rmse:.2f} °")
 
-# ── Resolve DTW match → specific CMU clip ─────────────────────────────────────
-match_info = resolve_clip_from_match(best_start, len(knee_query_200), db)
 
-# ── Extend matched position with consecutive CMU frames ───────────────────────
-# The query already spans query_seconds; take consecutive CMU frames from
-# best_start to cover TOTAL_SECONDS of simulation without repeating.
-db_fps  = float(db['fps'])
-T_db    = int(round(TOTAL_SECONDS * db_fps))
-end_idx = min(best_start + T_db, len(db['knee_right']))
+# ══════════════════════════════════════════════════════════════════════════════
+# STEP 4 — MoCapAct clip  (same length as matched query)
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n" + "═" * 64)
+print("STEP 4  MoCapAct clip")
+print("═" * 64)
 
-cmu_knee  = db['knee_right'][best_start:end_idx]
-cmu_thigh = db['hip_right'][best_start:end_idx]
-
-knee_gt     = resample(cmu_knee,  db_fps, SIM_FPS)
-thigh_sim   = resample(cmu_thigh, db_fps, SIM_FPS)
-T_sim       = len(knee_gt)
-actual_seconds = T_sim / SIM_FPS
-
-print(f"Simulation motion: {end_idx - best_start} frames @ {db_fps:.0f} Hz "
-      f"→ {T_sim} frames @ {SIM_FPS:.0f} Hz ({actual_seconds:.1f}s)")
-
-# ── Predictions: add noise to the GT motion signal ───────────────────────────
-rng = np.random.default_rng(42)
-knee_good = np.clip(
-    knee_gt + rng.normal(0.0, GOOD_NOISE_STD, T_sim).astype(np.float32),
-    0.0, 180.0,
-)
-knee_bad = np.clip(
-    knee_gt + rng.normal(0.0, BAD_NOISE_STD, T_sim).astype(np.float32),
-    0.0, 180.0,
+from mocap_evaluation.mocapact_sim import (  # noqa: E402
+    SIM_FPS,
+    resolve_clip_from_match,
+    load_multi_clip_policy,
+    create_walking_env,
+    simulate_scenario,
 )
 
-print(f"Knee range: [{knee_gt.min():.1f}, {knee_gt.max():.1f}] deg (included)")
+# The matched segment is the same length as the query (len(knee_query) frames at db_fps)
+match_info = resolve_clip_from_match(best_start, len(knee_query), db)
+print(f"Clip    : {match_info['clip_id']}")
+print(f"Category: {match_info['category']}")
+print(f"Offset  : {match_info['time_offset_s']:.2f} s  "
+      f"Duration: {match_info['time_duration_s']:.2f} s")
 
-# ── Simulate all three scenarios simultaneously ───────────────────────────────
-print(f"\n--- Simulating {actual_seconds:.1f}s with GT / good / bad knee "
-      f"(noise={GOOD_NOISE_STD}/{BAD_NOISE_STD} deg) ---")
+# Resample matched CMU reference signal → SIM_FPS (for simulation frames)
+knee_gt_sim    = _resample(matched_seg["knee_right"], db_fps, SIM_FPS)
+thigh_sim      = _resample(matched_seg["hip_right"],  db_fps, SIM_FPS)
+knee_good_sim  = _resample(knee_good_pred,            TARGET_FPS, SIM_FPS)
+knee_bad_sim   = _resample(knee_bad_pred,             TARGET_FPS, SIM_FPS)
 
-gt, pred_good, pred_bad = simulate_three_scenarios_mocapact(
-    gt_knee=knee_gt,
-    nominal_knee=knee_good,
-    bad_knee=knee_bad,
-    sample_thigh_right=thigh_sim,
-    reference_knee=knee_gt,
-    eval_seconds=actual_seconds,
-    use_gui=True,
-    match_info=match_info,
+# Align all signals to the shortest
+T_sim = min(len(knee_gt_sim), len(thigh_sim), len(knee_good_sim), len(knee_bad_sim))
+knee_gt_sim   = knee_gt_sim[:T_sim]
+thigh_sim     = thigh_sim[:T_sim]
+knee_good_sim = knee_good_sim[:T_sim]
+knee_bad_sim  = knee_bad_sim[:T_sim]
+sim_seconds   = T_sim / SIM_FPS
+
+print(f"Sim signal : {T_sim} frames  @  {SIM_FPS:.0f} Hz  ({sim_seconds:.1f} s)")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STEP 5 — Physics simulation
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n" + "═" * 64)
+print("STEP 5  Physics simulation")
+print("═" * 64)
+
+policy = load_multi_clip_policy(model_dir="mocapact_models")
+print("Policy loaded.")
+
+# Which scenarios to run
+SCENARIO_DEFS = {
+    "gt":   ("GT knee (CMU matched)",              knee_gt_sim,   "blue"),
+    "good": (f"Good pred (RMSE≈{good_rmse:.1f}°)", knee_good_sim, "orange"),
+    "bad":  (f"Bad pred  (RMSE≈{bad_rmse:.1f}°)",  knee_bad_sim,  "red"),
+}
+run_which = list(SCENARIO_DEFS.keys()) if args.scenarios == "all" else [args.scenarios]
+
+results: dict[str, dict] = {}
+
+for sc_key in run_which:
+    sc_label, knee_sig, color = SCENARIO_DEFS[sc_key]
+
+    # Should this scenario get the GUI viewer?
+    sc_gui = (
+        USE_GUI and (args.gui_scenario == "all" or args.gui_scenario == sc_key)
+    )
+    sc_gif = (
+        RENDER_GIF and (args.gui_scenario == "all" or args.gui_scenario == sc_key)
+    )
+    gif_path = f"sim_{sc_key}.gif"
+
+    print(f"\n  [{sc_key}]  {sc_label}  {'(GUI)' if sc_gui else ''}"
+          f"{'(GIF→' + gif_path + ')' if sc_gif else ''}")
+
+    env = create_walking_env(policy=policy, clip_id=match_info["clip_id"])
+    try:
+        res = simulate_scenario(
+            env=env,
+            policy=policy,
+            knee_inc_deg=knee_sig,
+            thigh_inc_deg=thigh_sim,
+            reference_knee_inc_deg=knee_gt_sim,
+            fps=SIM_FPS,
+            use_gui=sc_gui,
+            match_info=match_info,
+            render_offscreen=sc_gif,
+            video_path=gif_path,
+        )
+    finally:
+        env.close()
+
+    results[sc_key] = res
+    print(f"    fall={res['fall_detected']}  frame={res['fall_frame']}  "
+          f"steps={res['step_count']}  stab={res['stability_score']:.3f}  "
+          f"knee_RMSE={res['knee_rmse_deg']:.2f}°")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STEP 6 — Results summary
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n" + "═" * 64)
+print("RESULTS")
+print("═" * 64)
+print(f"Source  : {source_label}")
+print(f"Match   : {matched_file}  DTW={dtw_dist:.4f}  RMSE={match_rmse:.2f}°")
+print(f"Query   : {n_windows_used} × 1 s ({query_sec:.1f} s)  →  "
+      f"sim {T_sim} frames @ {SIM_FPS:.0f} Hz ({sim_seconds:.1f} s)\n")
+
+for sc_key in run_which:
+    sc_label, _, _ = SCENARIO_DEFS[sc_key]
+    r = results[sc_key]
+    print(f"{sc_label}:")
+    print(f"  fall={r['fall_detected']} (frame {r['fall_frame']})  "
+          f"steps={r['step_count']}  gait_sym={r['gait_symmetry']:.3f}")
+    print(f"  stability={r['stability_score']:.3f}  "
+          f"CoM={r['com_height_mean']:.3f}±{r['com_height_std']:.3f} m")
+    print(f"  knee RMSE={r['knee_rmse_deg']:.2f}°  MAE={r['knee_mae_deg']:.2f}°")
+    print()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STEP 7 — Matplotlib comparison plot  (always saved, even in GUI mode)
+# ══════════════════════════════════════════════════════════════════════════════
+import matplotlib  # noqa: E402
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt  # noqa: E402
+
+t_ax = np.arange(T_sim) / SIM_FPS
+plot_path = "sim_comparison.png"
+
+n_panels = 2 + (1 if len(run_which) > 0 else 0)
+fig, axes = plt.subplots(n_panels, 1, figsize=(14, 4 * n_panels), sharex=True)
+
+# ── Panel 0: knee angle signals ───────────────────────────────────────────────
+ax0 = axes[0]
+ax0.plot(t_ax, knee_gt_sim,   label="GT knee (CMU matched)", lw=2, color="blue")
+if "good" in results:
+    ax0.plot(t_ax, knee_good_sim, lw=1.5, color="orange", alpha=0.85,
+             label=f"Good pred RMSE={good_rmse:.1f}°")
+if "bad" in results:
+    ax0.plot(t_ax, knee_bad_sim,  lw=1.5, color="red",    alpha=0.70,
+             label=f"Bad pred RMSE={bad_rmse:.1f}°")
+ax0.set_ylabel("Knee flexion (°)")
+ax0.set_title(
+    f"{source_label}  ({n_windows_used}×1 s)  →  {matched_file}  "
+    f"|  DTW={dtw_dist:.4f}  MatchRMSE={match_rmse:.1f}°"
 )
+ax0.legend(fontsize=8)
+ax0.grid(True, alpha=0.3)
 
-# ── Results ───────────────────────────────────────────────────────────────────
-def show(label, m):
-    print(f'{label}:')
-    print(f'  fall: {m["fall_detected"]} (frame {m["fall_frame"]})')
-    print(f'  steps: {m["step_count"]}, gait_symmetry: {m["gait_symmetry"]:.3f}')
-    print(f'  stability: {m["stability_score"]:.3f}')
-    print(f'  CoM: {m["com_height_mean"]:.3f} +/- {m["com_height_std"]:.3f} m')
-    print(f'  knee RMSE: {m["knee_rmse_deg"]:.2f}, MAE: {m["knee_mae_deg"]:.2f}')
+# ── Panel 1: CoM height ───────────────────────────────────────────────────────
+ax1 = axes[1]
+color_map = {"gt": "blue", "good": "orange", "bad": "red"}
+for sc_key in run_which:
+    sc_label, _, color = SCENARIO_DEFS[sc_key]
+    com = np.asarray(results[sc_key]["com_height_series"])
+    t_com = np.arange(len(com)) / SIM_FPS
+    ax1.plot(t_com, com, lw=2, color=color,
+             label=f"{sc_label}  stab={results[sc_key]['stability_score']:.2f}")
+ax1.axhline(0.55, color="r", ls="--", lw=1, label="Fall threshold (0.55 m)")
+ax1.set_ylabel("CoM height (m)")
+ax1.set_title("Centre of Mass height")
+ax1.legend(fontsize=8)
+ax1.grid(True, alpha=0.3)
 
-T_plot    = T_sim
-good_rmse = float(np.sqrt(np.mean((knee_good[:T_plot] - knee_gt[:T_plot]) ** 2)))
-bad_rmse  = float(np.sqrt(np.mean((knee_bad[:T_plot]  - knee_gt[:T_plot]) ** 2)))
-
-print("\n" + "=" * 60)
-print(f"Source: {source_label}  |  Matched: {matched_file}")
-print(f"Query: {n_windows_used} × 1s window(s) ({query_seconds:.1f}s)  |  DTW={dist:.4f}  |  MatchRMSE={match_rmse:.2f} deg")
-print()
-show("Ground Truth (CMU knee)", gt)
-print()
-show(f"Good Prediction (noise std={GOOD_NOISE_STD}, RMSE={good_rmse:.1f})", pred_good)
-print()
-show(f"Bad Prediction (noise std={BAD_NOISE_STD}, RMSE={bad_rmse:.1f})", pred_bad)
-print("=" * 60)
-
-# ── Comparison plot ────────────────────────────────────────────────────────────
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-
-fps  = SIM_FPS
-t_ax = np.arange(T_plot) / fps
-
-fig, axes = plt.subplots(3, 1, figsize=(14, 12), sharex=True)
-
-axes[0].plot(t_ax, knee_gt[:T_plot],   label='GT knee (CMU)', lw=2, color='blue')
-axes[0].plot(t_ax, knee_good[:T_plot], label=f'Good pred (RMSE={good_rmse:.1f})', lw=2, color='orange', alpha=0.8)
-axes[0].plot(t_ax, knee_bad[:T_plot],  label=f'Bad pred (RMSE={bad_rmse:.1f})',  lw=2, color='red',    alpha=0.7)
-axes[0].set_ylabel('Knee flexion (deg)')
-axes[0].set_title(
-    f'{source_label} ({n_windows_used}×1s windows) → CMU: {matched_file}  '
-    f'|  DTW={dist:.4f}  |  MatchRMSE={match_rmse:.1f}'
-)
-axes[0].legend(fontsize=8)
-axes[0].grid(True, alpha=0.3)
-
-axes[1].plot(t_ax, np.asarray(gt['com_height_series'])[:T_plot],
-             label='GT CoM', lw=2, color='blue')
-axes[1].plot(t_ax, np.asarray(pred_good['com_height_series'])[:T_plot],
-             label=f'Good pred CoM (stab={pred_good["stability_score"]:.2f})', lw=2, color='orange', alpha=0.8)
-axes[1].plot(t_ax, np.asarray(pred_bad['com_height_series'])[:T_plot],
-             label=f'Bad pred CoM (stab={pred_bad["stability_score"]:.2f})',  lw=2, color='red',    alpha=0.7)
-axes[1].axhline(0.55, color='r', ls='--', lw=1, label='Fall threshold')
-axes[1].set_ylabel('CoM height (m)')
-axes[1].set_title(f'CoM  |  GT stab={gt["stability_score"]:.3f}')
-axes[1].legend(fontsize=8)
-axes[1].grid(True, alpha=0.3)
-
-for i, (label, m, color) in enumerate([('GT', gt, 'blue'), ('Good', pred_good, 'orange'), ('Bad', pred_bad, 'red')]):
-    rc = np.asarray(m['right_contact_frames']) / fps
-    lc = np.asarray(m['left_contact_frames'])  / fps
-    y  = 1 - i * 0.25
-    axes[2].scatter(rc, np.full_like(rc, y),        marker='|', s=100, color=color,            label=f'{label} R')
-    axes[2].scatter(lc, np.full_like(lc, y + 0.08), marker='|', s=100, color=color, alpha=0.5, label=f'{label} L')
-
-axes[2].set_xlabel('Time (s)')
-axes[2].set_title(
-    f'Foot contacts  |  GT steps={gt["step_count"]}, '
-    f'Good steps={pred_good["step_count"]}, Bad steps={pred_bad["step_count"]}'
-)
-axes[2].legend(loc='upper right', fontsize=7)
-axes[2].grid(True, alpha=0.3)
+# ── Panel 2: foot contacts ────────────────────────────────────────────────────
+if n_panels > 2:
+    ax2 = axes[2]
+    for i, sc_key in enumerate(run_which):
+        sc_label, _, color = SCENARIO_DEFS[sc_key]
+        r = results[sc_key]
+        y_r = 1.0 - i * 0.3
+        rc = np.asarray(r["right_contact_frames"]) / SIM_FPS
+        lc = np.asarray(r["left_contact_frames"])  / SIM_FPS
+        ax2.scatter(rc, np.full_like(rc, y_r),        marker="|", s=100,
+                    color=color, label=f"{sc_label} R")
+        ax2.scatter(lc, np.full_like(lc, y_r + 0.1),  marker="|", s=100,
+                    color=color, alpha=0.5, label=f"{sc_label} L")
+    ax2.set_xlabel("Time (s)")
+    ax2.set_title(
+        "Foot contacts  |  steps: "
+        + "  ".join(f"{SCENARIO_DEFS[k][0].split()[0]}={results[k]['step_count']}"
+                    for k in run_which)
+    )
+    ax2.legend(loc="upper right", fontsize=7)
+    ax2.grid(True, alpha=0.3)
+else:
+    axes[-1].set_xlabel("Time (s)")
 
 fig.tight_layout()
-fig.savefig('sim_comparison.png', dpi=150)
+fig.savefig(plot_path, dpi=150)
 plt.close(fig)
-print(f'\nPlot saved: sim_comparison.png')
+print(f"Plot saved : {plot_path}")

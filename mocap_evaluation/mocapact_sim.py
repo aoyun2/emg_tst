@@ -1534,6 +1534,245 @@ def simulate_three_scenarios_mocapact(
     return results  # type: ignore[return-value]
 
 
+# ── Clean single-scenario simulation loop ────────────────────────────────────
+
+
+def simulate_scenario(
+    env,
+    policy,
+    knee_inc_deg: np.ndarray,
+    thigh_inc_deg: Optional[np.ndarray] = None,
+    reference_knee_inc_deg: Optional[np.ndarray] = None,
+    fps: float = SIM_FPS,
+    use_gui: bool = False,
+    match_info: Optional[dict] = None,
+    render_offscreen: bool = False,
+    video_path: str = "sim_output.gif",
+) -> dict:
+    """Run one prosthetic simulation scenario cleanly.
+
+    Drives the CMU humanoid for exactly T frames (collecting metrics), then
+    loops the playback until the viewer window is closed (GUI mode) or exits
+    immediately (headless mode).
+
+    The loop is bug-free: it never spins forever when the viewer fails to open.
+
+    Parameters
+    ----------
+    env :
+        A ``MocapTrackingGymEnv`` already created with the right ``clip_id``.
+        Caller owns it (this function does NOT close it).
+    policy :
+        Pre-loaded NPMP or SB3 policy.
+    knee_inc_deg : (T,)
+        Right-knee angle in **included-angle** convention (180=straight).
+    thigh_inc_deg : (T,) or None
+        Right-hip/thigh angle, same convention.  Drives ``rfemurry`` actuator.
+    reference_knee_inc_deg : (T,) or None
+        Ground-truth knee for RMSE.  Defaults to ``knee_inc_deg``.
+    fps :
+        Control frequency (Hz).  MoCapAct default = 30.
+    use_gui :
+        Try to open an interactive mujoco viewer.  Falls back gracefully when
+        no display is available.  Playback loops until the viewer is closed.
+    match_info :
+        Dict from ``resolve_clip_from_match`` — stored in the returned dict.
+    render_offscreen :
+        Save rendered frames as an animated GIF at ``video_path`` (useful when
+        no display is available but you still want to *see* the simulation).
+    video_path :
+        Output path for the GIF (only used when ``render_offscreen=True``).
+
+    Returns
+    -------
+    dict
+        Evaluation metrics matching the prosthetic_sim output schema.
+    """
+    if not _MOCAPACT_AVAILABLE or not _DM_CONTROL_AVAILABLE:
+        raise RuntimeError(
+            "MoCapAct + dm_control required.\n"
+            + (f"Import error: {_MOCAPACT_IMPORT_ERROR}" if _MOCAPACT_IMPORT_ERROR else "")
+        )
+
+    # ── Convert signals ────────────────────────────────────────────────
+    knee_flex_deg = _included_to_flexion(np.asarray(knee_inc_deg, dtype=np.float64))
+    knee_flex_rad = np.radians(knee_flex_deg)
+    T = len(knee_flex_deg)
+
+    thigh_flex_rad: Optional[np.ndarray] = None
+    if thigh_inc_deg is not None:
+        thigh_flex_rad = np.radians(
+            _included_to_flexion(np.asarray(thigh_inc_deg, dtype=np.float64))
+        )
+
+    if reference_knee_inc_deg is not None:
+        ref_flex_deg: Optional[np.ndarray] = _included_to_flexion(
+            np.asarray(reference_knee_inc_deg, dtype=np.float64)
+        )
+    else:
+        ref_flex_deg = knee_flex_deg.copy()
+
+    # ── Actuator indices ───────────────────────────────────────────────
+    knee_idx = _find_knee_actuator_index(env)
+    hip_idx  = _find_hip_actuator_index(env) if thigh_flex_rad is not None else -1
+
+    # ── Policy helpers ─────────────────────────────────────────────────
+    is_npmp = hasattr(policy, "initial_state")
+
+    def _reset_ep():
+        obs_ = env.reset()
+        embed_ = policy.initial_state(deterministic=False) if is_npmp else None
+        return obs_, embed_
+
+    # ── Initial reset (must happen before viewer launch so physics is fresh)
+    obs, embed = _reset_ep()
+
+    # ── Viewer ─────────────────────────────────────────────────────────
+    viewer = None
+    if use_gui:
+        physics = _get_physics(env)
+        try:
+            viewer = _launch_mujoco_viewer_from_physics(physics)
+            print("[sim] Viewer opened — close the window to stop playback.")
+        except Exception as exc:
+            print(f"[sim] Interactive viewer unavailable: {exc}")
+            if render_offscreen:
+                print(f"[sim] Will render offscreen → {video_path}")
+            else:
+                print("[sim] Running headless.  Pass render_offscreen=True to save a GIF.")
+
+    # ── Offscreen renderer ─────────────────────────────────────────────
+    frames: List[np.ndarray] = []
+
+    def _maybe_render():
+        if not render_offscreen:
+            return
+        try:
+            physics = _get_physics(env)
+            frame = physics.render(height=240, width=320, camera_id=0)
+            frames.append(frame)
+        except Exception:
+            pass
+
+    # ── Main loop ──────────────────────────────────────────────────────
+    metrics   = MoCapActEvalMetrics.empty()
+    t_ep      = 0      # frame in the current episode (resets on env.done / loop)
+    t_met     = 0      # total metric frames collected (0 → T)
+    dt        = 1.0 / fps
+
+    try:
+        with tqdm(total=T, desc="sim", unit="step", leave=False) as pbar:
+            while True:
+                step_start = time.monotonic()
+
+                # ── 1. Viewer exit ─────────────────────────────────────
+                if viewer is not None and not viewer.is_running():
+                    break
+
+                # ── 2. End of signal ───────────────────────────────────
+                if t_ep >= T:
+                    # Viewer still open → loop playback
+                    if viewer is not None and viewer.is_running():
+                        obs, embed = _reset_ep()
+                        t_ep = 0
+                        pbar.reset()
+                        continue
+                    # Headless (or viewer closed) → done
+                    break
+
+                # ── 3. Policy action ───────────────────────────────────
+                if is_npmp:
+                    action, embed = policy.predict(obs, state=embed, deterministic=False)
+                else:
+                    action, _ = policy.predict(obs, deterministic=True)
+
+                policy_knee_ctrl = float(action[knee_idx])
+
+                # ── 4. Override right knee ─────────────────────────────
+                action[knee_idx] = _knee_angle_to_ctrl(
+                    float(knee_flex_rad[t_ep % T]), env
+                )
+
+                # ── 5. Override right hip (optional) ──────────────────
+                if thigh_flex_rad is not None and hip_idx >= 0:
+                    action[hip_idx] = _hip_angle_to_ctrl(
+                        float(thigh_flex_rad[t_ep % T]), env
+                    )
+
+                # ── 6. Step physics ────────────────────────────────────
+                obs, _, done, info = env.step(action)
+
+                # ── 7. Viewer sync + real-time pacing ─────────────────
+                if viewer is not None and viewer.is_running():
+                    viewer.sync()
+                    elapsed = time.monotonic() - step_start
+                    spare = dt - elapsed
+                    if spare > 0.001:
+                        time.sleep(spare)
+
+                # ── 8. Offscreen render ────────────────────────────────
+                _maybe_render()
+
+                # ── 9. Collect metrics (first-pass T frames only) ──────
+                if t_met < T:
+                    _collect_step_metrics(
+                        metrics, env,
+                        float(knee_flex_deg[t_ep % T]),
+                        ref_flex_deg,
+                        policy_knee_ctrl,
+                        t_met,
+                    )
+                    t_met += 1
+                    pbar.update(1)
+
+                t_ep += 1
+
+                # ── 10. Handle episode termination ─────────────────────
+                if done:
+                    if not metrics.fall_detected:
+                        latest_com = (
+                            metrics.com_height[-1] if metrics.com_height
+                            else float("nan")
+                        )
+                        if (
+                            (np.isfinite(latest_com) and latest_com < FALL_HEIGHT_THRESHOLD + 0.08)
+                            or _termination_looks_like_fall(info)
+                        ):
+                            metrics.fall_detected = True
+                            metrics.fall_frame = t_met - 1
+                    # Reset episode; t_ep resets so signal stays in sync
+                    obs, embed = _reset_ep()
+                    t_ep = 0
+
+    finally:
+        if viewer is not None:
+            try:
+                viewer.close()
+            except Exception:
+                pass
+
+    # ── Save GIF if frames were rendered ──────────────────────────────
+    if frames:
+        try:
+            import imageio
+            imageio.mimsave(video_path, frames, fps=int(fps))
+            print(f"[sim] GIF saved: {video_path}")
+        except ImportError:
+            try:
+                from PIL import Image as _PIL_Image
+                pil_frames = [_PIL_Image.fromarray(f) for f in frames]
+                pil_frames[0].save(
+                    video_path, save_all=True,
+                    append_images=pil_frames[1:],
+                    duration=int(1000 / fps), loop=0,
+                )
+                print(f"[sim] GIF saved: {video_path}")
+            except Exception as exc:
+                print(f"[sim] Could not save GIF: {exc}")
+
+    return _build_sim_result(metrics, match_info, fps)
+
+
 # ── Availability check ───────────────────────────────────────────────────────
 
 def is_available() -> bool:
