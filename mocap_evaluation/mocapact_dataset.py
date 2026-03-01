@@ -47,6 +47,16 @@ _HIP_QPOS_FALLBACK  = 41   # rfemurry qpos index (was rfemury — corrected)
 # index = qpos_addr - _CMU_ROOT_DOFS.
 _CMU_ROOT_DOFS = 7
 
+# Fallback HDF5 joint indices for the walkers/walker_0/joints array.
+# This array uses walker.mocap_joints ordering (biomechanical leg/spine/arm grouping):
+#   0-6:  left leg   (lfemurrz, lfemurry, lfemurrx, ltibiarx, lfootrz, lfootrx, ltoesrx)
+#   7-13: right leg  (rfemurrz, rfemurry, rfemurrx, rtibiarx, rfootrz, rfootrx, rtoesrx)
+#   14-55: spine/head/arms
+#   rfemurry = mocap_joints index  8  (right leg, Y-axis hip rotation)
+#   rtibiarx = mocap_joints index 10  (right leg, X-axis tibia/knee rotation)
+_KNEE_HDF5_FALLBACK = 10   # rtibiarx position in mocap_joints
+_HIP_HDF5_FALLBACK  =  8   # rfemurry position in mocap_joints
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -190,7 +200,8 @@ def _load_via_hdf5_loader(clip_id: str, knee_addr: int, hip_addr: int) -> Option
             return None
 
         tl = mocap_loader.HDF5TrajectoryLoader(str(mocap_path))
-        traj = tl.load(clip_id)
+        # API: get_trajectory() in dm_control ≥1.0; older versions used load()
+        traj = tl.get_trajectory(clip_id) if hasattr(tl, "get_trajectory") else tl.load(clip_id)
 
         # as_dict() is the canonical API in newer dm_control versions.
         # "walker/joints_pos" / "walker/joints" are hinge-only (no root DOFs);
@@ -239,15 +250,33 @@ def _load_via_hdf5_loader(clip_id: str, knee_addr: int, hip_addr: int) -> Option
     return None
 
 
+def _get_hdf5_joint_indices() -> Tuple[int, int]:
+    """Return (knee_hdf5_idx, hip_hdf5_idx) in mocap_joints ordering.
+
+    The HDF5 ``walkers/walker_0/joints`` array uses the walker's
+    ``mocap_joints`` ordering (biomechanical leg/spine/arm grouping), NOT the
+    alphabetical ``observable_joints`` order and NOT the MuJoCo qpos order.
+    We look up each target joint's position in ``mocap_joints`` so that HDF5
+    indexing is always correct regardless of qpos layout.
+    """
+    try:
+        from dm_control.locomotion.walkers import cmu_humanoid
+        walker = cmu_humanoid.CMUHumanoid()
+        names = [j.name for j in walker.mocap_joints]
+        return names.index(_KNEE_JOINT), names.index(_HIP_JOINT)
+    except Exception:
+        return _KNEE_HDF5_FALLBACK, _HIP_HDF5_FALLBACK
+
+
 def _load_via_hdf5_direct(clip_id: str, knee_addr: int, hip_addr: int) -> Optional[Tuple[np.ndarray, np.ndarray, float]]:
     """Read joint data directly from the consolidated CMU mocap H5 file with h5py.
 
-    The consolidated file (~/.dm_control/cmu_2020_*.h5) has the structure:
-        clip_id / walker / joints_pos   (hinge joints only, shape [T, 56])
+    The actual dm_control HDF5 structure is:
+        clip_id / walkers / walker_0 / joints   (shape [56, T] — transposed!)
 
-    ``walker/joints_pos`` and ``walker/joints`` are hinge-only (no root DOFs),
-    so the index into them is qpos_addr - _CMU_ROOT_DOFS.  ``qpos`` (if present)
-    is the full generalized-position vector and uses qpos addresses directly.
+    The ``walkers/walker_0/joints`` array is indexed by the walker's
+    ``observable_joints`` list (alphabetical order), NOT by qpos address.
+    Use ``_get_hdf5_joint_indices()`` to obtain the correct column indices.
 
     Returns (knee_rad, hip_rad, fps) or None.
     """
@@ -258,30 +287,40 @@ def _load_via_hdf5_direct(clip_id: str, knee_addr: int, hip_addr: int) -> Option
         if mocap_path is None:
             return None
 
+        # Indices for the walkers/walker_0/joints array (alphabetical observable_joints order)
+        obs_knee_idx, obs_hip_idx = _get_hdf5_joint_indices()
+        # Indices for any hypothetical walker/joints_pos key (qpos-minus-root order)
+        h_knee = knee_addr - _CMU_ROOT_DOFS
+        h_hip  = hip_addr  - _CMU_ROOT_DOFS
+
+        # (key, knee_idx, hip_idx, needs_transpose)
+        # needs_transpose: data stored (joints, time) → must be transposed to (time, joints).
+        joint_key_candidates = [
+            # Actual dm_control HDF5: shape (56, T), alphabetical observable_joints order
+            ("walkers/walker_0/joints", obs_knee_idx, obs_hip_idx, True),
+            ("walkers/0/joints",        obs_knee_idx, obs_hip_idx, True),
+            # Hypothetical consolidated keys: shape (T, 56), qpos-minus-root order
+            ("walker/joints_pos",       h_knee,       h_hip,       False),
+            ("walker/joints",           h_knee,       h_hip,       False),
+            ("joints",                  h_knee,       h_hip,       False),
+            # Full qpos (T, n_qpos): uses raw qpos addresses
+            ("qpos",                    knee_addr,    hip_addr,    False),
+            ("joints_pos",              h_knee,       h_hip,       False),
+        ]
+
         with h5py.File(str(mocap_path), "r") as f:
             if clip_id not in f:
                 return None
             clip_grp = f[clip_id]
 
-            # (key, is_full_qpos) — ordered most-likely-first.
-            # is_full_qpos=False means data is hinge-only; indices need -_CMU_ROOT_DOFS.
-            joint_key_candidates = [
-                ("walker/joints_pos",     False),  # dm_control consolidated format
-                ("walker/joints",         False),  # alternative dm_control name
-                ("walkers/walker_0/joints", False),
-                ("walkers/0/joints",      False),
-                ("joints",                False),
-                ("qpos",                  True),   # full qpos including root DOFs
-                ("joints_pos",            False),
-            ]
-            for key, is_full_qpos in joint_key_candidates:
+            for key, k_idx, h_idx, needs_transpose in joint_key_candidates:
                 if key not in clip_grp:
                     continue
                 data = np.asarray(clip_grp[key], dtype=np.float32)
+                if needs_transpose and data.ndim == 2:
+                    data = data.T  # (joints, time) → (time, joints)
                 if data.ndim != 2:
                     continue
-                k_idx = knee_addr if is_full_qpos else knee_addr - _CMU_ROOT_DOFS
-                h_idx = hip_addr  if is_full_qpos else hip_addr  - _CMU_ROOT_DOFS
                 if k_idx < 0 or h_idx < 0 or data.shape[1] <= max(k_idx, h_idx):
                     continue
                 dt = clip_grp.attrs.get("dt", None) or f.attrs.get("dt", None)
