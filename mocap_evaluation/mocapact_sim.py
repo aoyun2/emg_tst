@@ -136,6 +136,60 @@ try:
 except Exception:
     pass
 
+# ── SB3 gym↔gymnasium observation-space compatibility shim ───────────────────
+# SB3 2.x uses `gymnasium`; MoCapAct checkpoints were saved with `gym` 0.21.
+# When the checkpoint is unpickled the observation_space is a gym.spaces.Dict,
+# but SB3's obs_to_tensor asserts isinstance(obs_space, gymnasium.spaces.Dict)
+# → fails even though the object looks and acts like a Dict.
+#
+# Fix: patch BasePolicy.obs_to_tensor to coerce the stored space into whatever
+# `spaces` class SB3 actually imported, right before the isinstance check.
+try:
+    import importlib as _il
+    _sb3pol = _il.import_module("stable_baselines3.common.policies")
+    _sb3_sp = _sb3pol.__dict__.get("spaces")  # the `spaces` module SB3 uses
+    if _sb3_sp is not None and hasattr(_sb3pol, "BasePolicy"):
+
+        def _coerce_to_sb3_space(sp, _s=_sb3_sp):
+            """Rebuild *sp* using SB3's own spaces module, preserving structure."""
+            if isinstance(sp, _s.Space):
+                return sp
+            name = type(sp).__name__
+            if name == "Dict" or (
+                hasattr(sp, "spaces") and isinstance(getattr(sp, "spaces", None), dict)
+            ):
+                return _s.Dict({k: _coerce_to_sb3_space(v, _s) for k, v in sp.spaces.items()})
+            if name == "Box" or (
+                hasattr(sp, "low") and hasattr(sp, "high") and hasattr(sp, "shape")
+            ):
+                return _s.Box(low=sp.low, high=sp.high, shape=sp.shape, dtype=sp.dtype)
+            if name == "Discrete" or (
+                hasattr(sp, "n") and not hasattr(sp, "low") and not hasattr(sp, "spaces")
+            ):
+                kw = {"start": sp.start} if hasattr(sp, "start") else {}
+                return _s.Discrete(sp.n, **kw)
+            if name == "MultiDiscrete" or hasattr(sp, "nvec"):
+                return _s.MultiDiscrete(sp.nvec, dtype=getattr(sp, "dtype", _np.int64))
+            if name == "MultiBinary":
+                return _s.MultiBinary(sp.n)
+            return sp  # unknown — pass through unchanged
+
+        _orig_o2t = _sb3pol.BasePolicy.obs_to_tensor
+
+        def _patched_o2t(self, observation):
+            # If obs is a dict but obs_space isn't the right Dict class, coerce once.
+            if isinstance(observation, dict) and not isinstance(
+                self.observation_space, _sb3_sp.Dict
+            ):
+                sp = self.observation_space
+                if hasattr(sp, "spaces") and isinstance(getattr(sp, "spaces", None), dict):
+                    self.observation_space = _coerce_to_sb3_space(sp)
+            return _orig_o2t(self, observation)
+
+        _sb3pol.BasePolicy.obs_to_tensor = _patched_o2t  # type: ignore[method-assign]
+except Exception:
+    pass
+
 # ── pkg_resources compatibility shim ─────────────────────────────────────────
 # On Python 3.12+ Windows venvs, setuptools may be installed but
 # pkg_resources (which lives inside it) is occasionally not importable.
