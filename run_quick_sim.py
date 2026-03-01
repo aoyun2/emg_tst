@@ -51,6 +51,11 @@ _ap.add_argument("--test-sample", action="store_true",
                  help="Use external OpenSim data (ignore local recordings)")
 _ap.add_argument("--data-file", default=None,
                  help="Specific rigtest .npy file to use")
+_ap.add_argument("--data", default=None,
+                 help="Pre-windowed samples_dataset.npy (same format as run_evaluation.py)")
+_ap.add_argument("--checkpoint", default=None,
+                 help="Path to trained model (.pt) — runs real inference instead of dummy predictions. "
+                      "Requires --data when using pre-windowed windows.")
 _ap.add_argument("--n-windows", type=int, default=None,
                  help="Number of 1-second windows to use (default: all up to --seconds)")
 _ap.add_argument("--no-gui", action="store_true",
@@ -98,7 +103,7 @@ from mocap_evaluation.mocap_loader import TARGET_FPS   # noqa: E402
 WINDOW_FRAMES = int(TARGET_FPS)  # 1 second at TARGET_FPS (200)
 
 # Auto-select data source
-if not args.test_sample and not args.data_file:
+if not args.test_sample and not args.data_file and not args.data:
     candidates = sorted(p for p in glob.glob("data*.npy") if "samples" not in p)
     if candidates:
         args.data_file = candidates[0]
@@ -112,7 +117,19 @@ max_frames = int(TOTAL_SECS * TARGET_FPS)
 if args.n_windows is not None:
     max_frames = min(max_frames, args.n_windows * WINDOW_FRAMES)
 
-if args.test_sample:
+# x_windows_for_inference: set when --data is provided; used by --checkpoint in STEP 2
+x_windows_for_inference: "Optional[np.ndarray]" = None
+
+if args.data:
+    # Pre-windowed samples_dataset.npy — same format as run_evaluation.py
+    from mocap_evaluation.paper_pipeline import _load_windows  # noqa: E402
+    x_wins, y_seqs, _, _ = _load_windows(args.data, n_samples=None)
+    x_windows_for_inference = x_wins  # (n_windows, seq_len, n_vars)
+    knee_query  = np.concatenate(y_seqs).astype(np.float32)[:max_frames]
+    thigh_query = np.concatenate([x_wins[i, :, -1] for i in range(len(x_wins))]).astype(np.float32)[:max_frames]
+    source_label = f"samples_dataset ({len(x_wins)} windows, {args.data})"
+    print(f"Source : {args.data}  ({len(x_wins)} windows → {len(knee_query)} frames)")
+elif args.test_sample:
     from mocap_evaluation.external_sample_data import extract_external_sample_curves
     print("Downloading external OpenSim gait sample …")
     curves = extract_external_sample_curves(seconds=TOTAL_SECS)
@@ -150,24 +167,52 @@ print(f"Query  : {n_windows_used} × 1 s = {len(knee_query)} frames ({query_sec:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STEP 2 — Model prediction  (noisy-GT baseline; swap for real checkpoint here)
+# STEP 2 — Model prediction
+#   • With --checkpoint + --data  : real model inference on pre-windowed X
+#   • Otherwise                   : noisy-GT baseline (demo / sanity check)
 # ══════════════════════════════════════════════════════════════════════════════
 print("\n" + "═" * 64)
 print("STEP 2  Model prediction")
 print("═" * 64)
 
 rng = np.random.default_rng(42)
-knee_good_pred = np.clip(
-    knee_query + rng.normal(0.0, GOOD_NOISE, len(knee_query)).astype(np.float32),
-    0.0, 180.0,
-)
+
+if args.checkpoint and x_windows_for_inference is not None:
+    import torch  # noqa: E402
+    from mocap_evaluation.paper_pipeline import _load_checkpoint, _predict as _model_predict  # noqa: E402
+    device = torch.device("cpu")
+    _model, _scaler = _load_checkpoint(args.checkpoint, device)
+    print(f"Checkpoint : {args.checkpoint}")
+    # Run inference on every window, concatenate predictions
+    pred_chunks = [
+        _model_predict(_model, _scaler, x_windows_for_inference[i], device)
+        for i in range(len(x_windows_for_inference))
+    ]
+    knee_model_pred = np.concatenate(pred_chunks).astype(np.float32)
+    # Align length to knee_query (windows may give more/fewer frames)
+    n = min(len(knee_model_pred), len(knee_query))
+    knee_good_pred = np.clip(knee_model_pred[:n], 0.0, 180.0)
+    knee_query     = knee_query[:n]
+    thigh_query    = thigh_query[:n]
+    good_rmse = float(np.sqrt(np.mean((knee_good_pred - knee_query) ** 2)))
+    print(f"Model RMSE vs GT : {good_rmse:.2f} °  ({len(pred_chunks)} windows)")
+    prediction_label = f"model ({Path(args.checkpoint).name})"
+else:
+    if args.checkpoint:
+        print("Note: --checkpoint requires --data for real inference; using noisy-GT baseline.")
+    knee_good_pred = np.clip(
+        knee_query + rng.normal(0.0, GOOD_NOISE, len(knee_query)).astype(np.float32),
+        0.0, 180.0,
+    )
+    good_rmse = float(np.sqrt(np.mean((knee_good_pred - knee_query) ** 2)))
+    print(f"Good prediction RMSE : {good_rmse:.2f} °  (noise std={GOOD_NOISE} °)")
+    prediction_label = f"noisy-GT (σ={GOOD_NOISE}°)"
+
 knee_bad_pred = np.clip(
     knee_query + rng.normal(0.0, BAD_NOISE, len(knee_query)).astype(np.float32),
     0.0, 180.0,
 )
-good_rmse = float(np.sqrt(np.mean((knee_good_pred - knee_query) ** 2)))
-bad_rmse  = float(np.sqrt(np.mean((knee_bad_pred  - knee_query) ** 2)))
-print(f"Good prediction RMSE : {good_rmse:.2f} °  (noise std={GOOD_NOISE} °)")
+bad_rmse = float(np.sqrt(np.mean((knee_bad_pred - knee_query) ** 2)))
 print(f"Bad  prediction RMSE : {bad_rmse:.2f} °  (noise std={BAD_NOISE} °)")
 
 
@@ -260,7 +305,7 @@ print("Policy loaded.")
 # Which scenarios to run
 SCENARIO_DEFS = {
     "gt":   ("GT knee (CMU matched)",              knee_gt_sim,   "blue"),
-    "good": (f"Good pred (RMSE≈{good_rmse:.1f}°)", knee_good_sim, "orange"),
+    "good": (f"{prediction_label} (RMSE≈{good_rmse:.1f}°)", knee_good_sim, "orange"),
     "bad":  (f"Bad pred  (RMSE≈{bad_rmse:.1f}°)",  knee_bad_sim,  "red"),
 }
 run_which = list(SCENARIO_DEFS.keys()) if args.scenarios == "all" else [args.scenarios]
@@ -353,7 +398,7 @@ ax0 = axes[0]
 ax0.plot(t_ax, knee_gt_sim,   label="GT knee (CMU matched)", lw=2, color="blue")
 if "good" in results:
     ax0.plot(t_ax, knee_good_sim, lw=1.5, color="orange", alpha=0.85,
-             label=f"Good pred RMSE={good_rmse:.1f}°")
+             label=f"{prediction_label} RMSE={good_rmse:.1f}°")
 if "bad" in results:
     ax0.plot(t_ax, knee_bad_sim,  lw=1.5, color="red",    alpha=0.70,
              label=f"Bad pred RMSE={bad_rmse:.1f}°")

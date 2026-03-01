@@ -138,9 +138,10 @@ def _scenario_metrics_mocapact(
     """
     from mocap_evaluation.mocapact_sim import (
         SIM_FPS,
-        simulate_three_scenarios_mocapact,
+        simulate_scenario,
         resolve_clip_from_match,
         load_multi_clip_policy,
+        create_walking_env,
     )
 
     delay_frames = int((cfg.delay_ms / 1000.0) * TARGET_FPS)
@@ -178,11 +179,10 @@ def _scenario_metrics_mocapact(
             arr,
         ).astype(np.float32)
 
-    gt_knee_sim    = _rs(segment["knee"])
-    nominal_sim    = _rs(pred)
-    bad_sim        = _rs(bad_pred)
-    thigh_sim      = _rs(segment["thigh"]) if "thigh" in segment else None
-    eval_secs_sim  = len(gt_knee_sim) / SIM_FPS   # ≈ cfg.eval_seconds
+    gt_knee_sim = _rs(segment["knee"])
+    nominal_sim = _rs(pred)
+    bad_sim     = _rs(bad_pred)
+    thigh_sim   = _rs(segment["thigh"]) if "thigh" in segment else None
 
     policy = load_multi_clip_policy(
         checkpoint_path=eval_cfg.mocapact_checkpoint,
@@ -190,25 +190,38 @@ def _scenario_metrics_mocapact(
         device=eval_cfg.device,
     )
 
-    gt, nominal, bad = simulate_three_scenarios_mocapact(
-        gt_knee=gt_knee_sim,
-        nominal_knee=nominal_sim,
-        bad_knee=bad_sim,
-        sample_thigh_right=thigh_sim,
-        policy=policy,
-        eval_seconds=eval_secs_sim,
-        device=eval_cfg.device,
-        reference_knee=gt_knee_sim,
-        use_gui=eval_cfg.use_gui,
-        match_info=match_info,
-    )
+    def _run_one(knee_sig: np.ndarray) -> dict:
+        """Run one scenario: create env → simulate → close env."""
+        clip_id = match_info["clip_id"] if match_info else None
+        try:
+            env = create_walking_env(policy=policy, clip_id=clip_id)
+        except Exception as exc:
+            print(f"  Warning: clip {clip_id!r} unavailable ({exc}); using default.")
+            env = create_walking_env(policy=policy)
+        try:
+            return simulate_scenario(
+                env=env,
+                policy=policy,
+                knee_inc_deg=knee_sig,
+                thigh_inc_deg=thigh_sim,
+                reference_knee_inc_deg=gt_knee_sim,
+                fps=SIM_FPS,
+                use_gui=eval_cfg.use_gui,
+                match_info=match_info,
+            )
+        finally:
+            env.close()
+
+    gt      = _run_one(gt_knee_sim)
+    nominal = _run_one(nominal_sim)
+    bad     = _run_one(bad_sim)
 
     robustness = float(np.mean([
         nominal.get("stability_score", 0.0),
         bad.get("stability_score", 0.0),
     ]))
 
-    category = gt.get("matched_category", "mocapact_policy")
+    category = (match_info or {}).get("category", "mocapact_policy")
     return [{
         "match_start": best_start or 0,
         "dtw_distance": float(best_dist if np.isfinite(best_dist) else 0.0),
