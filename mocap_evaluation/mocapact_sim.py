@@ -609,6 +609,19 @@ def simulate_mocapact_prosthetic(
     # Get the physics handle for metric collection
     physics = _get_physics(env)
 
+    # ── Optional interactive viewer ────────────────────────────────────
+    viewer = None
+    if use_gui:
+        try:
+            import mujoco.viewer as mj_viewer
+            viewer = mj_viewer.launch_passive(
+                physics.model.ptr, physics.data.ptr
+            )
+            print(f"[MoCapAct] Viewer opened — clip: {clip_id or 'random'}")
+        except Exception as exc:
+            print(f"[MoCapAct] Could not open viewer: {exc}")
+            viewer = None
+
     # Initialise the policy's recurrent state (embedding for NPMP)
     is_npmp = hasattr(policy, "initial_state")
     if is_npmp:
@@ -632,6 +645,13 @@ def simulate_mocapact_prosthetic(
 
         # ── Step environment ──────────────────────────────────────────
         obs, reward, done, info = env.step(action)
+
+        # ── Sync viewer ───────────────────────────────────────────────
+        if viewer is not None:
+            try:
+                viewer.sync()
+            except Exception:
+                viewer = None  # viewer was closed by user
 
         # ── Collect metrics ───────────────────────────────────────────
         # CoM height: use the whole-body subtree_com (body index 0 = root)
@@ -686,6 +706,11 @@ def simulate_mocapact_prosthetic(
         if done:
             break
 
+    if viewer is not None:
+        try:
+            viewer.close()
+        except Exception:
+            pass
     env.close()
 
     # ── Build result (same contract as prosthetic_sim.py) ─────────────

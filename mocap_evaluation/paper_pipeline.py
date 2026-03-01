@@ -39,6 +39,7 @@ class EvalConfig:
     use_mocapact: bool = False
     mocapact_checkpoint: Optional[str] = None
     mocapact_model_dir: str = "mocapact_models"
+    use_gui: bool = False
 
 
 def _load_checkpoint(path: str | Path, device: torch.device):
@@ -186,8 +187,10 @@ def _scenario_metrics_mocapact(
         best_start=best_start,
     )
 
+    # GUI only on the nominal (primary) scenario to avoid opening 4 windows
     gt = simulate_prosthetic_walking_mocapact(
-        segment["knee"], reference_knee=segment["knee"], **sim_kwargs,
+        segment["knee"], reference_knee=segment["knee"],
+        use_gui=eval_cfg.use_gui, **sim_kwargs,
     )
     nominal = simulate_prosthetic_walking_mocapact(
         pred, reference_knee=segment["knee"], **sim_kwargs,
