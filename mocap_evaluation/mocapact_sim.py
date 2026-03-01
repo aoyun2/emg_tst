@@ -78,9 +78,14 @@ _NP2_ALIASES = {
     if hasattr(getattr(_np, "exceptions", None) or object(), "VisibleDeprecationWarning")
     else DeprecationWarning,
 }
-for _name, _val in _NP2_ALIASES.items():
-    if not hasattr(_np, _name):
-        setattr(_np, _name, _val)
+import warnings as _warnings
+with _warnings.catch_warnings():
+    # Some names (e.g. np.object, np.str) raise FutureWarning when accessed on
+    # NumPy 1.x even via hasattr().  Suppress all warnings during the check.
+    _warnings.simplefilter("ignore")
+    for _name, _val in _NP2_ALIASES.items():
+        if not hasattr(_np, _name):
+            setattr(_np, _name, _val)
 
 # ── gym.spaces compatibility shims ───────────────────────────────────────────
 # Patch missing attributes introduced in different gym versions so that
