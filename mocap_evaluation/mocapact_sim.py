@@ -1655,10 +1655,20 @@ def simulate_scenario(
             pass
 
     # ── Main loop ──────────────────────────────────────────────────────
-    metrics   = MoCapActEvalMetrics.empty()
-    t_ep      = 0      # frame in the current episode (resets on env.done / loop)
-    t_met     = 0      # total metric frames collected (0 → T)
-    dt        = 1.0 / fps
+    # Two independent counters:
+    #   t_ep  — frame index into the input signal (resets on episode end)
+    #   t_met — total metric frames collected 0→T (never decremented)
+    #
+    # Exit bug that existed before: "if t_ep >= T" never fires when episode
+    # ends (done=True) before T steps because t_ep is reset to 0 each time.
+    # Fix: use "t_met >= T" to detect completion.  Once all T metric frames
+    # are collected, headless mode exits immediately; GUI mode resets the
+    # episode and keeps looping until the viewer window is closed.
+    metrics        = MoCapActEvalMetrics.empty()
+    t_ep           = 0      # frame in current episode (resets on done)
+    t_met          = 0      # total metric frames (0 → T, never resets)
+    done_collecting = False  # True once t_met >= T
+    dt             = 1.0 / fps
 
     try:
         with tqdm(total=T, desc="sim", unit="step", leave=False) as pbar:
@@ -1669,16 +1679,11 @@ def simulate_scenario(
                 if viewer is not None and not viewer.is_running():
                     break
 
-                # ── 2. End of signal ───────────────────────────────────
-                if t_ep >= T:
-                    # Viewer still open → loop playback
-                    if viewer is not None and viewer.is_running():
-                        obs, embed = _reset_ep()
-                        t_ep = 0
-                        pbar.reset()
-                        continue
-                    # Headless (or viewer closed) → done
-                    break
+                # ── 2. Metrics done → exit or loop for visualization ───
+                if done_collecting:
+                    if viewer is None or not viewer.is_running():
+                        break   # headless: all done
+                    # GUI: keep stepping for visualization; fall through
 
                 # ── 3. Policy action ───────────────────────────────────
                 if is_npmp:
@@ -1713,8 +1718,8 @@ def simulate_scenario(
                 # ── 8. Offscreen render ────────────────────────────────
                 _maybe_render()
 
-                # ── 9. Collect metrics (first-pass T frames only) ──────
-                if t_met < T:
+                # ── 9. Collect metrics (first T frames only) ───────────
+                if not done_collecting:
                     _collect_step_metrics(
                         metrics, env,
                         float(knee_flex_deg[t_ep % T]),
@@ -1724,12 +1729,14 @@ def simulate_scenario(
                     )
                     t_met += 1
                     pbar.update(1)
+                    if t_met >= T:
+                        done_collecting = True
 
                 t_ep += 1
 
                 # ── 10. Handle episode termination ─────────────────────
                 if done:
-                    if not metrics.fall_detected:
+                    if not done_collecting and not metrics.fall_detected:
                         latest_com = (
                             metrics.com_height[-1] if metrics.com_height
                             else float("nan")
@@ -1740,7 +1747,7 @@ def simulate_scenario(
                         ):
                             metrics.fall_detected = True
                             metrics.fall_frame = t_met - 1
-                    # Reset episode; t_ep resets so signal stays in sync
+                    # Reset episode so the signal stays in sync with physics
                     obs, embed = _reset_ep()
                     t_ep = 0
 

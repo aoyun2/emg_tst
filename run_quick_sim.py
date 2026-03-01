@@ -72,6 +72,11 @@ _ap.add_argument("--scenarios", choices=["all", "gt", "good", "bad"], default="a
                  help="Which scenarios to simulate (default: all three)")
 _ap.add_argument("--gui-scenario", choices=["gt", "good", "bad", "all"], default="gt",
                  help="Which scenario(s) get the interactive viewer (default: gt)")
+_ap.add_argument("--out", default=None,
+                 help="Save results as JSON (e.g. eval_results.json).  "
+                      "Replaces run_evaluation.py when combined with --checkpoint --data.")
+_ap.add_argument("--device", default="cpu",
+                 help="Torch device for model inference (default: cpu)")
 args = _ap.parse_args()
 
 USE_GUI      = not args.no_gui
@@ -180,7 +185,7 @@ rng = np.random.default_rng(42)
 if args.checkpoint and x_windows_for_inference is not None:
     import torch  # noqa: E402
     from mocap_evaluation.paper_pipeline import _load_checkpoint, _predict as _model_predict  # noqa: E402
-    device = torch.device("cpu")
+    device = torch.device(args.device)
     _model, _scaler = _load_checkpoint(args.checkpoint, device)
     print(f"Checkpoint : {args.checkpoint}")
     # Run inference on every window, concatenate predictions
@@ -453,3 +458,40 @@ fig.tight_layout()
 fig.savefig(plot_path, dpi=150)
 plt.close(fig)
 print(f"Plot saved : {plot_path}")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# JSON output  (--out replaces run_evaluation.py for structured results)
+# ══════════════════════════════════════════════════════════════════════════════
+if args.out:
+    import json  # noqa: E402
+
+    def _serialise(v):
+        """Make numpy scalars / arrays JSON-serialisable."""
+        if isinstance(v, dict):
+            return {k: _serialise(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [_serialise(x) for x in v]
+        if hasattr(v, "item"):          # numpy scalar
+            return v.item()
+        if hasattr(v, "tolist"):        # numpy array
+            return v.tolist()
+        return v
+
+    out_data = {
+        "mode": "pipeline",
+        "source": source_label,
+        "checkpoint": args.checkpoint,
+        "matched_clip": matched_file,
+        "dtw_distance": float(dtw_dist),
+        "match_rmse_deg": float(match_rmse),
+        "good_rmse_deg": float(good_rmse),
+        "bad_rmse_deg": float(bad_rmse),
+        "sim_frames": int(T_sim),
+        "sim_fps": float(SIM_FPS),
+        "scenarios": _serialise(results),
+    }
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w") as _f:
+        json.dump(out_data, _f, indent=2)
+    print(f"JSON saved : {out_path}")
