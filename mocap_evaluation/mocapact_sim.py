@@ -55,6 +55,23 @@ import numpy as _np
 if not hasattr(_np, "infty"):
     _np.infty = _np.inf  # type: ignore[attr-defined]
 
+# ── gym.spaces.Box compatibility shim ────────────────────────────────────────
+# gym >= 0.26 added low_repr / high_repr string attributes to Box.
+# Checkpoints saved with newer gym will fail to unpickle on older installs.
+try:
+    import gym.spaces.box as _gsb
+    if not hasattr(_gsb.Box, "low_repr"):
+        @property  # type: ignore[misc]
+        def _low_repr(self) -> str:
+            return str(self.low)
+        @property  # type: ignore[misc]
+        def _high_repr(self) -> str:
+            return str(self.high)
+        _gsb.Box.low_repr = _low_repr   # type: ignore[attr-defined]
+        _gsb.Box.high_repr = _high_repr  # type: ignore[attr-defined]
+except Exception:
+    pass
+
 # ── pkg_resources compatibility shim ─────────────────────────────────────────
 # On Python 3.12+ Windows venvs, setuptools may be installed but
 # pkg_resources (which lives inside it) is occasionally not importable.
