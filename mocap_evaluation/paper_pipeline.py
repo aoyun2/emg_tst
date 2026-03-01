@@ -157,14 +157,15 @@ def _scenario_metrics_mocapact(
         mocap_db=mocap_db,
         best_start=best_start,
         sample_thigh_right=segment.get("thigh"),
-        use_gui=eval_cfg.use_gui,
     )
 
     gt = simulate_prosthetic_walking_mocapact(
         segment["knee"], reference_knee=segment["knee"], **sim_kwargs,
     )
+    # Only open the viewer for the nominal run; opening it for all four
+    # scenarios causes a WGL "context in use" crash on the second launch.
     nominal = simulate_prosthetic_walking_mocapact(
-        pred, reference_knee=segment["knee"], **sim_kwargs,
+        pred, reference_knee=segment["knee"], use_gui=eval_cfg.use_gui, **sim_kwargs,
     )
     delayed = simulate_prosthetic_walking_mocapact(
         _apply_delay(pred, delay_frames), reference_knee=segment["knee"],
