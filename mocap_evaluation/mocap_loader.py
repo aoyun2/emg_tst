@@ -111,23 +111,30 @@ _ALL_JOINT_KEYS = list(_CMU_JOINT_MAP.values())
 # (Yrotation) on top of the primary flexion/extension (Xrotation) already
 # captured by the main _CMU_JOINT_MAP via get_flexion().
 _EXTRA_CHANNEL_MAP = {
-    # Hips: abduction + rotation
-    ("RightUpLeg", "Yrotation"): "hip_right_rot",
+    # Hips: all three BVH rotation channels (ZXY order)
     ("RightUpLeg", "Zrotation"): "hip_right_abd",
-    ("LeftUpLeg",  "Yrotation"): "hip_left_rot",
+    ("RightUpLeg", "Xrotation"): "hip_right_flex_raw",
+    ("RightUpLeg", "Yrotation"): "hip_right_rot",
     ("LeftUpLeg",  "Zrotation"): "hip_left_abd",
-    # Shoulders: abduction + rotation
-    ("RightArm", "Yrotation"): "shoulder_right_rot",
+    ("LeftUpLeg",  "Xrotation"): "hip_left_flex_raw",
+    ("LeftUpLeg",  "Yrotation"): "hip_left_rot",
+    # Shoulders: all three BVH rotation channels (ZXY order)
     ("RightArm", "Zrotation"): "shoulder_right_abd",
-    ("LeftArm",  "Yrotation"): "shoulder_left_rot",
+    ("RightArm", "Xrotation"): "shoulder_right_flex_raw",
+    ("RightArm", "Yrotation"): "shoulder_right_rot",
     ("LeftArm",  "Zrotation"): "shoulder_left_abd",
-    # Spine chain: lateral bend (Zrotation) + axial rotation (Yrotation)
-    ("LowerBack", "Yrotation"): "pelvis_rotation",
+    ("LeftArm",  "Xrotation"): "shoulder_left_flex_raw",
+    ("LeftArm",  "Yrotation"): "shoulder_left_rot",
+    # Spine chain: all three BVH rotation channels (ZXY order)
     ("LowerBack", "Zrotation"): "pelvis_lateral",
-    ("Spine",     "Yrotation"): "trunk_rotation",
+    ("LowerBack", "Xrotation"): "pelvis_flex_raw",
+    ("LowerBack", "Yrotation"): "pelvis_rotation",
     ("Spine",     "Zrotation"): "trunk_lateral",
-    ("Spine1",    "Yrotation"): "upper_trunk_rotation",
+    ("Spine",     "Xrotation"): "trunk_flex_raw",
+    ("Spine",     "Yrotation"): "trunk_rotation",
     ("Spine1",    "Zrotation"): "upper_trunk_lateral",
+    ("Spine1",    "Xrotation"): "upper_trunk_flex_raw",
+    ("Spine1",    "Yrotation"): "upper_trunk_rotation",
 }
 
 _EXTRA_CHANNEL_KEYS = list(_EXTRA_CHANNEL_MAP.values())
@@ -423,7 +430,7 @@ _CACHE_KEYS_1D = _ALL_JOINT_KEYS + _EXTRA_CHANNEL_KEYS + ["root_pitch", "root_ya
 
 # Bump this when angle extraction or resampling logic changes so that stale
 # caches are automatically invalidated (the fingerprint includes this string).
-_CACHE_VERSION = "v7"
+_CACHE_VERSION = "v8"
 
 
 def _cache_fingerprint(bvh_dir: Path) -> str:
