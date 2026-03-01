@@ -81,6 +81,17 @@ _RIGHT_KNEE_IDX_FALLBACK = 44
 # 0.01 rad ≈ fully extended, 2.967 rad ≈ 170° flexion.
 _KNEE_RANGE_RAD = (0.01, 2.96706)
 
+# dm_control CMU humanoid right hip (sagittal flexion/extension) actuator.
+# rfemury controls the thigh swing in the sagittal plane.
+# Alphabetically it sits a few positions before rtibiarx; index 37 is the
+# known fallback — runtime discovery is always attempted first.
+_RIGHT_HIP_ACTUATOR = "rfemury"
+_RIGHT_HIP_IDX_FALLBACK = 37
+
+# Right hip joint range (radians): −60° (extension) to +75° (flexion).
+# Positive = thigh swings forward, negative = thigh swings back.
+_HIP_RANGE_RAD = (-1.047, 1.309)
+
 # Default multi-clip policy checkpoint (relative to model dir).
 # The HF repo bundles a tarball with two variants:
 #   multiclip_policy/full_dataset/model/model.ckpt       (trained on ALL clips)
@@ -272,6 +283,43 @@ def _get_physics(env):
     if hasattr(env, "physics"):
         return env.physics
     raise AttributeError("Cannot extract dm_control physics from env")
+
+
+def _find_hip_actuator_index(env) -> int:
+    """Find the index of the right hip (rfemury) actuator in dm_control's action array."""
+    try:
+        physics = _get_physics(env)
+        for i in range(physics.model.nu):
+            name = physics.model.id2name(i, "actuator")
+            if name == _RIGHT_HIP_ACTUATOR:
+                return i
+    except Exception:
+        pass
+    return _RIGHT_HIP_IDX_FALLBACK
+
+
+def _hip_angle_to_ctrl(angle_flexion_rad: float, env=None) -> float:
+    """Convert a hip flexion angle (radians) to the normalized [-1, 1] ctrl value.
+
+    Positive = thigh forward (flexion), negative = thigh back (extension).
+    """
+    low, high = _HIP_RANGE_RAD
+
+    if env is not None:
+        try:
+            physics = _get_physics(env)
+            hip_idx = _find_hip_actuator_index(env)
+            jnt_id = physics.model.actuator_trnid[hip_idx, 0]
+            jnt_range = physics.model.jnt_range[jnt_id]
+            low, high = float(jnt_range[0]), float(jnt_range[1])
+        except Exception:
+            pass
+
+    angle_clamped = max(low, min(high, angle_flexion_rad))
+    if abs(high - low) < 1e-10:
+        return 0.0
+    ctrl = 2.0 * (angle_clamped - low) / (high - low) - 1.0
+    return float(np.clip(ctrl, -1.0, 1.0))
 
 
 def _find_knee_actuator_index(env) -> int:
@@ -522,6 +570,7 @@ def create_walking_env(
 
 def simulate_mocapact_prosthetic(
     predicted_knee: np.ndarray,
+    predicted_thigh: Optional[np.ndarray] = None,
     policy=None,
     policy_checkpoint: Optional[str | Path] = None,
     model_dir: str | Path = "mocapact_models",
@@ -534,13 +583,18 @@ def simulate_mocapact_prosthetic(
 ) -> dict:
     """Run a MoCapAct-based prosthetic simulation.
 
-    The policy controls all joints except the right knee, which is overridden
-    with ``predicted_knee``.
+    The policy controls all joints except the right knee and (optionally) the
+    right hip, which are overridden with ``predicted_knee`` and
+    ``predicted_thigh`` respectively.
 
     Parameters
     ----------
     predicted_knee :
         Model-predicted right knee angle (included-angle, degrees).
+    predicted_thigh :
+        Recorded right thigh angle (included-angle, degrees).  When provided,
+        overrides the right hip (rfemury) actuator so the thigh swing comes
+        entirely from your IMU data rather than the MoCapAct policy.
     policy :
         Pre-loaded MoCapAct policy.  If None, loads from checkpoint.
     policy_checkpoint :
@@ -588,6 +642,7 @@ def simulate_mocapact_prosthetic(
     clip_id = match_info["clip_id"] if match_info else None
     env = create_walking_env(policy=policy, clip_id=clip_id)
     knee_idx = _find_knee_actuator_index(env)
+    hip_idx = _find_hip_actuator_index(env)
 
     # ── Prepare predicted knee signal ─────────────────────────────────
     pred_flex_deg = _included_to_flexion(predicted_knee)
@@ -597,6 +652,12 @@ def simulate_mocapact_prosthetic(
         ref_flex_deg = _included_to_flexion(reference_knee)
     else:
         ref_flex_deg = None
+
+    # ── Prepare predicted thigh/hip signal ────────────────────────────
+    if predicted_thigh is not None:
+        pred_hip_rad = np.radians(_included_to_flexion(np.asarray(predicted_thigh, dtype=np.float64)))
+    else:
+        pred_hip_rad = None
 
     # ── Determine frame count ─────────────────────────────────────────
     max_steps = int(eval_seconds * fps)
@@ -629,6 +690,11 @@ def simulate_mocapact_prosthetic(
         # ── Override right knee with prosthetic prediction ────────────
         knee_ctrl = _knee_angle_to_ctrl(pred_flex_rad[t], env)
         action[knee_idx] = knee_ctrl
+
+        # ── Override right hip with recorded thigh angle ──────────────
+        if pred_hip_rad is not None:
+            hip_ctrl = _hip_angle_to_ctrl(pred_hip_rad[min(t, len(pred_hip_rad) - 1)], env)
+            action[hip_idx] = hip_ctrl
 
         # ── Step environment ──────────────────────────────────────────
         obs, reward, done, info = env.step(action)
@@ -740,7 +806,9 @@ def simulate_prosthetic_walking_mocapact(
     predicted_knee :
         Right knee angle prediction (included-angle, degrees).
     sample_thigh_right :
-        Ignored (present for API compatibility).
+        Recorded right thigh angle (included-angle, degrees).  Overrides the
+        right hip (rfemury) actuator so the thigh swing is driven by your IMU
+        data rather than the MoCapAct policy.
     policy_checkpoint :
         Path to MoCapAct multi-clip checkpoint.
     model_dir :
@@ -795,6 +863,7 @@ def simulate_prosthetic_walking_mocapact(
 
     return simulate_mocapact_prosthetic(
         predicted_knee=predicted_knee,
+        predicted_thigh=sample_thigh_right,
         policy=policy,
         eval_seconds=eval_seconds,
         device=device,

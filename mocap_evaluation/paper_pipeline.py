@@ -128,8 +128,9 @@ def _scenario_metrics_mocapact(
     When *mocap_db* is supplied, DTW matching is used to identify the CMU
     clip that best corresponds to the EMG recording.  The MoCapAct
     environment is then initialised with that specific clip so the policy
-    walks the same motion — but with full physics and the right knee
-    overridden by the model's prediction.
+    walks the same motion — but with full physics, the right knee overridden
+    by the model's prediction, and the right hip overridden by the recorded
+    thigh angle.
 
     Without *mocap_db* the policy walks an arbitrary locomotion clip.
     """
@@ -153,6 +154,7 @@ def _scenario_metrics_mocapact(
         device=eval_cfg.device,
         mocap_db=mocap_db,
         best_start=best_start,
+        sample_thigh_right=segment.get("thigh"),
     )
 
     gt = simulate_prosthetic_walking_mocapact(

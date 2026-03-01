@@ -50,10 +50,12 @@ match_rmse = float(np.sqrt(np.mean((knee_matched[:T] - knee_query[:T]) ** 2)))
 print(f"Best match: DTW={dist:.4f}, file={matched_file}")
 print(f"Matched knee vs query RMSE: {match_rmse:.2f} deg")
 
-# Shared kwargs for all three MoCapAct simulation calls
+# Shared kwargs for all three MoCapAct simulation calls.
+# sample_thigh_right drives the right hip from your recorded IMU data.
 _sim_kwargs = dict(
     mocap_db=db,
     best_start=best_start,
+    sample_thigh_right=thigh_query,
 )
 
 # ── Simulate: GT knee ────────────────────────────────────────────────────
