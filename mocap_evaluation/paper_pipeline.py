@@ -147,9 +147,10 @@ def _scenario_metrics_mocapact(
 
     # ── DTW matching ──────────────────────────────────────────────────
     best_start = None
+    best_dist = float("inf")
     if mocap_db is not None and "thigh" in segment:
         from mocap_evaluation.motion_matching import find_best_match
-        best_start, _, _ = find_best_match(
+        best_start, best_dist, _ = find_best_match(
             segment["knee"], segment["thigh"], mocap_db,
         )
 
@@ -189,7 +190,7 @@ def _scenario_metrics_mocapact(
     category = gt.get("matched_category", "mocapact_policy")
     return [{
         "match_start": best_start or 0,
-        "dtw_distance": 0.0,
+        "dtw_distance": float(best_dist if np.isfinite(best_dist) else 0.0),
         "category": category,
         "ground_truth": gt,
         "nominal": nominal,
