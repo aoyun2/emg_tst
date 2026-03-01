@@ -106,9 +106,9 @@ def get_locomotion_clip_ids(subset: str = "all") -> List[str]:
     Parameters
     ----------
     subset : str
-        One of ``"all"`` (1,144 clips, ~3.5 hrs — default),
-        ``"locomotion_small"`` (243 clips, ~40 min walking/running),
-        ``"walk_tiny"`` (35 clips), or ``"run_jump_tiny"`` (50 clips).
+        One of ``"all"`` (836 clips — default),
+        ``"locomotion_small"`` (316 clips walking/running),
+        ``"walk_tiny"`` (36 clips), or ``"run_jump_tiny"`` (50 clips).
 
     Returns
     -------
@@ -173,9 +173,29 @@ def _get_qpos_addresses(env) -> Tuple[int, int]:
 def _get_cmu_mocap_path() -> Optional[Path]:
     """Return path to the consolidated CMU mocap H5 file, downloading if needed.
 
-    dm_control ships without the ~454 MB CMU dataset; it is auto-downloaded to
-    ~/.dm_control/ on first access via cmu_mocap_data.get_path_for_cmu().
+    Search order:
+    1. ``MOCAPACT_H5_PATH`` environment variable (explicit override).
+    2. dm_control's built-in search: package dir, then ``~/.dm_control/``.
+       On first access the ~454 MB CMU dataset is auto-downloaded to
+       ``~/.dm_control/cmu_2020_*.h5``.
+
+    Set ``MOCAPACT_H5_PATH`` to point at the file if it lives somewhere
+    other than the two default locations (common on Windows).
     """
+    import os
+
+    # 1. Explicit override via environment variable
+    env_path = os.environ.get("MOCAPACT_H5_PATH", "").strip()
+    if env_path:
+        p = Path(env_path)
+        if p.exists():
+            return p
+        warnings.warn(
+            f"[mocapact_dataset] MOCAPACT_H5_PATH={env_path!r} does not exist; "
+            "falling back to dm_control default search."
+        )
+
+    # 2. dm_control default search (package dir → ~/.dm_control/ → download)
     try:
         from dm_control.locomotion.mocap import cmu_mocap_data
         p = Path(cmu_mocap_data.get_path_for_cmu())
@@ -495,8 +515,8 @@ def load_mocapact_database(
         Resample all clips to this frame rate (default 200 Hz to match EMG pipeline).
     subset :
         Which dm_control CMU clip collection to use.  One of:
-        ``"all"`` (1,144 clips, ~3.5 hrs — **default**),
-        ``"locomotion_small"`` (243 clips, ~40 min walking/running),
+        ``"all"`` (836 clips — **default**),
+        ``"locomotion_small"`` (316 clips walking/running),
         ``"walk_tiny"`` (35 clips), or ``"run_jump_tiny"`` (50 clips).
         Ignored when *clip_ids* is provided explicitly.
     clip_ids :
@@ -571,10 +591,25 @@ def load_mocapact_database(
         cursor += n
 
     if not all_knee:
+        import os
+        # Build a helpful message showing what paths were checked
+        h5_hint = ""
+        try:
+            from dm_control.locomotion.mocap import cmu_mocap_data
+            paths = [os.path.expanduser(p) for p in cmu_mocap_data.H5_PATHS["2020"]]
+            h5_hint = (
+                "\nSearched for HDF5 file at:\n"
+                + "".join(f"  {p}\n" for p in paths)
+                + "If the file is elsewhere, set: "
+                "MOCAPACT_H5_PATH=/path/to/cmu_2020_dfe3e9e0.h5"
+            )
+        except Exception:
+            pass
         raise RuntimeError(
             "No MocapAct clips could be loaded.  "
-            "Ensure dm_control is installed and its HDF5 assets are accessible.\n"
-            "  pip install dm_control mocapact stable-baselines3"
+            "Ensure dm_control and h5py are installed and the HDF5 assets are accessible.\n"
+            "  pip install dm_control h5py"
+            + h5_hint
         )
 
     if not quiet:
