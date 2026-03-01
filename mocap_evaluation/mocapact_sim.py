@@ -523,6 +523,50 @@ def _get_physics(env):
     raise AttributeError("Cannot extract dm_control physics from env")
 
 
+def _launch_mujoco_viewer_from_physics(physics):
+    """Launch ``mujoco.viewer`` from a dm_control physics object when possible.
+
+    dm_control exposes wrapper objects (``dm_control.mujoco.wrapper.core``)
+    around MuJoCo model/data handles.  Some environments expose native
+    ``mujoco.MjModel/MjData`` directly, while others expose wrapper objects with
+    ``.ptr`` to the underlying pybind handles.
+
+    Returns
+    -------
+    object
+        A launched viewer instance.
+
+    Raises
+    ------
+    TypeError
+        If the physics object cannot be adapted for ``mujoco.viewer``.
+    """
+    if not _MUJOCO_AVAILABLE:
+        raise TypeError("mujoco package is not available")
+
+    model = getattr(physics, "model", None)
+    data = getattr(physics, "data", None)
+    if model is None or data is None:
+        raise TypeError("physics object has no model/data")
+
+    import mujoco.viewer as _mv
+
+    # Native mujoco objects (works directly).
+    if isinstance(model, mujoco.MjModel) and isinstance(data, mujoco.MjData):
+        return _mv.launch_passive(model, data)
+
+    # dm_control wrapper objects may expose native handles via .ptr.
+    model_ptr = getattr(model, "ptr", None)
+    data_ptr = getattr(data, "ptr", None)
+    if model_ptr is not None and data_ptr is not None:
+        return _mv.launch_passive(model_ptr, data_ptr)
+
+    raise TypeError(
+        "unsupported model/data types for mujoco.viewer: "
+        f"model={type(model)!r}, data={type(data)!r}"
+    )
+
+
 def _find_hip_actuator_index(env) -> int:
     """Find the index of the right hip (rfemurry) actuator in dm_control's action array."""
     try:
@@ -1053,8 +1097,7 @@ def simulate_mocapact_prosthetic(
     _viewer = None
     if use_gui:
         try:
-            import mujoco.viewer as _mv
-            _viewer = _mv.launch_passive(physics.model, physics.data)
+            _viewer = _launch_mujoco_viewer_from_physics(physics)
             print("[MoCapAct] Viewer opened — close the window to stop early.")
         except Exception as _ve:
             print(f"[MoCapAct] Could not open mujoco viewer: {_ve}")
@@ -1309,8 +1352,7 @@ def simulate_three_scenarios_mocapact(
         labels = ["Ground Truth", "Nominal", "Bad (delay+noise)"]
         for i, (phys, label) in enumerate(zip(physics_list, labels)):
             try:
-                import mujoco.viewer as _mv
-                viewers[i] = _mv.launch_passive(phys.model, phys.data)
+                viewers[i] = _launch_mujoco_viewer_from_physics(phys)
                 print(f"[MoCapAct] {label} viewer opened.")
             except Exception as exc:
                 print(f"[MoCapAct] Could not open {label} viewer: {exc}")
