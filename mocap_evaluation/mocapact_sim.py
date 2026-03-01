@@ -78,9 +78,14 @@ _NP2_ALIASES = {
     if hasattr(getattr(_np, "exceptions", None) or object(), "VisibleDeprecationWarning")
     else DeprecationWarning,
 }
-for _name, _val in _NP2_ALIASES.items():
-    if not hasattr(_np, _name):
-        setattr(_np, _name, _val)
+import warnings as _warnings
+with _warnings.catch_warnings():
+    # Some names (e.g. np.object, np.str) raise FutureWarning when accessed on
+    # NumPy 1.x even via hasattr().  Suppress all warnings during the check.
+    _warnings.simplefilter("ignore")
+    for _name, _val in _NP2_ALIASES.items():
+        if not hasattr(_np, _name):
+            setattr(_np, _name, _val)
 
 # ── gym.spaces compatibility shims ───────────────────────────────────────────
 # Patch missing attributes introduced in different gym versions so that
@@ -187,6 +192,30 @@ try:
             return _orig_o2t(self, observation)
 
         _sb3pol.BasePolicy.obs_to_tensor = _patched_o2t  # type: ignore[method-assign]
+except Exception:
+    pass
+
+# ── SB3 1.x → 2.x extract_features signature shim ───────────────────────────
+# SB3 2.x changed BaseModel.extract_features(obs) to
+# BaseModel.extract_features(obs, features_extractor).
+# MoCapAct was built against SB3 1.x and calls the old single-arg form.
+try:
+    import importlib as _il
+    import inspect as _inspect
+    _sb3base_mod = _il.import_module("stable_baselines3.common.policies")
+    if hasattr(_sb3base_mod, "BaseModel"):
+        _ef = _sb3base_mod.BaseModel.extract_features
+        _ef_params = list(_inspect.signature(_ef).parameters.keys())
+        # Only patch if features_extractor is a required param (SB3 2.x behaviour)
+        if "features_extractor" in _ef_params and (
+            _inspect.signature(_ef).parameters["features_extractor"].default
+            is _inspect.Parameter.empty
+        ):
+            def _patched_ef(self, obs, features_extractor=None):
+                if features_extractor is None:
+                    features_extractor = self.features_extractor
+                return _ef(self, obs, features_extractor)
+            _sb3base_mod.BaseModel.extract_features = _patched_ef  # type: ignore[method-assign]
 except Exception:
     pass
 
