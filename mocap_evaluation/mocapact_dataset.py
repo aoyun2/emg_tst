@@ -169,6 +169,80 @@ def _get_cmu_mocap_path() -> Optional[Path]:
         return None
 
 
+def _diagnose_loading(knee_addr: int, hip_addr: int) -> None:
+    """Print a diagnostic report showing why clip loading is failing."""
+    print("[mocapact_dataset] DIAGNOSTIC — checking each loading method:")
+
+    # 1. CMU H5 file
+    mocap_path = None
+    try:
+        from dm_control.locomotion.mocap import cmu_mocap_data
+        mocap_path = Path(cmu_mocap_data.get_path_for_cmu())
+        if mocap_path.exists():
+            size_mb = mocap_path.stat().st_size / 1e6
+            print(f"  [OK] CMU H5 file: {mocap_path} ({size_mb:.0f} MB)")
+        else:
+            print(f"  [FAIL] CMU H5 file path returned but does not exist: {mocap_path}")
+            print("         Run: python -c \"from dm_control.locomotion.mocap import cmu_mocap_data; cmu_mocap_data.get_path_for_cmu()\"")
+    except Exception as exc:
+        print(f"  [FAIL] cmu_mocap_data.get_path_for_cmu() raised: {exc}")
+
+    # 2. H5 file structure
+    if mocap_path and mocap_path.exists():
+        try:
+            import h5py
+            with h5py.File(str(mocap_path), "r") as f:
+                keys = list(f.keys())
+                print(f"  [OK] H5 top-level keys ({len(keys)} clips): {keys[:3]} ...")
+                # probe structure of first clip
+                first = keys[0]
+                def _ls(grp, prefix=""):
+                    for k in list(grp.keys())[:6]:
+                        item = grp[k]
+                        if hasattr(item, "shape"):
+                            print(f"        {prefix}{k}: shape={item.shape}")
+                        else:
+                            print(f"        {prefix}{k}/")
+                            _ls(item, prefix + "  ")
+                print(f"  H5 structure under '{first}':")
+                _ls(f[first])
+        except Exception as exc:
+            print(f"  [FAIL] h5py inspection raised: {exc}")
+
+    # 3. HDF5TrajectoryLoader
+    try:
+        from dm_control.locomotion.mocap import loader as mocap_loader
+        if mocap_path and mocap_path.exists() and hasattr(mocap_loader, "HDF5TrajectoryLoader"):
+            tl = mocap_loader.HDF5TrajectoryLoader(str(mocap_path))
+            clip_ids = tl.ids if hasattr(tl, "ids") else list(tl._h5_file.keys())[:1]
+            traj = tl.load(clip_ids[0])
+            attrs = [a for a in dir(traj) if not a.startswith("_")]
+            print(f"  [OK] HDF5TrajectoryLoader loaded clip '{clip_ids[0]}', attrs: {attrs[:10]}")
+            try:
+                d = traj.as_dict()
+                print(f"       as_dict() keys: {list(d.keys())[:8]}")
+                for k, v in d.items():
+                    arr = np.asarray(v)
+                    if arr.ndim == 2:
+                        print(f"       as_dict()['{k}']: shape={arr.shape} — knee_addr={knee_addr}, hip_addr={hip_addr}, ok={arr.shape[1] > max(knee_addr, hip_addr)}")
+            except Exception as exc2:
+                print(f"       as_dict() failed: {exc2}")
+        else:
+            print("  [SKIP] HDF5TrajectoryLoader not available or no H5 file")
+    except Exception as exc:
+        print(f"  [FAIL] HDF5TrajectoryLoader raised: {exc}")
+
+    # 4. Env-stepping
+    try:
+        from mocap_evaluation.mocapact_sim import create_walking_env
+        env = create_walking_env()
+        env.reset()
+        env.close()
+        print("  [OK] create_walking_env() succeeded")
+    except Exception as exc:
+        print(f"  [FAIL] create_walking_env() raised: {exc}")
+
+
 def _load_via_hdf5_loader(clip_id: str, knee_addr: int, hip_addr: int) -> Optional[Tuple[np.ndarray, np.ndarray, float]]:
     """Try loading via dm_control's HDF5TrajectoryLoader.
 
@@ -497,9 +571,10 @@ def load_mocapact_database(
         cursor += n
 
     if not all_knee:
+        _diagnose_loading(knee_addr, hip_addr)
         raise RuntimeError(
             "No MocapAct clips could be loaded.  "
-            "Ensure dm_control is installed and its HDF5 assets are accessible.\n"
+            "See diagnostic output above for the root cause.\n"
             "  pip install dm_control mocapact stable-baselines3"
         )
 
