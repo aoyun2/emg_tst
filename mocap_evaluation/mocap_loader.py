@@ -423,7 +423,7 @@ _CACHE_KEYS_1D = _ALL_JOINT_KEYS + _EXTRA_CHANNEL_KEYS + ["root_pitch", "root_ya
 
 # Bump this when angle extraction or resampling logic changes so that stale
 # caches are automatically invalidated (the fingerprint includes this string).
-_CACHE_VERSION = "v6"
+_CACHE_VERSION = "v7"
 
 
 def _cache_fingerprint(bvh_dir: Path) -> str:

@@ -48,6 +48,10 @@ from mocap_evaluation.prosthetic_sim import (
     FALL_HEIGHT_THRESHOLD,
     replay_trajectory,
     render_simulation_gif,
+    visualize_mocap_segment,
+    visualize_sim_vs_mocap,
+    render_mocap_kinematic,
+    render_mocap_side_by_side_gif,
 )
 from mocap_evaluation.sample_data import extract_real_sample_curves
 from mocap_evaluation.external_sample_data import extract_external_sample_curves
@@ -191,6 +195,20 @@ def plot_simulation_comparison(
                     label=f"Bad pred CoM (stab={bad_stab:.2f})", lw=2, color="red", alpha=0.7)
     ax.axhline(FALL_HEIGHT_THRESHOLD, color="r", ls="--", lw=1, label="Fall threshold")
     gt_stab = gt_metrics.get("stability_score", 0)
+    # Annotate fall predictions
+    for label, m, color in [("Good", good_metrics, "orange"),
+                             ("Bad", bad_metrics, "red")]:
+        if m is None:
+            continue
+        fp = m.get("fall_prediction", {})
+        if fp.get("predicted_fall"):
+            tta = fp.get("time_to_fall_s", float("inf"))
+            conf = fp.get("confidence", 0)
+            ax.annotate(
+                f"{label}: FALL ETA={tta:.2f}s ({conf:.0%})",
+                xy=(t[-1] * 0.7, FALL_HEIGHT_THRESHOLD + 0.02),
+                fontsize=7, color=color, fontweight="bold",
+            )
     ax.set_ylabel("CoM height (m)")
     ax.set_title(f"CoM  |  GT stab={gt_stab:.3f}")
     ax.legend(fontsize=8)
@@ -708,12 +726,30 @@ def evaluate(
         metrics["segment_seconds"] = actual_eval_sec
         per_segment.append(metrics)
 
-        # Save plots for first 5 segments
+        # Save plots and kinematic rendering for first 5 segments
         if i < 5:
             plot_dir = Path(out_path).with_suffix("") / "plots"
             plot_simulation(metrics, f"Segment {i} ({actual_eval_sec:.0f}s)",
                             plot_dir / f"segment_{i:04d}_sim.png",
                             knee_label="Model prediction")
+            # Mocap segment visualization
+            visualize_mocap_segment(
+                segment,
+                out_path=plot_dir / f"segment_{i:04d}_mocap.png",
+                title=f"Segment {i} — loaded mocap reference",
+            )
+            # Sim vs mocap comparison
+            visualize_sim_vs_mocap(
+                segment, metrics,
+                out_path=plot_dir / f"segment_{i:04d}_sim_vs_mocap.png",
+                title=f"Segment {i} — sim vs mocap",
+            )
+            # Kinematic mocap playback (raw BVH data)
+            render_mocap_kinematic(
+                segment,
+                save_trajectory=plot_dir / f"segment_{i:04d}_mocap_kinematic.traj.npz",
+                render_gif=plot_dir / f"segment_{i:04d}_mocap_kinematic.gif",
+            )
 
     # ── Aggregate summary ────────────────────────────────────────────────────
     def _agg(key):
@@ -725,12 +761,17 @@ def evaluate(
                 "min": float(arr.min()), "max": float(arr.max())}
 
     fall_rate = float(np.mean([w["fall_detected"] for w in per_segment]))
+    predicted_fall_rate = float(np.mean([
+        w.get("fall_prediction", {}).get("predicted_fall", False)
+        for w in per_segment
+    ]))
 
     summary = {
         "n_segments":      M,
         "eval_seconds":    actual_eval_sec,
         "windows_per_seg": windows_per_seg,
         "fall_rate":       fall_rate,
+        "predicted_fall_rate": predicted_fall_rate,
         "pred_rmse":       _agg("pred_rmse"),
         "knee_rmse_deg":   _agg("knee_rmse_deg"),
         "stability_score": _agg("stability_score"),
@@ -836,19 +877,15 @@ def play_mocap_match(
     except Exception as exc:
         print(f"[play-match] Could not save comparison plot: {exc}")
 
-    # ── Play in MuJoCo viewer ────────────────────────────────────────────
-    print(f"[play-match] Playing matched mocap motion in MuJoCo viewer...")
-    print(f"[play-match] All joints driven by mocap (including right knee).")
-
-    # Drive ALL joints from mocap — use mocap knee_right as the "prediction"
-    # so the viewer shows the pure matched motion.
+    # ── Kinematic playback (raw BVH) ─────────────────────────────────────
     traj_path = save_trajectory or "play_match_traj.npz"
-    simulate_prosthetic_walking(
+    print(f"[play-match] Playing matched mocap kinematically (raw BVH data)...")
+    render_mocap_kinematic(
         segment,
-        segment["knee_right"],   # mocap knee → "prediction" slot
-        use_gui=True,
-        show_reference=False,
+        fps=mocap_db["fps"],
         save_trajectory=traj_path,
+        render_gif="play_match_mocap.gif",
+        use_gui=True,
     )
     print(f"[play-match] Trajectory saved -> {traj_path}")
 
@@ -899,6 +936,16 @@ def evaluate_from_curves(
         pred_gif = (plot_dir / "prediction_sim.gif") if render_gifs else None
         gt_traj = plot_dir / "ground_truth_sim.traj.npz"
         pred_traj = plot_dir / "prediction_sim.traj.npz"
+        kin_traj_path = plot_dir / "mocap_kinematic.traj.npz"
+        kin_gif = (plot_dir / "mocap_kinematic.gif") if render_gifs else None
+
+        # ── Kinematic mocap playback: see the raw BVH data ─────────
+        render_mocap_kinematic(
+            segment,
+            fps=mocap_db["fps"],
+            save_trajectory=kin_traj_path,
+            render_gif=kin_gif,
+        )
 
         # All simulations use the sample's own thigh angle for the right hip
         # actuator so that the right leg (thigh + knee) is always driven by
@@ -920,6 +967,29 @@ def evaluate_from_curves(
             reference_knee=knee_label_inc,
         )
 
+        # ── Mocap segment visualization: see exactly what was loaded ──
+        visualize_mocap_segment(
+            segment,
+            out_path=plot_dir / "mocap_segment_all_joints.png",
+            fps=mocap_db["fps"],
+            title=f"Match #{rank} [{cat}] — loaded mocap segment",
+        )
+
+        # ── Sim vs mocap comparison (GT run) ──
+        visualize_sim_vs_mocap(
+            segment, gt_metrics,
+            out_path=plot_dir / "sim_vs_mocap_gt.png",
+            fps=mocap_db["fps"],
+            title=f"GT sim vs mocap #{rank} [{cat}]",
+        )
+        # ── Sim vs mocap comparison (prediction run) ──
+        visualize_sim_vs_mocap(
+            segment, pred_metrics,
+            out_path=plot_dir / "sim_vs_mocap_pred.png",
+            fps=mocap_db["fps"],
+            title=f"Pred sim vs mocap #{rank} [{cat}]",
+        )
+
         match_entry = {
             "match_rank": rank,
             "start_idx": int(start),
@@ -930,6 +1000,8 @@ def evaluate_from_curves(
             "pred_vs_label_rmse_deg": float(
                 np.sqrt(np.mean((predicted_knee_included - knee_label_included) ** 2))
             ),
+            "gt_fall_prediction": gt_metrics.get("fall_prediction", {}),
+            "pred_fall_prediction": pred_metrics.get("fall_prediction", {}),
         }
 
         # Bad prediction simulation (optional, for demo/test-sample mode)
@@ -952,6 +1024,29 @@ def evaluate_from_curves(
                     (bad_predicted_knee_included - knee_label_included) ** 2
                 ))
             )
+            match_entry["bad_fall_prediction"] = bad_metrics.get("fall_prediction", {})
+            # Sim vs mocap for bad prediction
+            visualize_sim_vs_mocap(
+                segment, bad_metrics,
+                out_path=plot_dir / "sim_vs_mocap_bad.png",
+                fps=mocap_db["fps"],
+                title=f"Bad pred sim vs mocap #{rank} [{cat}]",
+            )
+
+        # ── Side-by-side GIFs: kinematic mocap vs physics sim ──
+        if render_gifs:
+            render_mocap_side_by_side_gif(
+                segment, pred_traj,
+                output_path=plot_dir / "side_by_side_pred.gif",
+                fps=mocap_db["fps"],
+            )
+            if bad_metrics is not None:
+                render_mocap_side_by_side_gif(
+                    segment,
+                    plot_dir / "bad_prediction_sim.traj.npz",
+                    output_path=plot_dir / "side_by_side_bad.gif",
+                    fps=mocap_db["fps"],
+                )
 
         # Single comparison plot with all runs (GT vs good vs bad)
         plot_simulation_comparison(
