@@ -35,6 +35,10 @@ class EvalConfig:
     sample_source: str = "external"
     external_sample_url: Optional[str] = None
     robustness: RobustnessConfig = field(default_factory=RobustnessConfig)
+    # MoCapAct backend settings
+    use_mocapact: bool = False
+    mocapact_checkpoint: Optional[str] = None
+    mocapact_model_dir: str = "mocapact_models"
 
 
 def _load_checkpoint(path: str | Path, device: torch.device):
@@ -143,18 +147,98 @@ def _scenario_metrics(segment: dict, pred: np.ndarray, mocap_db: dict, cfg: Robu
     return per_match
 
 
+def _scenario_metrics_mocapact(
+    segment: dict,
+    pred: np.ndarray,
+    cfg: RobustnessConfig,
+    eval_cfg: "EvalConfig",
+    mocap_db: Optional[dict] = None,
+) -> list:
+    """Robustness evaluation using MoCapAct adaptive policy backend.
+
+    When *mocap_db* is supplied, DTW matching is used to identify the CMU
+    clip that best corresponds to the EMG recording.  The MoCapAct
+    environment is then initialised with that specific clip so the policy
+    walks the same motion — but with full physics and the right knee
+    overridden by the model's prediction.
+
+    Without *mocap_db* the policy walks an arbitrary locomotion clip.
+    """
+    from mocap_evaluation.mocapact_sim import simulate_prosthetic_walking_mocapact
+
+    delay_frames = int((cfg.delay_ms / 1000.0) * TARGET_FPS)
+    rng = np.random.default_rng(0)
+
+    # ── DTW matching (reuses the same logic as the kinematic path) ────
+    best_start = None
+    if mocap_db is not None and "thigh" in segment:
+        from mocap_evaluation.motion_matching import find_best_match
+        best_start, _, _ = find_best_match(
+            segment["knee"], segment["thigh"], mocap_db,
+        )
+
+    sim_kwargs = dict(
+        policy_checkpoint=eval_cfg.mocapact_checkpoint,
+        model_dir=eval_cfg.mocapact_model_dir,
+        eval_seconds=cfg.eval_seconds,
+        device=eval_cfg.device,
+        mocap_db=mocap_db,
+        best_start=best_start,
+    )
+
+    gt = simulate_prosthetic_walking_mocapact(
+        segment["knee"], reference_knee=segment["knee"], **sim_kwargs,
+    )
+    nominal = simulate_prosthetic_walking_mocapact(
+        pred, reference_knee=segment["knee"], **sim_kwargs,
+    )
+    delayed = simulate_prosthetic_walking_mocapact(
+        _apply_delay(pred, delay_frames), reference_knee=segment["knee"],
+        **sim_kwargs,
+    )
+    noisy_pred = pred + rng.normal(0.0, cfg.noise_std_deg, size=len(pred)).astype(np.float32)
+    noisy = simulate_prosthetic_walking_mocapact(
+        noisy_pred, reference_knee=segment["knee"], **sim_kwargs,
+    )
+
+    robustness = float(np.mean([
+        nominal.get("stability_score", 0.0),
+        delayed.get("stability_score", 0.0),
+        noisy.get("stability_score", 0.0),
+    ]))
+
+    category = gt.get("matched_category", "mocapact_policy")
+    return [{
+        "match_start": best_start or 0,
+        "dtw_distance": 0.0,
+        "category": category,
+        "ground_truth": gt,
+        "nominal": nominal,
+        "delayed": delayed,
+        "noisy": noisy,
+        "robustness_score": robustness,
+    }]
+
+
 def evaluate_with_checkpoint(checkpoint_path: str, samples_path: str, cfg: EvalConfig) -> dict:
     device = torch.device(cfg.device)
     model, scaler = _load_checkpoint(checkpoint_path, device)
     x, y, file_id, start = _load_windows(samples_path, cfg.n_samples)
     target_frames = int(cfg.robustness.eval_seconds * TARGET_FPS)
     segments = _segment_from_windows(x, y, file_id, start, target_frames=target_frames)
+
+    # Load mocap DB: needed for kinematic path (always), and for MoCapAct
+    # path (to resolve DTW match → specific CMU clip for the policy).
     mocap_db = load_aggregated_database(mocap_root=cfg.mocap_dir, try_download=True, datasets=["cmu"], use_cache=cfg.use_cache)
 
-    out = {"mode": "paper_style_checkpoint_eval", "config": asdict(cfg), "segments": []}
+    mode = "mocapact_checkpoint_eval" if cfg.use_mocapact else "paper_style_checkpoint_eval"
+    out = {"mode": mode, "config": asdict(cfg), "segments": []}
     for seg in segments:
         pred = _predict(model, scaler, seg["x"], device)
-        match_metrics = _scenario_metrics(seg, pred, mocap_db, cfg.robustness)
+        if cfg.use_mocapact:
+            match_metrics = _scenario_metrics_mocapact(seg, pred, cfg.robustness, cfg, mocap_db=mocap_db)
+        else:
+            match_metrics = _scenario_metrics(seg, pred, mocap_db, cfg.robustness)
         out["segments"].append({
             "window_indices": seg["window_indices"],
             "match_metrics": match_metrics,
@@ -173,15 +257,29 @@ def evaluate_test_sample(cfg: EvalConfig) -> dict:
         curves = extract_external_sample_curves(seconds=sec, source_url=cfg.external_sample_url)
     else:
         curves = extract_real_sample_curves(mocap_dir=cfg.mocap_dir, seconds=sec)
-    mocap_db = load_aggregated_database(mocap_root=cfg.mocap_dir, try_download=True, datasets=["cmu"], use_cache=cfg.use_cache)
+
     knee = curves.knee_label_included_deg.astype(np.float32)
     thigh = curves.thigh_angle_deg.astype(np.float32)
     # controlled degradation baseline for stress test
     pred = knee + 2.5 * np.sin(np.linspace(0, 4 * np.pi, len(knee))).astype(np.float32)
     seg = {"knee": knee, "thigh": thigh}
-    match_metrics = _scenario_metrics(seg, pred.astype(np.float32), mocap_db, cfg.robustness)
+
+    mocap_db = load_aggregated_database(
+        mocap_root=cfg.mocap_dir, try_download=True,
+        datasets=["cmu"], use_cache=cfg.use_cache,
+    )
+
+    if cfg.use_mocapact:
+        match_metrics = _scenario_metrics_mocapact(
+            seg, pred.astype(np.float32), cfg.robustness, cfg, mocap_db=mocap_db,
+        )
+        mode = "mocapact_test_sample"
+    else:
+        match_metrics = _scenario_metrics(seg, pred.astype(np.float32), mocap_db, cfg.robustness)
+        mode = "paper_style_test_sample"
+
     out = {
-        "mode": "paper_style_test_sample",
+        "mode": mode,
         "config": asdict(cfg),
         "sample_source": cfg.sample_source,
         "match_metrics": match_metrics,

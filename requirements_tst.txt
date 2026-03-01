@@ -4,3 +4,10 @@ scipy          # signal resampling, spatial transforms (motion matching)
 mujoco         # physics simulation (prosthetic_sim.py)
 pillow         # GIF generation (prosthetic_sim.py / save_stick_figure_gifs)
 tqdm           # progress bars
+
+# Optional: MoCapAct adaptive-policy evaluation backend (mocapact_sim.py)
+# Uncomment to enable --mocapact mode:
+# mocapact           # Microsoft MoCapAct multi-clip policies
+# dm_control>=1.0.7  # DeepMind Control Suite (CMU humanoid)
+# stable-baselines3  # RL policy loading
+# huggingface_hub    # model downloading

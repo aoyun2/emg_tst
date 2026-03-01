@@ -24,7 +24,9 @@ Pipeline
 3. mocap_loader      : load CMU BVH source with per-file category metadata
 4. motion_matching   : DTW sliding-window search to align IMU signals with mocap
 5. prosthetic_sim    : MuJoCo-first simulation; right knee = model prediction, GUI visualisation
-6. run_evaluation    : end-to-end pipeline + JSON metrics output
+6. mocapact_sim      : MoCapAct adaptive-policy backend; right knee = model prediction,
+                       all other joints driven by a learned locomotion policy (optional)
+7. run_evaluation    : end-to-end pipeline + JSON metrics output (supports --mocapact flag)
 
 The simulation replaces the RIGHT KNEE joint angle with the model's prediction
 while all other joints (left knee, both hips, both ankles, trunk) follow the
