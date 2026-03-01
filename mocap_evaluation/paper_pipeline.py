@@ -152,24 +152,38 @@ def _scenario_metrics_mocapact(
     pred: np.ndarray,
     cfg: RobustnessConfig,
     eval_cfg: "EvalConfig",
+    mocap_db: Optional[dict] = None,
 ) -> list:
     """Robustness evaluation using MoCapAct adaptive policy backend.
 
-    Unlike ``_scenario_metrics``, this does NOT require motion matching or a
-    mocap database — the MoCapAct policy handles locomotion internally.  We
-    still run the same 3 scenarios (nominal / delayed / noisy) but against
-    a learned walking policy rather than a kinematic replay.
+    When *mocap_db* is supplied, DTW matching is used to identify the CMU
+    clip that best corresponds to the EMG recording.  The MoCapAct
+    environment is then initialised with that specific clip so the policy
+    walks the same motion — but with full physics and the right knee
+    overridden by the model's prediction.
+
+    Without *mocap_db* the policy walks an arbitrary locomotion clip.
     """
     from mocap_evaluation.mocapact_sim import simulate_prosthetic_walking_mocapact
 
     delay_frames = int((cfg.delay_ms / 1000.0) * TARGET_FPS)
     rng = np.random.default_rng(0)
 
+    # ── DTW matching (reuses the same logic as the kinematic path) ────
+    best_start = None
+    if mocap_db is not None and "thigh" in segment:
+        from mocap_evaluation.motion_matching import find_best_match
+        best_start, _, _ = find_best_match(
+            segment["knee"], segment["thigh"], mocap_db,
+        )
+
     sim_kwargs = dict(
         policy_checkpoint=eval_cfg.mocapact_checkpoint,
         model_dir=eval_cfg.mocapact_model_dir,
         eval_seconds=cfg.eval_seconds,
         device=eval_cfg.device,
+        mocap_db=mocap_db,
+        best_start=best_start,
     )
 
     gt = simulate_prosthetic_walking_mocapact(
@@ -193,10 +207,11 @@ def _scenario_metrics_mocapact(
         noisy.get("stability_score", 0.0),
     ]))
 
+    category = gt.get("matched_category", "mocapact_policy")
     return [{
-        "match_start": 0,
+        "match_start": best_start or 0,
         "dtw_distance": 0.0,
-        "category": "mocapact_policy",
+        "category": category,
         "ground_truth": gt,
         "nominal": nominal,
         "delayed": delayed,
@@ -212,17 +227,16 @@ def evaluate_with_checkpoint(checkpoint_path: str, samples_path: str, cfg: EvalC
     target_frames = int(cfg.robustness.eval_seconds * TARGET_FPS)
     segments = _segment_from_windows(x, y, file_id, start, target_frames=target_frames)
 
-    # Only load mocap DB when using the original backend
-    mocap_db = None
-    if not cfg.use_mocapact:
-        mocap_db = load_aggregated_database(mocap_root=cfg.mocap_dir, try_download=True, datasets=["cmu"], use_cache=cfg.use_cache)
+    # Load mocap DB: needed for kinematic path (always), and for MoCapAct
+    # path (to resolve DTW match → specific CMU clip for the policy).
+    mocap_db = load_aggregated_database(mocap_root=cfg.mocap_dir, try_download=True, datasets=["cmu"], use_cache=cfg.use_cache)
 
     mode = "mocapact_checkpoint_eval" if cfg.use_mocapact else "paper_style_checkpoint_eval"
     out = {"mode": mode, "config": asdict(cfg), "segments": []}
     for seg in segments:
         pred = _predict(model, scaler, seg["x"], device)
         if cfg.use_mocapact:
-            match_metrics = _scenario_metrics_mocapact(seg, pred, cfg.robustness, cfg)
+            match_metrics = _scenario_metrics_mocapact(seg, pred, cfg.robustness, cfg, mocap_db=mocap_db)
         else:
             match_metrics = _scenario_metrics(seg, pred, mocap_db, cfg.robustness)
         out["segments"].append({
@@ -250,16 +264,17 @@ def evaluate_test_sample(cfg: EvalConfig) -> dict:
     pred = knee + 2.5 * np.sin(np.linspace(0, 4 * np.pi, len(knee))).astype(np.float32)
     seg = {"knee": knee, "thigh": thigh}
 
+    mocap_db = load_aggregated_database(
+        mocap_root=cfg.mocap_dir, try_download=True,
+        datasets=["cmu"], use_cache=cfg.use_cache,
+    )
+
     if cfg.use_mocapact:
         match_metrics = _scenario_metrics_mocapact(
-            seg, pred.astype(np.float32), cfg.robustness, cfg,
+            seg, pred.astype(np.float32), cfg.robustness, cfg, mocap_db=mocap_db,
         )
         mode = "mocapact_test_sample"
     else:
-        mocap_db = load_aggregated_database(
-            mocap_root=cfg.mocap_dir, try_download=True,
-            datasets=["cmu"], use_cache=cfg.use_cache,
-        )
         match_metrics = _scenario_metrics(seg, pred.astype(np.float32), mocap_db, cfg.robustness)
         mode = "paper_style_test_sample"
 

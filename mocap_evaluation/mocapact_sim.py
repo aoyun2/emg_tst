@@ -92,6 +92,82 @@ _DEFAULT_MULTI_CLIP_CKPT_ALT = "multiclip_policy/full_dataset/model/model.ckpt"
 _HF_REPO = "microsoft/mocapact-models"
 _HF_TARBALL = "multiclip_policy.tar.gz"
 
+# Frame rate of the aggregated mocap database (from mocap_loader.TARGET_FPS).
+_DB_FPS = 200
+
+
+# ── Clip resolution (BVH match → dm_control clip) ───────────────────────────
+
+def _bvh_to_clip_id(bvh_filename: str) -> str:
+    """Convert a BVH filename to a dm_control CMU clip ID.
+
+    ``"09_12.bvh"`` → ``"CMU_009_12"``
+    """
+    stem = bvh_filename.replace(".bvh", "")
+    parts = stem.split("_")
+    subject = int(parts[0])
+    trial = int(parts[1])
+    return f"CMU_{subject:03d}_{trial:02d}"
+
+
+def resolve_clip_from_match(
+    best_start: int,
+    window_length: int,
+    mocap_db: dict,
+    db_fps: float = _DB_FPS,
+) -> dict:
+    """Resolve a DTW match index to a dm_control clip specification.
+
+    After ``motion_matching.find_best_match`` returns ``best_start``, call
+    this to identify which CMU clip it came from and where in that clip the
+    window sits.  The result can be passed directly to
+    ``simulate_mocapact_prosthetic(match_info=...)``.
+
+    Parameters
+    ----------
+    best_start :
+        Start index in the concatenated mocap database (at *db_fps*).
+    window_length :
+        Number of frames in the matched window (at *db_fps*).
+    mocap_db :
+        Aggregated mocap database dict (must contain ``file_boundaries``).
+    db_fps :
+        Frame rate of the mocap database (default 200 Hz).
+
+    Returns
+    -------
+    dict
+        ``clip_id``          – dm_control clip name, e.g. ``"CMU_009_12"``
+        ``bvh_filename``     – original BVH filename
+        ``category``         – motion category from the CMU catalog
+        ``frame_in_file``    – frame offset within the BVH file (at db_fps)
+        ``time_offset_s``    – time offset in seconds from clip start
+        ``time_duration_s``  – matched window duration in seconds
+    """
+    boundaries = mocap_db.get("file_boundaries", [])
+    for start, end, fname, cat in boundaries:
+        start, end = int(start), int(end)
+        if start <= best_start < end:
+            frame_in_file = best_start - start
+            return {
+                "clip_id": _bvh_to_clip_id(fname),
+                "bvh_filename": fname,
+                "category": cat,
+                "frame_in_file": frame_in_file,
+                "time_offset_s": frame_in_file / db_fps,
+                "time_duration_s": window_length / db_fps,
+            }
+    raise ValueError(
+        f"best_start={best_start} not found in file_boundaries "
+        f"({len(boundaries)} entries)"
+    )
+
+
+def _make_clip_collection(clip_id: str):
+    """Create a dm_control ``ClipCollection`` for a single CMU clip."""
+    from dm_control.locomotion.tasks.reference_pose import types
+    return types.ClipCollection(ids=[clip_id])
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -392,6 +468,7 @@ def create_walking_env(
     dataset=None,
     ref_steps: Optional[Tuple[int, ...]] = None,
     policy=None,
+    clip_id: Optional[str] = None,
 ):
     """Create a MoCapAct tracking Gym environment for walking evaluation.
 
@@ -400,12 +477,17 @@ def create_walking_env(
     dataset :
         A ``ClipCollection`` or subset constant.  Defaults to
         ``cmu_subsets.LOCOMOTION_SMALL`` (~40 min of walking clips).
+        Ignored when *clip_id* is set.
     ref_steps :
         Lookahead steps for the reference pose.  If None and *policy*
         is provided, uses ``policy.ref_steps``.  Otherwise ``(1,2,3,4,5)``.
     policy :
         If provided, reads ``ref_steps`` from the policy to ensure
         compatibility with its observation expectations.
+    clip_id :
+        If provided, creates a single-clip ``ClipCollection`` for this
+        CMU clip (e.g. ``"CMU_009_12"``).  The policy will track this
+        specific motion instead of a random clip from the default dataset.
 
     Returns
     -------
@@ -418,7 +500,9 @@ def create_walking_env(
             "  pip install mocapact dm_control stable-baselines3"
         )
 
-    if dataset is None:
+    if clip_id is not None:
+        dataset = _make_clip_collection(clip_id)
+    elif dataset is None:
         dataset = cmu_subsets.LOCOMOTION_SMALL
 
     if ref_steps is None:
@@ -446,6 +530,7 @@ def simulate_mocapact_prosthetic(
     device: str = "cpu",
     reference_knee: Optional[np.ndarray] = None,
     use_gui: bool = False,
+    match_info: Optional[dict] = None,
 ) -> dict:
     """Run a MoCapAct-based prosthetic simulation.
 
@@ -473,6 +558,12 @@ def simulate_mocapact_prosthetic(
         If None, the policy's natural knee angle is used as reference.
     use_gui :
         Launch interactive viewer (requires display + mujoco viewer).
+    match_info :
+        Dict from ``resolve_clip_from_match``.  When provided the environment
+        is initialised with the **specific CMU clip** that the DTW match came
+        from, so the policy walks the same motion that was recorded during the
+        EMG session.  When ``None`` a random clip from ``LOCOMOTION_SMALL``
+        is used.
 
     Returns
     -------
@@ -494,7 +585,8 @@ def simulate_mocapact_prosthetic(
         )
 
     # ── Create environment ────────────────────────────────────────────
-    env = create_walking_env(policy=policy)
+    clip_id = match_info["clip_id"] if match_info else None
+    env = create_walking_env(policy=policy, clip_id=clip_id)
     knee_idx = _find_knee_actuator_index(env)
 
     # ── Prepare predicted knee signal ─────────────────────────────────
@@ -599,6 +691,9 @@ def simulate_mocapact_prosthetic(
     # ── Build result (same contract as prosthetic_sim.py) ─────────────
     out = metrics.to_dict()
     out["mode"] = "mocapact_policy"
+    if match_info is not None:
+        out["matched_clip"] = match_info["clip_id"]
+        out["matched_category"] = match_info.get("category", "unknown")
     out["fall_prediction"] = {
         "predicted_fall": metrics.fall_detected,
         "time_to_fall_s": float(metrics.fall_frame / fps) if metrics.fall_detected else float("inf"),
@@ -628,12 +723,17 @@ def simulate_prosthetic_walking_mocapact(
     reference_knee: Optional[np.ndarray] = None,
     show_reference: bool = False,
     use_gui: bool = False,
+    mocap_db: Optional[dict] = None,
+    best_start: Optional[int] = None,
     **kwargs,
 ) -> dict:
     """Drop-in replacement for ``prosthetic_sim.simulate_prosthetic_walking``.
 
-    This function has the same return-value contract but does NOT require a
-    ``mocap_segment`` dict — the MoCapAct policy handles locomotion internally.
+    When *mocap_db* and *best_start* are supplied the environment is
+    initialised with the **exact CMU clip** that DTW matched against the
+    EMG recording.  This way the policy walks the same motion that was
+    recorded during the session, but with full physics — and the right knee
+    is overridden with the EMG model's prediction.
 
     Parameters
     ----------
@@ -655,6 +755,14 @@ def simulate_prosthetic_walking_mocapact(
         Ignored (no dual-humanoid support in MoCapAct mode).
     use_gui :
         Launch interactive viewer.
+    mocap_db :
+        Aggregated mocap database (from ``load_aggregated_database``).
+        Must contain ``file_boundaries``.  When provided together with
+        *best_start*, the matched clip is resolved and the MoCapAct
+        environment tracks that specific CMU motion.
+    best_start :
+        Start index returned by ``find_best_match`` (at 200 Hz database
+        rate).  Used together with *mocap_db*.
     **kwargs :
         Absorbs extra kwargs for compatibility (fps, save_trajectory, etc.).
 
@@ -678,6 +786,13 @@ def simulate_prosthetic_walking_mocapact(
         _cached_policy = policy
         _cached_policy_path = ckpt_key
 
+    # Resolve the DTW match → specific CMU clip
+    match_info = None
+    if mocap_db is not None and best_start is not None:
+        match_info = resolve_clip_from_match(
+            best_start, len(predicted_knee), mocap_db,
+        )
+
     return simulate_mocapact_prosthetic(
         predicted_knee=predicted_knee,
         policy=policy,
@@ -685,6 +800,7 @@ def simulate_prosthetic_walking_mocapact(
         device=device,
         reference_knee=reference_knee,
         use_gui=use_gui,
+        match_info=match_info,
     )
 
 
