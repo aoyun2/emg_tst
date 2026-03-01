@@ -213,8 +213,8 @@ class SimTrajectory:
 # ── MJCF humanoid model ─────────────────────────────────────────────────────
 #
 # Full-body humanoid matching the CMU cgspeed BVH skeleton hierarchy.
-# Root uses 6 separate joints (3 slide + 3 hinge) with XY position tracking
-# and passive damping.
+# Root uses 6 separate joints (3 slide + 3 hinge), all unactuated and
+# undamped — position and orientation are determined entirely by physics.
 #
 # Multi-DOF joints (hips, shoulders, spine) use separate hinge joints per
 # axis to fully represent all BVH rotation channels:
@@ -267,12 +267,12 @@ _MJCF = """
     <light pos="3 3 4" dir="-0.5 -0.5 -1" diffuse="0.4 0.4 0.4"/>
 
     <body name="pelvis" pos="0 0 1.05">
-      <joint name="root_x" type="slide" axis="1 0 0" damping="5"/>
-      <joint name="root_y" type="slide" axis="0 1 0" damping="5"/>
-      <joint name="root_z" type="slide" axis="0 0 1" damping="5"/>
-      <joint name="root_yaw"   type="hinge" axis="0 0 1" damping="5"/>
-      <joint name="root_pitch" type="hinge" axis="0 1 0" damping="5"/>
-      <joint name="root_roll"  type="hinge" axis="1 0 0" damping="5"/>
+      <joint name="root_x" type="slide" axis="1 0 0" damping="0"/>
+      <joint name="root_y" type="slide" axis="0 1 0" damping="0"/>
+      <joint name="root_z" type="slide" axis="0 0 1" damping="0"/>
+      <joint name="root_yaw"   type="hinge" axis="0 0 1" damping="0"/>
+      <joint name="root_pitch" type="hinge" axis="0 1 0" damping="0"/>
+      <joint name="root_roll"  type="hinge" axis="1 0 0" damping="0"/>
       <geom type="capsule" fromto="0 0 -0.12 0 0 0" size="0.085"
             rgba="0.6 0.6 0.65 1"/>
 
@@ -280,9 +280,9 @@ _MJCF = """
       <body name="right_thigh" pos="0 -0.10 -0.12">
         <joint name="right_hip" type="hinge" axis="0 -1 0"
                range="-70 70" damping="200"/>
-        <joint name="right_hip_abd" type="hinge" axis="0 0 1"
+        <joint name="right_hip_abd" type="hinge" axis="-1 0 0"
                range="-45 45" damping="100"/>
-        <joint name="right_hip_rot" type="hinge" axis="1 0 0"
+        <joint name="right_hip_rot" type="hinge" axis="0 0 1"
                range="-45 45" damping="80"/>
         <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.05"/>
         <body name="right_shank" pos="0 0 -0.42">
@@ -310,9 +310,9 @@ _MJCF = """
       <body name="left_thigh" pos="0 0.10 -0.12">
         <joint name="left_hip" type="hinge" axis="0 -1 0"
                range="-70 70" damping="200"/>
-        <joint name="left_hip_abd" type="hinge" axis="0 0 -1"
+        <joint name="left_hip_abd" type="hinge" axis="-1 0 0"
                range="-45 45" damping="100"/>
-        <joint name="left_hip_rot" type="hinge" axis="1 0 0"
+        <joint name="left_hip_rot" type="hinge" axis="0 0 1"
                range="-45 45" damping="80"/>
         <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.05"/>
         <body name="left_shank" pos="0 0 -0.42">
@@ -337,7 +337,7 @@ _MJCF = """
       <body name="lower_back" pos="0 0 0">
         <joint name="lower_back" type="hinge" axis="0 1 0"
                range="-30 30" damping="150"/>
-        <joint name="lower_back_lat" type="hinge" axis="1 0 0"
+        <joint name="lower_back_lat" type="hinge" axis="-1 0 0"
                range="-20 20" damping="80"/>
         <joint name="lower_back_rot" type="hinge" axis="0 0 1"
                range="-30 30" damping="80"/>
@@ -346,7 +346,7 @@ _MJCF = """
         <body name="spine" pos="0 0 0.07">
           <joint name="spine_jnt" type="hinge" axis="0 1 0"
                  range="-30 30" damping="150"/>
-          <joint name="spine_lat" type="hinge" axis="1 0 0"
+          <joint name="spine_lat" type="hinge" axis="-1 0 0"
                  range="-20 20" damping="80"/>
           <joint name="spine_rot" type="hinge" axis="0 0 1"
                  range="-30 30" damping="80"/>
@@ -355,7 +355,7 @@ _MJCF = """
           <body name="spine1" pos="0 0 0.06">
             <joint name="spine1_jnt" type="hinge" axis="0 1 0"
                    range="-30 30" damping="150"/>
-            <joint name="spine1_lat" type="hinge" axis="1 0 0"
+            <joint name="spine1_lat" type="hinge" axis="-1 0 0"
                    range="-20 20" damping="80"/>
             <joint name="spine1_rot" type="hinge" axis="0 0 1"
                    range="-30 30" damping="80"/>
@@ -383,9 +383,9 @@ _MJCF = """
               <body name="right_upper_arm" pos="0 -0.10 0">
                 <joint name="right_shoulder" type="hinge" axis="0 -1 0"
                        range="-90 90" damping="50"/>
-                <joint name="right_shoulder_abd" type="hinge" axis="0 0 1"
+                <joint name="right_shoulder_abd" type="hinge" axis="-1 0 0"
                        range="-90 90" damping="35"/>
-                <joint name="right_shoulder_rot" type="hinge" axis="1 0 0"
+                <joint name="right_shoulder_rot" type="hinge" axis="0 0 1"
                        range="-90 90" damping="30"/>
                 <geom type="capsule" fromto="0 0 0 0 0 -0.28" size="0.03"/>
                 <body name="right_forearm" pos="0 0 -0.28">
@@ -429,9 +429,9 @@ _MJCF = """
               <body name="left_upper_arm" pos="0 0.10 0">
                 <joint name="left_shoulder" type="hinge" axis="0 -1 0"
                        range="-90 90" damping="50"/>
-                <joint name="left_shoulder_abd" type="hinge" axis="0 0 -1"
+                <joint name="left_shoulder_abd" type="hinge" axis="-1 0 0"
                        range="-90 90" damping="35"/>
-                <joint name="left_shoulder_rot" type="hinge" axis="1 0 0"
+                <joint name="left_shoulder_rot" type="hinge" axis="0 0 1"
                        range="-90 90" damping="30"/>
                 <geom type="capsule" fromto="0 0 0 0 0 -0.28" size="0.03"/>
                 <body name="left_forearm" pos="0 0 -0.28">
