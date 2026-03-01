@@ -1131,6 +1131,12 @@ def simulate_mocapact_prosthetic(
     else:
         embed = None
 
+    # Per-episode frame index: resets to 0 after every env.reset() so that
+    # the knee/hip overrides replay from frame 0 of the signal rather than
+    # continuing from wherever the global loop counter happens to be.  This
+    # prevents the knee-angle mismatch that caused immediate re-termination
+    # (and the resulting "frozen at reset pose" appearance) after a fall.
+    t_ep = 0
     for t in tqdm(range(T), desc="MoCapAct sim", unit="step", leave=False):
         # Stop if the viewer window was closed
         if _viewer is not None and not _viewer.is_running():
@@ -1146,16 +1152,17 @@ def simulate_mocapact_prosthetic(
         policy_knee_ctrl = float(action[knee_idx])
 
         # ── Override right knee with prosthetic prediction ────────────
-        knee_ctrl = _knee_angle_to_ctrl(pred_flex_rad[t], env)
+        knee_ctrl = _knee_angle_to_ctrl(pred_flex_rad[min(t_ep, len(pred_flex_rad) - 1)], env)
         action[knee_idx] = knee_ctrl
 
         # ── Override right hip with recorded thigh angle ──────────────
         if pred_hip_rad is not None:
-            hip_ctrl = _hip_angle_to_ctrl(pred_hip_rad[min(t, len(pred_hip_rad) - 1)], env)
+            hip_ctrl = _hip_angle_to_ctrl(pred_hip_rad[min(t_ep, len(pred_hip_rad) - 1)], env)
             action[hip_idx] = hip_ctrl
 
         # ── Step environment ──────────────────────────────────────────
         obs, reward, done, info = env.step(action)
+        t_ep += 1
 
         # ── Sync viewer ───────────────────────────────────────────────
         if _viewer is not None and _viewer.is_running():
@@ -1175,6 +1182,24 @@ def simulate_mocapact_prosthetic(
             # This avoids the viewer appearing "frozen" on a terminal pose.
             if use_gui:
                 obs = env.reset()
+                # Reset episode-local time so knee/hip overrides start from
+                # frame 0 again, matching the env's newly reset clip position.
+                t_ep = 0
+                # Some dm_control wrappers recreate the physics object on
+                # reset().  If the handle changed, relaunch the viewer so it
+                # stays connected to live physics instead of going stale.
+                new_physics = _get_physics(env)
+                if new_physics is not physics:
+                    if _viewer is not None:
+                        try:
+                            _viewer.close()
+                        except Exception:
+                            pass
+                    physics = new_physics
+                    try:
+                        _viewer = _launch_mujoco_viewer_from_physics(physics)
+                    except Exception:
+                        _viewer = None
                 if is_npmp:
                     embed = policy.initial_state(deterministic=False)
                 continue
@@ -1393,6 +1418,13 @@ def simulate_three_scenarios_mocapact(
     loop_announced = False
     cycle_idx = 0
     t = 0
+    # Per-environment episode-local time counters.  These reset to 0 whenever
+    # an environment is reset so that the knee/hip overrides replay from frame 0
+    # of the signal rather than the mid-sequence global time t.  Without this,
+    # a freshly-reset env receives the knee angle for frame t (e.g. frame 80)
+    # while its reference clip is at frame 0, causing an immediate mismatch,
+    # rapid re-termination, and the "frozen at reset pose" visual bug.
+    t_env = [0, 0, 0]
     progress = tqdm(total=T, desc="3-scenario sim", unit="step", leave=False)
     try:
         while True:
@@ -1416,6 +1448,22 @@ def simulate_three_scenarios_mocapact(
                     if use_gui and any_running:
                         obss[i] = envs[i].reset()
                         dones[i] = False
+                        # Restart from frame 0 of the knee/hip signal so the
+                        # override matches the env's newly reset clip position.
+                        t_env[i] = 0
+                        # If the physics handle was replaced on reset, reconnect
+                        # the viewer to avoid showing a stale/frozen scene.
+                        new_phys = _get_physics(envs[i])
+                        if viewers[i] is not None and new_phys is not physics_list[i]:
+                            try:
+                                viewers[i].close()
+                            except Exception:
+                                pass
+                            try:
+                                viewers[i] = _launch_mujoco_viewer_from_physics(new_phys)
+                            except Exception:
+                                viewers[i] = None
+                        physics_list[i] = new_phys
                         if is_npmp:
                             embeds[i] = policy.initial_state(deterministic=False)
                     else:
@@ -1425,12 +1473,15 @@ def simulate_three_scenarios_mocapact(
                 else:
                     action, _ = policy.predict(obss[i], deterministic=True)
                 policy_knee_ctrl = float(action[knee_idx])
-                action[knee_idx] = _knee_angle_to_ctrl(deg_arrs[i][1][t], envs[i])
+                action[knee_idx] = _knee_angle_to_ctrl(
+                    deg_arrs[i][1][min(t_env[i], len(deg_arrs[i][1]) - 1)], envs[i]
+                )
                 if pred_hip_rad is not None:
                     action[hip_idx] = _hip_angle_to_ctrl(
-                        pred_hip_rad[min(t, len(pred_hip_rad) - 1)], envs[i]
+                        pred_hip_rad[min(t_env[i], len(pred_hip_rad) - 1)], envs[i]
                     )
                 obss[i], _, dones[i], info_i = envs[i].step(action)
+                t_env[i] += 1
                 if cycle_idx == 0 and metrics_open[i]:
                     _collect_step_metrics(
                         metrics_list[i], envs[i],
@@ -1462,8 +1513,22 @@ def simulate_three_scenarios_mocapact(
                         print("[MoCapAct] Playback reached end; looping until viewer windows close.")
                         loop_announced = True
                     t = 0
+                    t_env = [0, 0, 0]
                     dones = [False, False, False]
                     obss = [e.reset() for e in envs]
+                    # Reconnect viewers if physics handles were replaced on reset.
+                    for _ri, _re in enumerate(envs):
+                        _new_p = _get_physics(_re)
+                        if viewers[_ri] is not None and _new_p is not physics_list[_ri]:
+                            try:
+                                viewers[_ri].close()
+                            except Exception:
+                                pass
+                            try:
+                                viewers[_ri] = _launch_mujoco_viewer_from_physics(_new_p)
+                            except Exception:
+                                viewers[_ri] = None
+                        physics_list[_ri] = _new_p
                     embeds = [policy.initial_state(deterministic=False) if is_npmp else None for _ in range(3)]
                     continue
                 break
