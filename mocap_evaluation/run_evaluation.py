@@ -37,6 +37,8 @@ def _parse_args():
                     help="Path to MoCapAct multi-clip policy checkpoint")
     ap.add_argument("--mocapact-model-dir", default="mocapact_models",
                     help="Directory for downloaded MoCapAct models")
+    ap.add_argument("--use-gui", action="store_true",
+                    help="Open interactive MuJoCo viewer during simulation")
     return ap.parse_args()
 
 
@@ -59,6 +61,7 @@ def main():
         robustness=robustness,
         mocapact_checkpoint=args.mocapact_checkpoint,
         mocapact_model_dir=args.mocapact_model_dir,
+        use_gui=args.use_gui,
     )
 
     if args.test_sample:
