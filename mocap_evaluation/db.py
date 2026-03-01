@@ -70,6 +70,11 @@ def included_to_knee_rad(inc_deg: np.ndarray) -> np.ndarray:
     return -np.radians(180.0 - np.asarray(inc_deg, dtype=np.float64)).astype(np.float64)
 
 
+def included_to_hip_rad(inc_deg: np.ndarray) -> np.ndarray:
+    """Included-angle ° → MuJoCo rfemurry radians (positive = flexion)."""
+    return np.radians(180.0 - np.asarray(inc_deg, dtype=np.float64)).astype(np.float64)
+
+
 # ── Polyphase resample ────────────────────────────────────────────────────────
 
 def _resample(arr: np.ndarray, from_fps: float, to_fps: float) -> np.ndarray:

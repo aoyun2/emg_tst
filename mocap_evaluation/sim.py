@@ -48,6 +48,7 @@ from mocap_evaluation.db import (
     _HIP_JOINT,
     get_h5_path,
     included_to_knee_rad,
+    included_to_hip_rad,
     knee_rad_to_included,
     hip_rad_to_included,
     _get_mocap_joint_indices,
@@ -272,6 +273,8 @@ def _run_frames(
     ref_qpos: np.ndarray,
     knee_pred_rad: np.ndarray,
     knee_qpos_idx: int,
+    hip_pred_rad: Optional[np.ndarray],
+    hip_qpos_idx: int,
     ref_knee_rad: Optional[np.ndarray],
     fps: float,
     viewer=None,
@@ -284,6 +287,8 @@ def _run_frames(
     ref_qpos      : (T, n_qpos) reference qpos for all joints
     knee_pred_rad : (T,) predicted knee angle in MuJoCo radians (negative = flex)
     knee_qpos_idx : qpos index for the right knee joint
+    hip_pred_rad  : (T,) predicted thigh/hip angle in MuJoCo radians, or None
+    hip_qpos_idx  : qpos index for the right hip joint
     ref_knee_rad  : (T,) reference knee in radians (for RMSE computation), or None
     fps           : playback frame rate (controls time.sleep duration)
     viewer        : mujoco.viewer passive handle, or None for headless
@@ -292,6 +297,8 @@ def _run_frames(
 
     n_qpos    = physics.model.nq
     n_frames  = min(len(ref_qpos), len(knee_pred_rad))
+    if hip_pred_rad is not None:
+        n_frames = min(n_frames, len(hip_pred_rad))
     dt        = 1.0 / fps
 
     com_heights:   List[float] = []
@@ -315,9 +322,11 @@ def _run_frames(
         n_copy = min(n_qpos, ref_qpos.shape[1])
         physics.data.qpos[:n_copy] = ref_qpos[frame, :n_copy]
 
-        # ── Override right knee with prediction ───────────────────────────────
+        # ── Override right knee + right thigh with query window values ───────
         if 0 <= knee_qpos_idx < n_qpos:
             physics.data.qpos[knee_qpos_idx] = knee_pred_rad[frame]
+        if hip_pred_rad is not None and 0 <= hip_qpos_idx < n_qpos:
+            physics.data.qpos[hip_qpos_idx] = hip_pred_rad[frame]
 
         # ── Forward kinematics ────────────────────────────────────────────────
         mujoco.mj_forward(physics.model._model, physics.data._data)
@@ -434,23 +443,27 @@ def run_simulation(
     clip_start_frame: int,
     n_frames: int,
     knee_pred_included_deg: np.ndarray,
-    thigh_ref_included_deg: Optional[np.ndarray] = None,
+    thigh_pred_included_deg: Optional[np.ndarray] = None,
     use_viewer: bool = True,
     label: str = "",
 ) -> dict:
     """Run kinematic replay simulation for one scenario.
 
+    The right knee AND right thigh (hip) are both overridden each frame
+    using the angles from the query window that was used for motion matching.
+    All other joints follow the matched clip reference trajectory.
+
     Parameters
     ----------
-    clip_id                : MoCap Act clip ID (e.g. ``"CMU_012_03"``)
-    clip_start_frame       : Frame offset within the clip's trajectory
-                             (from ``matching.clip_info_for_start``).
-    n_frames               : Number of frames to simulate (= query length).
-    knee_pred_included_deg : (≥n_frames,) predicted knee angle (included-angle °)
-    thigh_ref_included_deg : (≥n_frames,) reference thigh/hip angle — used
-                             only for the GT reference scenario.
-    use_viewer             : Open an interactive MuJoCo window.
-    label                  : Scenario name for console output.
+    clip_id                 : MoCap Act clip ID (e.g. ``"CMU_012_03"``)
+    clip_start_frame        : Frame offset within the clip's trajectory
+                              (from ``matching.clip_info_for_start``).
+    n_frames                : Number of frames to simulate (= query length).
+    knee_pred_included_deg  : (≥n_frames,) predicted knee angle (included-angle °)
+    thigh_pred_included_deg : (≥n_frames,) thigh/hip angle from the query window
+                              (included-angle °).  Overrides rfemurry each frame.
+    use_viewer              : Open an interactive MuJoCo window.
+    label                   : Scenario name for console output.
 
     Returns
     -------
@@ -465,31 +478,38 @@ def run_simulation(
     except Exception as exc:
         warnings.warn(f"[sim] {exc}  — running joint-angle-only fallback.")
         return _run_fallback(
-            n_frames, knee_pred_included_deg, thigh_ref_included_deg, use_viewer, label
+            n_frames, knee_pred_included_deg, thigh_pred_included_deg, use_viewer, label
         )
 
     # Slice to the matched segment + requested length
-    start = min(clip_start_frame, max(0, len(ref_qpos_full) - n_frames))
+    start    = min(clip_start_frame, max(0, len(ref_qpos_full) - n_frames))
     ref_qpos = ref_qpos_full[start : start + n_frames]
 
     # Pad with last frame if the clip is shorter than n_frames
     if len(ref_qpos) < n_frames:
-        pad = n_frames - len(ref_qpos)
+        pad      = n_frames - len(ref_qpos)
         ref_qpos = np.concatenate([ref_qpos, np.tile(ref_qpos[-1:], (pad, 1))])
 
-    # Resample prediction to clip_fps if needed (prediction is at 200 Hz)
     from mocap_evaluation.db import _resample, TARGET_FPS
-    pred_200 = np.asarray(knee_pred_included_deg, dtype=np.float32)
-    if abs(clip_fps - TARGET_FPS) > 0.5:
-        pred_clip_fps = _resample(pred_200, TARGET_FPS, clip_fps)
-    else:
-        pred_clip_fps = pred_200
-    pred_clip_fps = pred_clip_fps[:n_frames]
-    if len(pred_clip_fps) < n_frames:
-        pad = n_frames - len(pred_clip_fps)
-        pred_clip_fps = np.concatenate([pred_clip_fps, np.full(pad, pred_clip_fps[-1])])
 
-    knee_pred_rad = included_to_knee_rad(pred_clip_fps).astype(np.float64)
+    def _to_clip_fps(sig_200hz: np.ndarray) -> np.ndarray:
+        """Resample a 200-Hz signal to clip_fps, then pad/trim to n_frames."""
+        if abs(clip_fps - TARGET_FPS) > 0.5:
+            sig = _resample(sig_200hz.astype(np.float32), TARGET_FPS, clip_fps)
+        else:
+            sig = sig_200hz.astype(np.float32)
+        sig = sig[:n_frames]
+        if len(sig) < n_frames:
+            sig = np.concatenate([sig, np.full(n_frames - len(sig), sig[-1])])
+        return sig
+
+    knee_at_clip_fps = _to_clip_fps(np.asarray(knee_pred_included_deg))
+    knee_pred_rad    = included_to_knee_rad(knee_at_clip_fps).astype(np.float64)
+
+    hip_pred_rad: Optional[np.ndarray] = None
+    if thigh_pred_included_deg is not None:
+        thigh_at_clip_fps = _to_clip_fps(np.asarray(thigh_pred_included_deg))
+        hip_pred_rad      = included_to_hip_rad(thigh_at_clip_fps).astype(np.float64)
 
     # Reference knee for RMSE (from the ref_qpos itself)
     ref_knee_rad = ref_qpos[:, KNEE_QPOS_IDX].copy() if ref_qpos.shape[1] > KNEE_QPOS_IDX else None
@@ -500,16 +520,24 @@ def run_simulation(
     except Exception as exc:
         warnings.warn(f"[sim] Cannot create dm_control physics: {exc}")
         return _run_fallback(
-            n_frames, knee_pred_included_deg, thigh_ref_included_deg, use_viewer, label
+            n_frames, knee_pred_included_deg, thigh_pred_included_deg, use_viewer, label
         )
 
-    knee_qpos_idx, _ = _find_joint_qpos_indices(physics)
+    knee_qpos_idx, hip_qpos_idx = _find_joint_qpos_indices(physics)
 
     if label:
-        print(f"  [{label}]  Simulating {n_frames} frames @ {clip_fps:.0f} Hz …")
+        thigh_note = f", thigh override={'yes' if hip_pred_rad is not None else 'no'}"
+        print(f"  [{label}]  Simulating {n_frames} frames @ {clip_fps:.0f} Hz "
+              f"(knee+thigh overrides from query window{thigh_note}) …")
+
+    def _call_run_frames(viewer=None):
+        return _run_frames(
+            physics, ref_qpos, knee_pred_rad, knee_qpos_idx,
+            hip_pred_rad, hip_qpos_idx,
+            ref_knee_rad, clip_fps, viewer,
+        )
 
     # ── Run simulation loop ───────────────────────────────────────────────────
-    metrics: dict = {}
     if use_viewer:
         try:
             import mujoco
@@ -520,33 +548,20 @@ def run_simulation(
                 show_left_ui=False,
                 show_right_ui=False,
             ) as viewer:
-                # Set a good initial camera angle
-                viewer.cam.distance = 5.0
-                viewer.cam.azimuth  = 135.0
+                viewer.cam.distance  = 5.0
+                viewer.cam.azimuth   = 135.0
                 viewer.cam.elevation = -20.0
-                if label:
-                    viewer.opt.label = mujoco.mjtLabel.mjLABEL_NONE
-                metrics = _run_frames(
-                    physics, ref_qpos, knee_pred_rad, knee_qpos_idx,
-                    ref_knee_rad, clip_fps, viewer
-                )
-                # Keep viewer open after animation ends
+                metrics = _call_run_frames(viewer)
                 if viewer.is_running():
-                    print(f"  [{label}]  Animation done — close the viewer window to continue.")
+                    print(f"  [{label}]  Animation done — close viewer to continue.")
                     while viewer.is_running():
                         viewer.sync()
                         time.sleep(0.05)
         except Exception as exc:
             print(f"  [{label}]  Viewer unavailable ({exc}); running headless.")
-            metrics = _run_frames(
-                physics, ref_qpos, knee_pred_rad, knee_qpos_idx,
-                ref_knee_rad, clip_fps, viewer=None
-            )
+            metrics = _call_run_frames()
     else:
-        metrics = _run_frames(
-            physics, ref_qpos, knee_pred_rad, knee_qpos_idx,
-            ref_knee_rad, clip_fps, viewer=None
-        )
+        metrics = _call_run_frames()
 
     return metrics
 

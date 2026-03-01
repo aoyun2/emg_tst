@@ -373,13 +373,13 @@ for sc_key in args.scenarios:
     sc_gui = USE_GUI   # all scenarios get viewer; close one to proceed to next
 
     res = run_simulation(
-        clip_id                = clip_id,
-        clip_start_frame       = clip_info["frame_offset"],
-        n_frames               = n_frames_sim,
-        knee_pred_included_deg = knee_sig,
-        thigh_ref_included_deg = matched_seg["hip_right"],
-        use_viewer             = sc_gui,
-        label                  = sc_key,
+        clip_id                  = clip_id,
+        clip_start_frame         = clip_info["frame_offset"],
+        n_frames                 = n_frames_sim,
+        knee_pred_included_deg   = knee_sig,
+        thigh_pred_included_deg  = thigh_query,   # IMU thigh from the query window
+        use_viewer               = sc_gui,
+        label                    = sc_key,
     )
     sim_results[sc_key] = res
 
