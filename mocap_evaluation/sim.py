@@ -216,24 +216,67 @@ _PHYSICS_CACHE: Optional[object] = None   # cached physics to avoid repeated ini
 
 
 def _make_physics():
-    """Create a dm_control physics instance for the CMU humanoid with a floor."""
+    """Create a dm_control physics instance for the CMU humanoid with a floor.
+
+    Three approaches are tried in order so the code works across dm_control
+    versions.  Each failed attempt prints the actual exception rather than
+    silently suppressing it.
+
+    Approach 1 (dm_control >= 1.0): arena.attach + create_root_joints.
+      arena.attach() returns an attachment frame; create_root_joints() adds
+      the free joint that lets the humanoid translate/rotate in the arena.
+      Without that call the model is ill-formed in newer dm_control.
+
+    Approach 2 (older dm_control): arena.attach without create_root_joints.
+
+    Approach 3 (fallback): walker MJCF only, no floor.
+      Sufficient for kinematic replay (mj_forward, no contact simulation).
+    """
     global _PHYSICS_CACHE
     if _PHYSICS_CACHE is not None:
         return _PHYSICS_CACHE
 
     from dm_control.locomotion.walkers import cmu_humanoid
-    from dm_control.locomotion import arenas
-    from dm_control import mjcf
-
-    walker = cmu_humanoid.CMUHumanoid()
-    arena  = arenas.Floor()
-    arena.attach(walker)
-
     from dm_control import mujoco as dm_mujoco
-    physics = dm_mujoco.Physics.from_mjcf_model(arena.mjcf_model)
 
-    _PHYSICS_CACHE = physics
-    return physics
+    # ── Approach 1: modern dm_control >= 1.0.7 ────────────────────────────────
+    try:
+        from dm_control.locomotion import arenas
+        walker = cmu_humanoid.CMUHumanoid()
+        arena  = arenas.Floor()
+        frame  = arena.attach(walker)
+        walker.create_root_joints(frame)
+        physics = dm_mujoco.Physics.from_mjcf_model(arena.mjcf_model)
+        _PHYSICS_CACHE = physics
+        return physics
+    except Exception as e1:
+        print(f"[sim] _make_physics attempt 1 (arena + create_root_joints): {e1}")
+
+    # ── Approach 2: older dm_control, attach without create_root_joints ───────
+    try:
+        from dm_control.locomotion import arenas
+        walker = cmu_humanoid.CMUHumanoid()
+        arena  = arenas.Floor()
+        arena.attach(walker)
+        physics = dm_mujoco.Physics.from_mjcf_model(arena.mjcf_model)
+        _PHYSICS_CACHE = physics
+        return physics
+    except Exception as e2:
+        print(f"[sim] _make_physics attempt 2 (arena, no create_root_joints): {e2}")
+
+    # ── Approach 3: walker MJCF only (no floor) ───────────────────────────────
+    try:
+        walker  = cmu_humanoid.CMUHumanoid()
+        physics = dm_mujoco.Physics.from_mjcf_model(walker.mjcf_model)
+        _PHYSICS_CACHE = physics
+        return physics
+    except Exception as e3:
+        print(f"[sim] _make_physics attempt 3 (walker-only MJCF): {e3}")
+
+    raise RuntimeError(
+        "All CMU humanoid physics initialisation approaches failed. "
+        "Check your dm_control and MuJoCo installation."
+    )
 
 
 def _find_joint_qpos_indices(physics) -> Tuple[int, int]:
@@ -293,8 +336,6 @@ def _run_frames(
     fps           : playback frame rate (controls time.sleep duration)
     viewer        : mujoco.viewer passive handle, or None for headless
     """
-    import mujoco
-
     n_qpos    = physics.model.nq
     n_frames  = min(len(ref_qpos), len(knee_pred_rad))
     if hip_pred_rad is not None:
@@ -329,7 +370,7 @@ def _run_frames(
             physics.data.qpos[hip_qpos_idx] = hip_pred_rad[frame]
 
         # ── Forward kinematics ────────────────────────────────────────────────
-        mujoco.mj_forward(physics.model._model, physics.data._data)
+        physics.forward()
 
         # ── Collect metrics ───────────────────────────────────────────────────
         torso_z = float(physics.data.xpos[torso_id, 2]) if torso_id is not None else 1.0
@@ -518,7 +559,7 @@ def run_simulation(
     try:
         physics = _make_physics()
     except Exception as exc:
-        warnings.warn(f"[sim] Cannot create dm_control physics: {exc}")
+        print(f"[sim] Cannot create dm_control physics: {exc}")
         return _run_fallback(
             n_frames, knee_pred_included_deg, thigh_pred_included_deg, use_viewer, label
         )
@@ -542,9 +583,10 @@ def run_simulation(
         try:
             import mujoco
             import mujoco.viewer
+            mjmodel = getattr(physics.model, "ptr", physics.model._model)
+            mjdata  = getattr(physics.data,  "ptr", physics.data._data)
             with mujoco.viewer.launch_passive(
-                physics.model._model,
-                physics.data._data,
+                mjmodel, mjdata,
                 show_left_ui=False,
                 show_right_ui=False,
             ) as viewer:
