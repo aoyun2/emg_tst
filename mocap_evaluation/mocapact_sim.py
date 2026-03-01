@@ -56,8 +56,19 @@ try:
     from mocapact.sb3 import utils as mocapact_utils
     from mocapact import observables as mocapact_obs
     _MOCAPACT_AVAILABLE = True
-except Exception as _e:
+except BaseException as _e:
+    # Use BaseException (not just Exception) to catch import-time errors
+    # like SystemExit or errors from C extensions on Windows.
     _MOCAPACT_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
+    import warnings as _warnings
+    _warnings.warn(
+        f"[mocapact_sim] mocapact could not be imported — "
+        f"MoCapAct-based simulation will be unavailable.\n"
+        f"  Error: {_MOCAPACT_IMPORT_ERROR}\n"
+        f"  Run: from mocap_evaluation.mocapact_sim import check_requirements; "
+        f"print(check_requirements())",
+        stacklevel=1,
+    )
 
 # MuJoCo (for metric collection from dm_control's physics)
 try:
@@ -512,7 +523,10 @@ def load_clip_expert(
         A Stable-Baselines3 model with ``.predict(obs, deterministic)`` method.
     """
     if not _MOCAPACT_AVAILABLE:
-        raise RuntimeError("MoCapAct is required.")
+        raise RuntimeError(
+            "MoCapAct is required.\n"
+            + (f"Import error was: {_MOCAPACT_IMPORT_ERROR}" if _MOCAPACT_IMPORT_ERROR else "")
+        )
 
     return mocapact_utils.load_policy(
         str(expert_path),
@@ -638,7 +652,8 @@ def simulate_mocapact_prosthetic(
     if not _MOCAPACT_AVAILABLE or not _DM_CONTROL_AVAILABLE:
         raise RuntimeError(
             "MoCapAct + dm_control required.  Install with:\n"
-            "  pip install mocapact dm_control stable-baselines3"
+            "  pip install mocapact dm_control stable-baselines3\n"
+            + (f"Import error was: {_MOCAPACT_IMPORT_ERROR}" if _MOCAPACT_IMPORT_ERROR else "")
         )
 
     # ── Load policy ───────────────────────────────────────────────────
@@ -892,10 +907,37 @@ def is_available() -> bool:
 
 
 def check_requirements() -> str:
-    """Return a human-readable status of MoCapAct requirements."""
+    """Return a human-readable status of MoCapAct requirements.
+
+    Sub-import diagnosis runs each import in a **fresh subprocess** so that
+    cached sys.modules state from a previous failed import cannot mask the
+    real failure.
+    """
+    import sys
+
     lines = []
     lines.append(f"dm_control:  {'OK' if _DM_CONTROL_AVAILABLE else 'MISSING (pip install dm_control)'}")
-    mocapact_status = "OK" if _MOCAPACT_AVAILABLE else f"FAILED ({_MOCAPACT_IMPORT_ERROR})"
+    mocapact_status = "OK" if _MOCAPACT_AVAILABLE else f"FAILED ({_MOCAPACT_IMPORT_ERROR or 'unknown error'})"
     lines.append(f"mocapact:    {mocapact_status}")
     lines.append(f"mujoco:      {'OK' if _MUJOCO_AVAILABLE else 'MISSING (pip install mujoco)'}")
+
+    if not _MOCAPACT_AVAILABLE:
+        lines.append("\nDiagnosing mocapact sub-imports (fresh subprocess per import):")
+        for stmt in [
+            "from mocapact.distillation import model",
+            "from mocapact.envs import tracking",
+            "from mocapact.sb3 import utils",
+            "from mocapact import observables",
+        ]:
+            result = subprocess.run(
+                [sys.executable, "-c", stmt],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                lines.append(f"  OK      {stmt}")
+            else:
+                err = (result.stderr or result.stdout).strip()
+                lines.append(f"  FAILED  {stmt}\n          {err}")
+
     return "\n".join(lines)
