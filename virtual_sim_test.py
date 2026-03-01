@@ -2,9 +2,9 @@
 """Virtual simulation test: validate the motion-matching → physics pipeline.
 
 This is a developer testing tool that uses publicly available OpenSim gait
-kinematics (or synthetic signals) as a stand-in for real EMG recordings.
-It is intended to be run BEFORE hardware data is collected and the TST model
-is trained, to confirm that the entire pipeline works end-to-end.
+kinematics as a stand-in for real EMG recordings.  It is intended to be run
+BEFORE hardware data is collected and the TST model is trained, to confirm
+that the entire pipeline works end-to-end.
 
 Mapping to the real workflow
 -----------------------------
@@ -22,7 +22,7 @@ Mapping to the real workflow
 
 Pipeline (per run)
 ------------------
-  1. LOAD   OpenSim gait data (auto-downloaded) or synthetic gait signals.
+  1. LOAD   Auto-download an OpenSim IK .mot file and resample to 200 Hz.
   2. BATCH  Split into N consecutive test batches (each = batch_secs seconds).
   3. DB     Load MoCap Act motion-matching database.
   4. MATCH  DTW-match each batch against the database.
@@ -34,8 +34,7 @@ All angles use the included-angle convention (180° = full extension).
 
 Usage examples
 --------------
-  python virtual_sim_test.py                       # 3 batches, try OpenSim first
-  python virtual_sim_test.py --synthetic           # skip download, use synthetic
+  python virtual_sim_test.py                       # 3 batches, all 2589 clips
   python virtual_sim_test.py --n-batches 5 --batch-secs 3
   python virtual_sim_test.py --subset walk_tiny    # fewer clips → faster run
   python virtual_sim_test.py --no-gui              # headless, plots only
@@ -80,10 +79,6 @@ ap.add_argument(
     help="Headless mode — no MuJoCo viewer window, saves plots only",
 )
 ap.add_argument(
-    "--synthetic", action="store_true",
-    help="Skip OpenSim download and use synthetic gait signals instead",
-)
-ap.add_argument(
     "--noise", type=float, default=0.0,
     help=(
         "Gaussian noise σ (°) added to the 'model' knee prediction "
@@ -105,56 +100,6 @@ args = ap.parse_args()
 TARGET_FPS   = 200.0
 BATCH_FRAMES = int(args.batch_secs * TARGET_FPS)
 USE_GUI      = not args.no_gui
-
-
-# ── Synthetic gait signal generator ───────────────────────────────────────────
-
-def generate_synthetic_gait(
-    total_secs: float,
-    fps: float = TARGET_FPS,
-    stride_hz: float = 1.1,
-    seed: int = 0,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Generate synthetic (knee, thigh) signals approximating normal walking.
-
-    Uses a Fourier series gait model based on Winter's biomechanics data.
-    Outputs are in included-angle convention (180° = full extension).
-
-    Parameters
-    ----------
-    total_secs : total signal duration in seconds
-    fps        : output sample rate (default 200 Hz)
-    stride_hz  : fundamental stride frequency (default 1.1 Hz ≈ comfortable walk)
-    seed       : RNG seed for inter-stride variability noise
-
-    Returns
-    -------
-    knee_inc, thigh_inc : (T,) float32 included-angle arrays
-    """
-    rng = np.random.default_rng(seed)
-    T   = int(total_secs * fps)
-    t   = np.arange(T, dtype=np.float64) / fps
-    phi = 2.0 * np.pi * stride_hz * t
-
-    # Knee: bimodal flexion pattern per stride.
-    # Stance loading (~18° flexion) + swing peak (~60° flexion).
-    knee_flex = (
-        18.0 * np.maximum(0.0, np.sin(phi)) ** 1.4          # loading response
-        + 60.0 * np.maximum(0.0, -np.sin(phi)) ** 2.0       # swing peak
-        +  5.0 * np.sin(2.0 * phi + 0.4)                    # 2nd harmonic
-    )
-    knee_noise = rng.normal(0.0, 1.5, T).astype(np.float32)
-    # included-angle = 180 - flexion; clip to plausible walking range
-    knee_inc = np.clip(180.0 - knee_flex + knee_noise, 100.0, 180.0).astype(np.float32)
-
-    # Thigh / hip: single sinusoid ± 22° around neutral, with 2nd harmonic.
-    # hip included-angle = 180 - hip_flex_deg:
-    #   flexion → included < 180; extension → included > 180
-    hip_flex   = 22.0 * np.sin(phi + np.pi / 5.0) + 4.0 * np.sin(2.0 * phi + 0.2)
-    thigh_noise = rng.normal(0.0, 1.0, T).astype(np.float32)
-    thigh_inc = np.clip(180.0 - hip_flex + thigh_noise, 130.0, 210.0).astype(np.float32)
-
-    return knee_inc, thigh_inc
 
 
 # ── OpenSim data loader ────────────────────────────────────────────────────────
@@ -243,11 +188,11 @@ def _parse_mot(text: str) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]
 def load_opensim_data(
     total_secs: float,
     fps: float = TARGET_FPS,
-) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+) -> Tuple[np.ndarray, np.ndarray]:
     """Download and parse an OpenSim gait kinematics file.
 
-    Tries each URL in _OPENSIM_URLS in order, returning on the first success.
-    If all URLs fail or the file cannot be parsed, returns None.
+    Tries each URL in _OPENSIM_URLS in order, succeeding on the first hit.
+    Raises RuntimeError if all URLs fail or the file cannot be parsed.
 
     Returns
     -------
@@ -257,6 +202,7 @@ def load_opensim_data(
 
     raw_text: Optional[str] = None
     url_used: Optional[str] = None
+    errors: List[str] = []
 
     for url in _OPENSIM_URLS:
         try:
@@ -266,15 +212,19 @@ def load_opensim_data(
             url_used = url
             break
         except Exception as exc:
-            warnings.warn(f"[opensim] {url.split('/')[-1]}: {exc}")
+            errors.append(f"  {url.split('/')[-1]}: {exc}")
 
     if raw_text is None:
-        return None
+        raise RuntimeError(
+            "All OpenSim download URLs failed:\n" + "\n".join(errors)
+        )
 
     parsed = _parse_mot(raw_text)
     if parsed is None:
-        warnings.warn("[opensim] Could not parse .mot file — column names not found.")
-        return None
+        raise RuntimeError(
+            f"Downloaded {url_used.split('/')[-1]} but could not find the required "
+            "columns (knee_angle_r, hip_flexion_r) in the .mot file."
+        )
 
     time_s, knee_flex, hip_flex = parsed
     print(
@@ -547,31 +497,19 @@ def main() -> None:
     # A bit of extra data so tiling always produces enough frames.
     total_secs = args.n_batches * args.batch_secs + 2.0
 
-    # ── STEP 1: Data source ────────────────────────────────────────────────────
+    # ── STEP 1: OpenSim data ───────────────────────────────────────────────────
     print("\n" + "═" * 60)
-    print("STEP 1  Test data source")
+    print("STEP 1  OpenSim gait data")
     print("═" * 60)
+    print("Downloading OpenSim IK data …")
 
-    knee_full:  Optional[np.ndarray] = None
-    thigh_full: Optional[np.ndarray] = None
-    source_label = ""
+    try:
+        knee_full, thigh_full = load_opensim_data(total_secs)
+    except RuntimeError as exc:
+        sys.exit(f"\nERROR: {exc}")
 
-    if not args.synthetic:
-        print("Attempting OpenSim gait data download …")
-        result = load_opensim_data(total_secs)
-        if result is not None:
-            knee_full, thigh_full = result
-            source_label = "OpenSim gait kinematics (auto-downloaded)"
-            print(f"  {len(knee_full)} frames ({len(knee_full) / TARGET_FPS:.1f} s)")
-        else:
-            print("  All download attempts failed — falling back to synthetic data.")
-
-    if knee_full is None:
-        print("Generating synthetic gait signals …")
-        knee_full, thigh_full = generate_synthetic_gait(total_secs, TARGET_FPS)
-        source_label = "synthetic gait model (Fourier series approximation)"
-        print(f"  {len(knee_full)} frames ({len(knee_full) / TARGET_FPS:.1f} s)")
-
+    source_label = "OpenSim gait kinematics (auto-downloaded)"
+    print(f"  {len(knee_full)} frames ({len(knee_full) / TARGET_FPS:.1f} s)")
     print(f"\n  Source : {source_label}")
     print(f"  Knee   : {knee_full.min():.1f}°–{knee_full.max():.1f}°  mean={knee_full.mean():.1f}°")
     print(f"  Thigh  : {thigh_full.min():.1f}°–{thigh_full.max():.1f}°  mean={thigh_full.mean():.1f}°")
