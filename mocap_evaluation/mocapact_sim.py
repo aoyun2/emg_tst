@@ -1294,8 +1294,14 @@ def simulate_three_scenarios_mocapact(
 
     T = min(int(eval_seconds * SIM_FPS), *(len(d[0]) for d in deg_arrs))
     metrics_list = [MoCapActEvalMetrics.empty() for _ in range(3)]
-    physics_list = [_get_physics(e) for e in envs]
+    # Reset first, then acquire physics handles.
+    #
+    # Some dm_control wrappers refresh/rebind internal physics objects on
+    # reset(). If we cache physics before reset, the model/data handles can be
+    # invalidated and viewer launch may fail with:
+    #   "weakly-referenced object no longer exists"
     obss = [e.reset() for e in envs]
+    physics_list = [_get_physics(e) for e in envs]
 
     # Open all viewers before stepping to keep contexts alive simultaneously
     viewers: List[Optional[object]] = [None, None, None]
