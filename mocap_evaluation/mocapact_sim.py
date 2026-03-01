@@ -30,6 +30,7 @@ pip install mocapact dm_control stable-baselines3
 from __future__ import annotations
 
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -1408,9 +1409,12 @@ def simulate_three_scenarios_mocapact(
     # while its reference clip is at frame 0, causing an immediate mismatch,
     # rapid re-termination, and the "frozen at reset pose" visual bug.
     t_env = [0, 0, 0]
+    _step_dt = 1.0 / SIM_FPS          # target wall-clock seconds per step
     progress = tqdm(total=T, desc="3-scenario sim", unit="step", leave=False)
     try:
         while True:
+            _step_start = time.monotonic()
+
             open_viewers = [v for v in viewers if v is not None]
             if open_viewers:
                 any_running = any(v.is_running() for v in open_viewers)
@@ -1418,9 +1422,7 @@ def simulate_three_scenarios_mocapact(
             else:
                 any_running = False
 
-            # A freshly launched viewer can briefly report not-running before the
-            # first sync; avoid interpreting that startup state as "all windows
-            # were closed".
+            # Exit only when we confirmed viewers were running and are now all closed.
             if open_viewers and had_running_viewer and not any_running:
                 break
 
@@ -1428,7 +1430,7 @@ def simulate_three_scenarios_mocapact(
                 if dones[i]:
                     # In GUI mode immediately reset terminated envs so playback
                     # does not appear frozen in a terminal pose.
-                    if use_gui and any_running:
+                    if use_gui and (not open_viewers or any_running or not had_running_viewer):
                         obss[i] = envs[i].reset()
                         dones[i] = False
                         # Restart from frame 0 of the knee/hip signal so the
@@ -1477,7 +1479,9 @@ def simulate_three_scenarios_mocapact(
                 break
             if t >= T:
                 # In GUI mode keep replaying until the user closes all windows.
-                if use_gui and open_viewers and any_running:
+                # Loop regardless of whether is_running() has reported True yet
+                # (the viewer may still be initialising when t first reaches T).
+                if use_gui and open_viewers and not (had_running_viewer and not any_running):
                     cycle_idx += 1
                     if not loop_announced:
                         print("[MoCapAct] Playback reached end; looping until viewer windows close.")
@@ -1489,6 +1493,14 @@ def simulate_three_scenarios_mocapact(
                     embeds = [policy.initial_state(deterministic=False) if is_npmp else None for _ in range(3)]
                     continue
                 break
+
+            # Pace to real-time so the viewer renders at the correct walking speed
+            # and the window has time to initialise before the first loop point.
+            if use_gui:
+                _elapsed = time.monotonic() - _step_start
+                _sleep = _step_dt - _elapsed
+                if _sleep > 0.0:
+                    time.sleep(_sleep)
     finally:
         progress.close()
 

@@ -1,9 +1,10 @@
 """Quick simulation demo: external OpenSim query matched against CMU DB, evaluated with MoCapAct.
 
 All three scenarios (GT knee / good prediction / bad prediction) are shown
-simultaneously in separate viewer windows.  The OpenSim data is resampled
-from 200 Hz to the simulation rate (30 Hz) so walking speed looks correct,
-then tiled to TOTAL_SECONDS so the humanoids walk continuously.
+simultaneously in separate viewer windows.  The DTW motion match locates the
+best-matching position in the CMU DB; consecutive frames from that position are
+then aggregated to TOTAL_SECONDS of non-repeating motion (resampled from the
+DB's 200 Hz to the simulation rate of 30 Hz).
 """
 import numpy as np
 from mocap_evaluation.external_sample_data import extract_external_sample_curves
@@ -33,14 +34,6 @@ def resample(arr: np.ndarray, src_fps: float, dst_fps: float) -> np.ndarray:
     return np.interp(x_dst, x_src, arr).astype(np.float32)
 
 
-def tile_to(arr: np.ndarray, n: int) -> np.ndarray:
-    """Repeat *arr* cyclically until it is at least *n* elements long."""
-    if len(arr) == 0:
-        raise ValueError("Cannot tile empty array")
-    reps = -(-n // len(arr))          # ceiling division
-    return np.tile(arr, reps)[:n].astype(np.float32)
-
-
 # ── External query (OpenSim IK from GitHub, NOT from CMU DB) ─────────────────
 print("Downloading external OpenSim gait data...")
 curves = extract_external_sample_curves(seconds=MATCH_SECONDS, pred_noise_std=GOOD_NOISE_STD)
@@ -60,27 +53,6 @@ print(f"At {src_fps:.0f} Hz: {len(knee_query_200)} frames "
       f"({len(knee_query_200)/src_fps:.2f}s)")
 print(f"Resampled to {SIM_FPS:.0f} Hz: {len(knee_query_sim)} frames "
       f"({len(knee_query_sim)/SIM_FPS:.2f}s)")
-
-# ── Tile to TOTAL_SECONDS at simulation rate ──────────────────────────────────
-T_sim = int(round(TOTAL_SECONDS * SIM_FPS))
-knee_gt     = tile_to(knee_query_sim, T_sim)
-thigh_tiled = tile_to(thigh_query_sim, T_sim)
-
-# Good prediction: low noise on the tiled signal
-rng = np.random.default_rng(42)
-knee_good = np.clip(
-    knee_gt + rng.normal(0.0, GOOD_NOISE_STD, T_sim).astype(np.float32),
-    0.0, 180.0,
-)
-
-# Bad prediction: high noise
-knee_bad = np.clip(
-    knee_gt + rng.normal(0.0, BAD_NOISE_STD, T_sim).astype(np.float32),
-    0.0, 180.0,
-)
-
-print(f"Tiled to {TOTAL_SECONDS:.0f}s: {T_sim} frames @ {SIM_FPS:.0f} Hz")
-print(f"Knee range: [{knee_gt.min():.1f}, {knee_gt.max():.1f}] deg (included)")
 
 # ── Load CMU DB (cached, no download) ─────────────────────────────────────────
 db = load_aggregated_database(mocap_root='mocap_data', try_download=False, use_cache=True)
@@ -105,8 +77,40 @@ print(f"Matched knee vs query RMSE: {match_rmse:.2f} deg")
 # ── Resolve DTW match → specific CMU clip ────────────────────────────────────
 match_info = resolve_clip_from_match(best_start, len(knee_query_200), db)
 
+# ── Aggregate consecutive CMU DB frames to build the simulation motion ────────
+# Instead of tiling the short OpenSim query, take consecutive frames from the
+# CMU DB starting at the matched position for a realistic, non-repeating motion.
+db_fps = float(db['fps'])                        # 200 Hz
+T_db   = int(round(TOTAL_SECONDS * db_fps))      # frames needed at 200 Hz
+end_idx = min(best_start + T_db, len(db['knee_right']))
+cmu_knee  = db['knee_right'][best_start:end_idx]
+cmu_thigh = db['hip_right'][best_start:end_idx]
+
+knee_gt     = resample(cmu_knee,  db_fps, SIM_FPS)
+thigh_tiled = resample(cmu_thigh, db_fps, SIM_FPS)
+T_sim = len(knee_gt)
+actual_seconds = T_sim / SIM_FPS
+
+print(f"CMU motion window: {end_idx - best_start} frames @ {db_fps:.0f} Hz "
+      f"→ {T_sim} frames @ {SIM_FPS:.0f} Hz ({actual_seconds:.1f}s)")
+
+# Good prediction: low noise on the motion signal
+rng = np.random.default_rng(42)
+knee_good = np.clip(
+    knee_gt + rng.normal(0.0, GOOD_NOISE_STD, T_sim).astype(np.float32),
+    0.0, 180.0,
+)
+
+# Bad prediction: high noise
+knee_bad = np.clip(
+    knee_gt + rng.normal(0.0, BAD_NOISE_STD, T_sim).astype(np.float32),
+    0.0, 180.0,
+)
+
+print(f"Knee range: [{knee_gt.min():.1f}, {knee_gt.max():.1f}] deg (included)")
+
 # ── Simulate all three scenarios simultaneously ───────────────────────────────
-print(f"\n--- Simulating {TOTAL_SECONDS:.0f}s with GT / good / bad knee "
+print(f"\n--- Simulating {actual_seconds:.1f}s with GT / good / bad knee "
       f"(noise={GOOD_NOISE_STD}/{BAD_NOISE_STD} deg) ---")
 
 gt, pred_good, pred_bad = simulate_three_scenarios_mocapact(
@@ -115,7 +119,7 @@ gt, pred_good, pred_bad = simulate_three_scenarios_mocapact(
     bad_knee=knee_bad,
     sample_thigh_right=thigh_tiled,
     reference_knee=knee_gt,
-    eval_seconds=TOTAL_SECONDS,
+    eval_seconds=actual_seconds,
     use_gui=True,
     match_info=match_info,
 )
@@ -129,7 +133,7 @@ def show(label, m):
     print(f'  CoM: {m["com_height_mean"]:.3f} +/- {m["com_height_std"]:.3f} m')
     print(f'  knee RMSE: {m["knee_rmse_deg"]:.2f}, MAE: {m["knee_mae_deg"]:.2f}')
 
-T_plot = int(round(TOTAL_SECONDS * SIM_FPS))
+T_plot = T_sim
 good_rmse = float(np.sqrt(np.mean((knee_good[:T_plot] - knee_gt[:T_plot]) ** 2)))
 bad_rmse  = float(np.sqrt(np.mean((knee_bad[:T_plot]  - knee_gt[:T_plot]) ** 2)))
 
