@@ -524,7 +524,7 @@ def _get_physics(env):
     raise AttributeError("Cannot extract dm_control physics from env")
 
 
-def _launch_mujoco_viewer_from_physics(physics):
+def _launch_mujoco_viewer_from_physics(physics, title: str | None = None):
     """Launch ``mujoco.viewer`` from a dm_control physics object when possible.
 
     dm_control exposes wrapper objects (``dm_control.mujoco.wrapper.core``)
@@ -552,15 +552,24 @@ def _launch_mujoco_viewer_from_physics(physics):
 
     import mujoco.viewer as _mv
 
+    def _launch(m, d):
+        """Try launch_passive with title kwarg, fall back without it."""
+        if title is not None:
+            try:
+                return _mv.launch_passive(m, d, title=title)
+            except TypeError:
+                pass
+        return _mv.launch_passive(m, d)
+
     # Native mujoco objects (works directly).
     if isinstance(model, mujoco.MjModel) and isinstance(data, mujoco.MjData):
-        return _mv.launch_passive(model, data)
+        return _launch(model, data)
 
     # dm_control wrapper objects may expose native handles via .ptr.
     model_ptr = getattr(model, "ptr", None)
     data_ptr = getattr(data, "ptr", None)
     if model_ptr is not None and data_ptr is not None:
-        return _mv.launch_passive(model_ptr, data_ptr)
+        return _launch(model_ptr, data_ptr)
 
     raise TypeError(
         "unsupported model/data types for mujoco.viewer: "
@@ -1386,10 +1395,11 @@ def simulate_three_scenarios_mocapact(
     viewers: List[Optional[object]] = [None, None, None]
     if use_gui:
         labels = ["Ground Truth", "Nominal", "Bad (delay+noise)"]
+        print("[MoCapAct] Opening 3 viewer windows:")
         for i, (phys, label) in enumerate(zip(physics_list, labels)):
             try:
-                viewers[i] = _launch_mujoco_viewer_from_physics(phys)
-                print(f"[MoCapAct] {label} viewer opened.")
+                viewers[i] = _launch_mujoco_viewer_from_physics(phys, title=label)
+                print(f"  Window {i+1}: {label}")
             except Exception as exc:
                 print(f"[MoCapAct] Could not open {label} viewer: {exc}")
 
@@ -1468,8 +1478,11 @@ def simulate_three_scenarios_mocapact(
                         metrics_open[i] = False
 
             for v in viewers:
-                if v is not None and v.is_running():
-                    v.sync()
+                if v is not None:
+                    try:
+                        v.sync()
+                    except Exception:
+                        pass
 
             if cycle_idx == 0:
                 progress.update(1)
@@ -1481,7 +1494,7 @@ def simulate_three_scenarios_mocapact(
                 # In GUI mode keep replaying until the user closes all windows.
                 # Loop regardless of whether is_running() has reported True yet
                 # (the viewer may still be initialising when t first reaches T).
-                if use_gui and open_viewers and not (had_running_viewer and not any_running):
+                if use_gui and not (open_viewers and had_running_viewer and not any_running):
                     cycle_idx += 1
                     if not loop_announced:
                         print("[MoCapAct] Playback reached end; looping until viewer windows close.")
