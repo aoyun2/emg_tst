@@ -951,6 +951,27 @@ def simulate_mocapact_prosthetic(
     # Get the physics handle for metric collection
     physics = _get_physics(env)
 
+    # ── Open interactive MuJoCo viewer (use_gui=True) ─────────────────
+    _viewer = None
+    if use_gui:
+        try:
+            import mujoco.viewer as _mv
+            _viewer = _mv.launch_passive(physics.model, physics.data)
+            print("[MoCapAct] Viewer opened — close the window to stop early.")
+        except Exception as _ve:
+            print(f"[MoCapAct] Could not open mujoco viewer: {_ve}")
+            # Fall back to dm_control's own viewer (blocking — runs in a thread)
+            try:
+                from dm_control import viewer as _dmv
+                import threading as _threading
+                _inner_env = env.unwrapped._env if hasattr(env, "unwrapped") else env
+                _dmv_thread = _threading.Thread(
+                    target=_dmv.launch, args=(_inner_env,), daemon=True
+                )
+                _dmv_thread.start()
+            except Exception as _ve2:
+                print(f"[MoCapAct] dm_control viewer also unavailable: {_ve2}")
+
     # Initialise the policy's recurrent state (embedding for NPMP)
     is_npmp = hasattr(policy, "initial_state")
     if is_npmp:
@@ -959,6 +980,10 @@ def simulate_mocapact_prosthetic(
         embed = None
 
     for t in tqdm(range(T), desc="MoCapAct sim", unit="step", leave=False):
+        # Stop if the viewer window was closed
+        if _viewer is not None and not _viewer.is_running():
+            break
+
         # ── Policy proposes action for all 56 joints ──────────────────
         if is_npmp:
             action, embed = policy.predict(obs, state=embed, deterministic=False)
@@ -979,6 +1004,10 @@ def simulate_mocapact_prosthetic(
 
         # ── Step environment ──────────────────────────────────────────
         obs, reward, done, info = env.step(action)
+
+        # ── Sync viewer ───────────────────────────────────────────────
+        if _viewer is not None and _viewer.is_running():
+            _viewer.sync()
 
         # ── Collect metrics ───────────────────────────────────────────
         # CoM height: use the whole-body subtree_com (body index 0 = root)
@@ -1032,6 +1061,12 @@ def simulate_mocapact_prosthetic(
 
         if done:
             break
+
+    if _viewer is not None:
+        try:
+            _viewer.close()
+        except Exception:
+            pass
 
     env.close()
 
