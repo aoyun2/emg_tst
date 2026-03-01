@@ -122,16 +122,36 @@ max_frames = int(TOTAL_SECS * TARGET_FPS)
 if args.n_windows is not None:
     max_frames = min(max_frames, args.n_windows * WINDOW_FRAMES)
 
-# x_windows_for_inference: set when --data is provided; used by --checkpoint in STEP 2
+# x_windows_for_inference / x_windows_starts: set when --data is provided
 x_windows_for_inference: "Optional[np.ndarray]" = None
+x_windows_starts: "Optional[np.ndarray]" = None
 
 if args.data:
     # Pre-windowed samples_dataset.npy — same format as run_evaluation.py
     from mocap_evaluation.paper_pipeline import _load_windows  # noqa: E402
-    x_wins, y_seqs, _, _ = _load_windows(args.data, n_samples=None)
-    x_windows_for_inference = x_wins  # (n_windows, seq_len, n_vars)
-    knee_query  = np.concatenate(y_seqs).astype(np.float32)[:max_frames]
-    thigh_query = np.concatenate([x_wins[i, :, -1] for i in range(len(x_wins))]).astype(np.float32)[:max_frames]
+    x_wins, y_seqs, _, starts = _load_windows(args.data, n_samples=None)
+    x_windows_for_inference = x_wins   # (n_windows, seq_len, n_vars)
+    x_windows_starts        = starts   # (n_windows,) start frame of each window
+    seq_len = x_wins.shape[1]
+    # Reconstruct a contiguous ground-truth signal at TARGET_FPS.
+    # Windows may overlap, so use starts to place each window's frames at
+    # the right position; later windows overwrite the same region (they
+    # have seen more context → prefer their values near the end of the clip).
+    total_frames = int(np.max(starts) + seq_len)
+    _knee_full  = np.full(total_frames, np.nan, dtype=np.float32)
+    _thigh_full = np.full(total_frames, np.nan, dtype=np.float32)
+    for i, s in enumerate(starts):
+        s = int(s)
+        _knee_full [s:s + seq_len] = y_seqs[i]
+        _thigh_full[s:s + seq_len] = x_wins[i, :, -1]
+    # Fill any remaining NaN gaps by interpolation
+    _t = np.arange(total_frames, dtype=np.float32)
+    for _arr in (_knee_full, _thigh_full):
+        _valid = np.where(np.isfinite(_arr))[0]
+        if len(_valid):
+            _arr[:] = np.interp(_t, _valid.astype(np.float32), _arr[_valid])
+    knee_query  = _knee_full [:max_frames]
+    thigh_query = _thigh_full[:max_frames]
     source_label = f"samples_dataset ({len(x_wins)} windows, {args.data})"
     print(f"Source : {args.data}  ({len(x_wins)} windows → {len(knee_query)} frames)")
 elif args.test_sample:
@@ -188,19 +208,27 @@ if args.checkpoint and x_windows_for_inference is not None:
     device = torch.device(args.device)
     _model, _scaler = _load_checkpoint(args.checkpoint, device)
     print(f"Checkpoint : {args.checkpoint}")
-    # Run inference on every window, concatenate predictions
-    pred_chunks = [
-        _model_predict(_model, _scaler, x_windows_for_inference[i], device)
-        for i in range(len(x_windows_for_inference))
-    ]
-    knee_model_pred = np.concatenate(pred_chunks).astype(np.float32)
-    # Align length to knee_query (windows may give more/fewer frames)
-    n = min(len(knee_model_pred), len(knee_query))
-    knee_good_pred = np.clip(knee_model_pred[:n], 0.0, 180.0)
-    knee_query     = knee_query[:n]
-    thigh_query    = thigh_query[:n]
+    # One prediction per window: use pred[-1], the output at the last
+    # (most context-rich) timestep of each window.  This avoids duplicating
+    # overlapping regions when windows have stride < seq_len.
+    _seq_len = x_windows_for_inference.shape[1]
+    _n_wins  = len(x_windows_for_inference)
+    _pred_t  = np.array([  # frame index of each window's last prediction
+        int(x_windows_starts[i]) + _seq_len - 1
+        for i in range(_n_wins)
+    ], dtype=np.float32)
+    _pred_v  = np.array([
+        float(_model_predict(_model, _scaler, x_windows_for_inference[i], device)[-1])
+        for i in range(_n_wins)
+    ], dtype=np.float32)
+    # Interpolate to TARGET_FPS so knee_model_pred aligns with knee_query
+    knee_model_pred = np.interp(
+        np.arange(len(knee_query), dtype=np.float32),
+        _pred_t, _pred_v,
+    ).astype(np.float32)
+    knee_good_pred = np.clip(knee_model_pred, 0.0, 180.0)
     good_rmse = float(np.sqrt(np.mean((knee_good_pred - knee_query) ** 2)))
-    print(f"Model RMSE vs GT : {good_rmse:.2f} °  ({len(pred_chunks)} windows)")
+    print(f"Model RMSE vs GT : {good_rmse:.2f} °  ({_n_wins} windows)")
     prediction_label = f"model ({Path(args.checkpoint).name})"
 else:
     if args.checkpoint:
