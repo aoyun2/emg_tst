@@ -88,16 +88,20 @@ for _name, _val in _NP2_ALIASES.items():
 try:
     import gym.spaces.box as _gsb
 
-    # low_repr / high_repr: added in gym 0.26, missing on older installs
+    # low_repr / high_repr: added in gym 0.26, missing on older installs.
+    # Must include setters: pickle restores these as instance attrs, which
+    # raises "property has no setter" if only a getter is defined.
     if not hasattr(_gsb.Box, "low_repr"):
-        @property  # type: ignore[misc]
-        def _low_repr(self) -> str:
+        def _low_repr_get(self) -> str:
             return str(self.low)
-        @property  # type: ignore[misc]
-        def _high_repr(self) -> str:
+        def _low_repr_set(self, v) -> None:
+            pass  # computed from self.low; stored value from pickle is discarded
+        def _high_repr_get(self) -> str:
             return str(self.high)
-        _gsb.Box.low_repr = _low_repr   # type: ignore[attr-defined]
-        _gsb.Box.high_repr = _high_repr  # type: ignore[attr-defined]
+        def _high_repr_set(self, v) -> None:
+            pass  # computed from self.high
+        _gsb.Box.low_repr  = property(_low_repr_get,  _low_repr_set)   # type: ignore[attr-defined]
+        _gsb.Box.high_repr = property(_high_repr_get, _high_repr_set)  # type: ignore[attr-defined]
 
     # is_bounded: added in gym 0.26; older Box had no such method
     if not hasattr(_gsb.Box, "is_bounded"):
