@@ -14,19 +14,15 @@ Test sample run (no checkpoint required):
 Download CMU mocap data:
     python -m mocap_evaluation.cmu_downloader
 
-Visualise in MuJoCo (requires display + mujoco):
-    python -m mocap_evaluation.prosthetic_sim --demo
-
 Pipeline
 --------
 1. cmu_catalog / cmu_downloader : curated index + batch download of CMU mocap BVH files
 2. bvh_parser        : parse BVH motion capture files
 3. mocap_loader      : load CMU BVH source with per-file category metadata
 4. motion_matching   : DTW sliding-window search to align IMU signals with mocap
-5. prosthetic_sim    : MuJoCo-first simulation; right knee = model prediction, GUI visualisation
-6. mocapact_sim      : MoCapAct adaptive-policy backend; right knee = model prediction,
-                       all other joints driven by a learned locomotion policy (optional)
-7. run_evaluation    : end-to-end pipeline + JSON metrics output (supports --mocapact flag)
+5. mocapact_sim      : MoCapAct adaptive-policy simulation; right knee = model prediction,
+                       all other joints driven by a learned locomotion policy
+6. run_evaluation    : end-to-end pipeline + JSON metrics output
 
 The simulation replaces the RIGHT KNEE joint angle with the model's prediction
 while all other joints (left knee, both hips, both ankles, trunk) follow the

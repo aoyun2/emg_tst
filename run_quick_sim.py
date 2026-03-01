@@ -1,9 +1,9 @@
-"""Proper evaluation: external OpenSim query matched against CMU DB."""
+"""Quick simulation demo: external OpenSim query matched against CMU DB, evaluated with MoCapAct."""
 import numpy as np
 from mocap_evaluation.external_sample_data import extract_external_sample_curves
 from mocap_evaluation.mocap_loader import load_aggregated_database
 from mocap_evaluation.motion_matching import find_best_match
-from mocap_evaluation.prosthetic_sim import simulate_prosthetic_walking
+from mocap_evaluation.mocapact_sim import simulate_prosthetic_walking_mocapact
 
 # ── Noise levels ──────────────────────────────────────────────────────────
 GOOD_NOISE_STD = 5.0    # degrees — realistic model error
@@ -50,32 +50,30 @@ match_rmse = float(np.sqrt(np.mean((knee_matched[:T] - knee_query[:T]) ** 2)))
 print(f"Best match: DTW={dist:.4f}, file={matched_file}")
 print(f"Matched knee vs query RMSE: {match_rmse:.2f} deg")
 
+# Shared kwargs for all three MoCapAct simulation calls.
+# sample_thigh_right drives the right hip from your recorded IMU data.
+_sim_kwargs = dict(
+    mocap_db=db,
+    best_start=best_start,
+    sample_thigh_right=thigh_query,
+)
+
 # ── Simulate: GT knee ────────────────────────────────────────────────────
 print("\n--- GT knee simulation (OpenSim query) ---")
-gt = simulate_prosthetic_walking(
-    segment, knee_query, use_gui=False,
-    sample_thigh_right=thigh_query,
-    save_trajectory='gt_traj.npz',
+gt = simulate_prosthetic_walking_mocapact(
+    knee_query, reference_knee=knee_query, **_sim_kwargs,
 )
 
 # ── Simulate: good prediction ────────────────────────────────────────────
 print(f"\n--- Good prediction simulation (noise std={GOOD_NOISE_STD} deg) ---")
-pred_good = simulate_prosthetic_walking(
-    segment, pred_knee_good, use_gui=False,
-    sample_thigh_right=thigh_query,
-    save_trajectory='pred_good_traj.npz',
-    show_reference=True,
-    reference_knee=knee_query,
+pred_good = simulate_prosthetic_walking_mocapact(
+    pred_knee_good, reference_knee=knee_query, **_sim_kwargs,
 )
 
 # ── Simulate: bad prediction ─────────────────────────────────────────────
 print(f"\n--- Bad prediction simulation (noise std={BAD_NOISE_STD} deg) ---")
-pred_bad = simulate_prosthetic_walking(
-    segment, pred_knee_bad, use_gui=False,
-    sample_thigh_right=thigh_query,
-    save_trajectory='pred_bad_traj.npz',
-    show_reference=True,
-    reference_knee=knee_query,
+pred_bad = simulate_prosthetic_walking_mocapact(
+    pred_knee_bad, reference_knee=knee_query, **_sim_kwargs,
 )
 
 # ── Results ───────────────────────────────────────────────────────────────
@@ -111,8 +109,7 @@ fig, axes = plt.subplots(3, 1, figsize=(14, 12), sharex=True)
 t = np.arange(seg_len) / fps
 
 # Panel 1: Knee angles
-axes[0].plot(t, np.asarray(gt['ref_knee_series'])[:seg_len], label='Matched CMU knee (ref)', lw=1.5, color='green', alpha=0.7)
-axes[0].plot(t, np.asarray(gt['pred_knee_series'])[:seg_len], label='GT knee (OpenSim)', lw=2, color='blue')
+axes[0].plot(t, np.asarray(gt['ref_knee_series'])[:seg_len], label='GT knee (OpenSim)', lw=2, color='blue')
 axes[0].plot(t, np.asarray(pred_good['pred_knee_series'])[:seg_len], label=f'Good pred (RMSE={good_rmse:.1f})', lw=2, color='orange', alpha=0.8)
 axes[0].plot(t, np.asarray(pred_bad['pred_knee_series'])[:seg_len], label=f'Bad pred (RMSE={bad_rmse:.1f})', lw=2, color='red', alpha=0.7)
 axes[0].set_ylabel('Knee flexion (deg)')
