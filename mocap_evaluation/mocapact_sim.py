@@ -160,8 +160,16 @@ def resolve_clip_from_match(
         start, end = int(start), int(end)
         if start <= best_start < end:
             frame_in_file = best_start - start
+            # fname may be a MocapAct clip ID (e.g. "CMU_009_12") stored
+            # directly by mocapact_dataset, or a BVH filename (e.g. "09_12.bvh")
+            # from the legacy CMU loader.
+            fname = str(fname)
+            if fname.startswith("CMU_"):
+                clip_id = fname
+            else:
+                clip_id = _bvh_to_clip_id(fname)
             return {
-                "clip_id": _bvh_to_clip_id(fname),
+                "clip_id": clip_id,
                 "bvh_filename": fname,
                 "category": cat,
                 "frame_in_file": frame_in_file,
