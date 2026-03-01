@@ -6,6 +6,7 @@ pillow         # GIF generation (prosthetic_sim.py / save_stick_figure_gifs)
 tqdm           # progress bars
 
 # MoCapAct adaptive-policy evaluation backend (mocapact_sim.py / mocapact_dataset.py)
+setuptools         # provides pkg_resources, required by mocapact at import time (missing in Python 3.12+)
 h5py               # direct HDF5 read for MocapAct reference trajectories
 dm_control>=1.0.7  # DeepMind Control Suite (CMU humanoid + HDF5 motion data)
 # Optional: full MoCapAct multi-clip policy evaluation (--mocapact mode):
