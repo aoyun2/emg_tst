@@ -49,6 +49,12 @@ try:
 except Exception:
     pass
 
+# ── NumPy 2.0 compatibility shim ─────────────────────────────────────────────
+# np.infty was removed in NumPy 2.0; gym/dm_control still reference it.
+import numpy as _np
+if not hasattr(_np, "infty"):
+    _np.infty = _np.inf  # type: ignore[attr-defined]
+
 # ── pkg_resources compatibility shim ─────────────────────────────────────────
 # On Python 3.12+ Windows venvs, setuptools may be installed but
 # pkg_resources (which lives inside it) is occasionally not importable.
