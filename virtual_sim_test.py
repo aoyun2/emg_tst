@@ -34,9 +34,10 @@ All angles use the included-angle convention (180° = full extension).
 
 Usage examples
 --------------
-  python virtual_sim_test.py                       # 3 batches, all 2589 clips
+  python virtual_sim_test.py                          # 3 batches, Microsoft MoCapAct (2589 snippets)
   python virtual_sim_test.py --n-batches 5 --batch-secs 3
-  python virtual_sim_test.py --subset walk_tiny    # fewer clips → faster run
+  python virtual_sim_test.py --subset walk_tiny       # dm_control subset, fewer clips → faster
+  python virtual_sim_test.py --subset mocapact         # Microsoft MoCapAct (requires MOCAPACT_MS_DIR)
   python virtual_sim_test.py --no-gui              # headless, plots only
   python virtual_sim_test.py --noise 8             # simulate 8° model error
   python virtual_sim_test.py --out results.json    # save JSON summary
@@ -67,11 +68,12 @@ ap.add_argument(
     help="Duration of each test batch in seconds (default: 5.0)",
 )
 ap.add_argument(
-    "--subset", default="all",
-    choices=["all", "locomotion_small", "walk_tiny", "run_jump_tiny"],
+    "--subset", default="mocapact",
+    choices=["mocapact", "all", "locomotion_small", "walk_tiny", "run_jump_tiny"],
     help=(
-        "MoCap Act database subset (default: all = ~2589 clips). "
-        "Use walk_tiny or locomotion_small for a faster development run."
+        "Motion-matching database (default: mocapact = Microsoft MoCapAct 2 589 snippets). "
+        "Requires MOCAPACT_MS_DIR env var; see mocap_evaluation/mocapact_ms.py. "
+        "Use 'all' for dm_control CMU HDF5 (~837 clips), or 'walk_tiny' for a quick test."
     ),
 )
 ap.add_argument(

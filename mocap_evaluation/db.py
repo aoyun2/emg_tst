@@ -1,11 +1,15 @@
 """MoCap Act motion-matching database.
 
-Loads knee and hip angles (included-angle degrees, 180=straight) from the
-dm_control CMU MoCap Act HDF5 reference file for every clip in the requested
-subset, then concatenates them into a single flat array that the DTW matcher
-can slide over.
+Loads knee and hip angles (included-angle degrees, 180=straight) from either:
 
-Cache: .cache_mocapact_{subset}.npz  (auto-built on first run, ~seconds).
+* **dm_control CMU HDF5** (subset ``"locomotion_small"``, ``"walk_tiny"``,
+  ``"run_jump_tiny"``, ``"all"``): single ``cmu_2020_*.h5`` file,
+  ~837 clips, auto-downloaded by dm_control.
+* **Microsoft MoCapAct HDF5** (subset ``"mocapact"``): per-clip
+  ``CMU_*.hdf5`` files, ~2 589 snippets.  Requires the dataset to be
+  downloaded separately (see ``mocapact_ms.download_instructions()``).
+
+Cache: ``.cache_mocapact_{subset}.npz``  (auto-built on first run).
 
 Angle conventions
 -----------------
@@ -278,8 +282,13 @@ def load_database(
     Parameters
     ----------
     subset : str
-        ``"all"`` (~2589 clips, default), ``"locomotion_small"`` (316),
-        ``"walk_tiny"`` (36), ``"run_jump_tiny"`` (50).
+        ``"mocapact"``        Microsoft MoCapAct (~2 589 snippets, recommended).
+                              Requires MOCAPACT_MS_DIR to be set; see
+                              ``mocap_evaluation.mocapact_ms.download_instructions()``.
+        ``"all"``             dm_control CMU HDF5 (all top-level keys, ~837 clips).
+        ``"locomotion_small"`` dm_control CMU locomotion subset (~316 clips).
+        ``"walk_tiny"``       dm_control CMU walk-only subset (36 clips).
+        ``"run_jump_tiny"``   dm_control CMU run+jump subset (50 clips).
     use_cache : bool
         Load from ``.cache_mocapact_{subset}.npz`` if it exists.
     target_fps : float
@@ -294,6 +303,34 @@ def load_database(
         ``fps``             float
         ``source``          str
     """
+    # ── Microsoft MoCapAct path ───────────────────────────────────────────────
+    if subset.lower() == "mocapact":
+        from mocap_evaluation.mocapact_ms import load_database_ms
+        cache_path = Path(".cache_mocapact_ms.npz")
+        if use_cache and cache_path.exists():
+            try:
+                raw = np.load(str(cache_path), allow_pickle=True)
+                db  = {k: raw[k] for k in raw.files}
+                if "file_boundaries" in db:
+                    db["file_boundaries"] = [tuple(b) for b in db["file_boundaries"].tolist()]
+                n     = len(db.get("knee_right", []))
+                clips = len(db.get("file_boundaries", []))
+                print(f"[db] Loaded {n} frames ({clips} snippets) from cache {cache_path}")
+                return db
+            except Exception as exc:
+                warnings.warn(f"[db] Cache load failed ({exc}); rebuilding.")
+
+        db = load_database_ms(target_fps=target_fps)
+        try:
+            save = dict(db)
+            save["file_boundaries"] = np.array(db["file_boundaries"], dtype=object)
+            np.savez(str(cache_path), **save)
+            print(f"[db] Cached to {cache_path}")
+        except Exception as exc:
+            warnings.warn(f"[db] Cache save failed: {exc}")
+        return db
+
+    # ── dm_control CMU HDF5 path ──────────────────────────────────────────────
     cache_path = Path(f".cache_mocapact_{subset}.npz")
 
     if use_cache and cache_path.exists():

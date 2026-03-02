@@ -42,7 +42,13 @@ Usage
   # Headless (no viewer window):
   python run_sim.py --no-gui
 
-  # Use a smaller/faster matching database:
+  # Use Microsoft MoCapAct database (default, 2589 snippets, needs MOCAPACT_MS_DIR):
+  python run_sim.py --subset mocapact
+
+  # Use dm_control CMU database (all clips, ~837):
+  python run_sim.py --subset all
+
+  # Use a smaller/faster dm_control subset:
   python run_sim.py --subset walk_tiny
 
 Note: to validate the pipeline without hardware, use virtual_sim_test.py instead.
@@ -70,9 +76,15 @@ ap.add_argument("--checkpoint", default=None,
                 help="Trained model checkpoint (.pt). Requires --data for real inference.")
 ap.add_argument("--seconds", type=float, default=5.0,
                 help="Seconds of data to use for matching and simulation (default: 5)")
-ap.add_argument("--subset", default="all",
-                choices=["all", "locomotion_small", "walk_tiny", "run_jump_tiny"],
-                help="MoCap Act database subset (default: all = ~2589 clips)")
+ap.add_argument("--subset", default="mocapact",
+                choices=["mocapact", "all", "locomotion_small", "walk_tiny", "run_jump_tiny"],
+                help=(
+                    "Motion-matching database to use.  "
+                    "'mocapact' (default) = Microsoft MoCapAct ~2 589 snippets "
+                    "(requires MOCAPACT_MS_DIR, see mocap_evaluation/mocapact_ms.py); "
+                    "'all' = dm_control CMU HDF5 all clips (~837); "
+                    "others are smaller dm_control subsets."
+                ))
 ap.add_argument("--prefilter-k", type=int, default=100,
                 help="Number of DTW candidates after L2 pre-filter (default: 100)")
 ap.add_argument("--no-gui", action="store_true",
