@@ -1,1 +1,0 @@
-# mocap_evaluation package
