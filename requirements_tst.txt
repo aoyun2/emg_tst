@@ -4,6 +4,7 @@ scipy          # signal resampling, spatial transforms (motion matching)
 mujoco         # physics simulation (prosthetic_sim.py)
 pillow         # GIF generation (prosthetic_sim.py / save_stick_figure_gifs)
 tqdm           # progress bars
+huggingface_hub
 
 # MoCapAct adaptive-policy evaluation backend (mocapact_sim.py / mocapact_dataset.py)
 setuptools         # provides pkg_resources, required by mocapact at import time (missing in Python 3.12+)
