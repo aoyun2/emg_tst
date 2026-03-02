@@ -5,3 +5,4 @@ mocap_data/
 .venv
 .cache_mocapact*.npz
 mocapact_models/
+artifacts/

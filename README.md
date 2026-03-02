@@ -1,158 +1,99 @@
-# emg_tst + MoCapAct Evaluation Pipeline
+# emg_tst: EMG TST + MoCapAct Physical Evaluation
 
-This repository contains:
-1. A Time Series Transformer (TST) stack for EMG-to-knee-angle inference (`emg_tst/`).
-2. A newly implemented **from-scratch evaluation pipeline** that physically tests predicted knee angles in a virtual simulation while motion-matching against the **MoCapAct** snippet dataset (`mocap_evaluation/`).
+This repo has two parts:
 
-## What the new pipeline does
+1. `emg_tst/`: a Time Series Transformer (TST) for EMG/IMU -> knee angle inference.
+2. `mocap_evaluation/`: an evaluation pipeline that takes a thigh+knee angle trajectory, motion-matches it to the CMU mocap library used by MoCapAct, and then runs a MuJoCo humanoid physics rollout while overriding the thigh+knee targets.
 
-Given continuous batch data (currently from OpenSim samples, later from your real `rigtest.py` recordings):
+The goal is to evaluate a predicted knee trajectory physically (is it dynamically feasible), not just numerically.
 
-1. **Batching**: Convert long trajectories into continuous test batches.
-2. **MoCapAct retrieval**: Download and index snippet files from `microsoft/mocapact-data`.
-3. **Motion matching**:
-   - Build per-frame features: `[thigh, knee, d_thigh, d_knee]`.
-   - Run DTW-based matching against windows from each snippet.
-   - Keep top-K best matches.
-4. **Angle override simulation**:
-   - For each batch, run a MuJoCo two-link physical leg simulation.
-   - Override target thigh angle with batch thigh angle.
-   - Override knee target with model-predicted knee angle.
-5. **Outputs**:
-   - JSON summary per batch with best snippet match and knee tracking RMSE.
+## What The Pipeline Does
 
----
+`python -m mocap_evaluation.pipeline` runs this end-to-end:
 
-## New modules
+1. Gets a query trajectory:
+   - If you pass `--input path/to/query.csv`, it loads that.
+   - Otherwise it downloads an OpenSim sample zip from AddBiomechanics and converts the included `.trc` marker file to `artifacts/opensim_query.csv`.
+2. Interprets knee angles using your rig convention and converts for MoCapAct:
+   - Input `knee_angle` is treated as the included angle in degrees (`0` = fully flexed, `180` = straight).
+   - The MoCapAct knee joint coordinate is knee flexion in degrees (`0` = straight).
+   - The pipeline converts: `knee_flex = 180 - knee_angle`.
+3. Builds/loads a motion-matching index over dm_control's fitted CMU2020 clips (the mocap source used by MoCapAct), stored at `artifacts/cmu_clip_index_left.npz`.
+4. Motion-matches the query batch to a window inside the best CMU clip.
+5. Runs a MoCapAct multi-clip policy in the CMU humanoid tracking task and overrides:
+   - thigh actuator: `walker/lfemurrx`
+   - knee actuator: `walker/ltibiarx`
+6. Writes `artifacts/mocapact_eval.json` (match + physics metrics).
 
-- `mocap_evaluation/mocapact_dataset.py`
-  - Lists and downloads snippet files from HF.
-  - Validates expected snippet count (`2589`).
-  - Loads thigh/knee angle trajectories from `.h5/.hdf5/.npz`.
+The first batch opens a dm_control viewer window unless you set `MOCAP_EVAL_NO_VIEWER=1`.
 
-- `mocap_evaluation/query_data.py`
-  - Loads OpenSim CSV or rigtest `.npy` inputs.
-  - Builds continuous overlapping/non-overlapping batches.
+## Quick Start (No Trained Model Yet)
 
-- `mocap_evaluation/motion_matching.py`
-  - Feature builder + DTW matching with Sakoe-Chiba band.
+1) Extract the multi-clip policy checkpoint (small download):
 
-- `mocap_evaluation/simulation.py`
-  - MuJoCo physical leg model.
-  - Runs control loop with thigh/knee angle override.
+```bash
+tar -xvf mocapact_models/multiclip_policy.tar.gz -C mocapact_models
+```
 
-- `mocap_evaluation/pipeline.py`
-  - End-to-end CLI: load query data → motion match → simulate → report JSON.
+2) Run the evaluation (downloads OpenSim sample automatically):
 
----
+```bash
+python -m mocap_evaluation.pipeline
+```
 
-## Installation
+Headless (no viewer) in PowerShell:
+
+```bash
+$env:MOCAP_EVAL_NO_VIEWER=1; python -m mocap_evaluation.pipeline
+```
+
+## Using Your Own Data
+
+Provide a CSV with headers:
+
+- `thigh_angle` (degrees)
+- `knee_angle` (degrees, included angle: `0` = fully flexed, `180` = straight)
+- optional `time_s` (seconds). If present, the pipeline infers the sample rate from it. If absent, it assumes 200 Hz (matches `rigtest.py`).
+
+Run:
+
+```bash
+python -m mocap_evaluation.pipeline --input path/to/query.csv
+```
+
+You can also pass a `rigtest.py` `.npy` dump (assumed 200 Hz). It must contain:
+
+- `thigh_angle` (degrees)
+- `knee_pred` (degrees, included angle: `0` = fully flexed, `180` = straight)
+
+## Output
+
+The pipeline writes a JSON summary to `artifacts/mocapact_eval.json` with:
+
+- the query metadata (inferred sample rate, windowing)
+- the best motion-match (clip id, match start/end)
+- physics rollout metrics (reward, early termination, RMSE for the overridden joints)
+
+## Install Notes
+
+This pipeline depends on the MoCapAct stack:
+
+- `dm_control` (MuJoCo + CMU humanoid tracking task)
+- `mocapact` (env wrappers + policy code)
+- `pytorch_lightning` (loads the multi-clip checkpoint)
+
+Install base deps:
 
 ```bash
 pip install -r requirements_tst.txt
 ```
 
----
-
-## Step 1 — Download MoCapAct snippets manually
-
-Use `huggingface-cli` to download the full dataset snapshot to your local folder:
+Then install MoCapAct runtime deps:
 
 ```bash
-huggingface-cli download microsoft/mocapact-data \
-  --repo-type dataset \
-  --local-dir mocap_data/mocapact
+pip install mocapact dm_control stable-baselines3
 ```
 
-Then validate local count (should be **2589** snippet files):
-
-```bash
-python - <<'PY'
-from mocap_evaluation.mocapact_dataset import validate_snippet_count
-count, ok = validate_snippet_count("mocap_data/mocapact")
-print({"count": count, "ok": ok})
-raise SystemExit(0 if ok else 2)
-PY
-```
-
----
-
-## Step 2 — Prepare input trajectories
-
-### Option A: OpenSim sample CSV (current bootstrapping)
-Provide CSV with headers:
-- `thigh_angle`
-- `knee_angle`
-
-### Option B: rigtest `.npy`
-Provide dictionary keys:
-- `thigh_angle`
-- `knee_pred` (or edit key in code)
-
----
-
-## Step 3 — Run end-to-end evaluation
-
-```bash
-python -m mocap_evaluation.pipeline \
-  --mocapact-dir mocap_data/mocapact \
-  --source opensim \
-  --input data/opensim_sample.csv \
-  --batch-size 400 \
-  --stride 200 \
-  --sample-hz 200 \
-  --top-k 3 \
-  --out artifacts/mocapact_eval.json
-```
-
-Example for rigtest:
-
-```bash
-python -m mocap_evaluation.pipeline \
-  --mocapact-dir mocap_data/mocapact \
-  --source rigtest \
-  --input data/data0.npy \
-  --out artifacts/mocapact_eval_rigtest.json
-```
-
----
-
-## Output JSON schema
-
-`artifacts/mocapact_eval.json`:
-
-- `expected_snippets`: expected count (`2589`)
-- `loaded_snippets`: number parseable locally
-- `n_batches`: number of generated query batches
-- `results[]` per batch:
-  - `batch_id`
-  - `best_match.snippet_id`
-  - `best_match.score` (lower is better)
-  - `best_match.start_idx`, `best_match.end_idx`
-  - `knee_sim_rmse_deg`
-
----
-
-## Notes on dataset key variability
-
-MoCapAct/HDF5 variants may store thigh/knee under different key paths. The loader includes fallback key candidates and can be extended quickly in `load_snippet_angles()`.
-
-
-## Troubleshooting
-
-- **`RuntimeError: No snippet files found in MoCapAct HF dataset.`**
-  - Update to the latest code in this repo (the selector now accepts `.h5/.hdf5/.npz/.npy` files and no longer requires filenames to contain `snippet`).
-  - Re-run:
-
-```bash
-huggingface-cli download microsoft/mocapact-data --repo-type dataset --local-dir mocap_data/mocapact
-```
-
-  - If this still fails, verify files actually exist under `mocap_data/mocapact` and rerun `validate_snippet_count(...)`.
-
----
-
-## Existing TST training code
-
-Your model training/data tooling remains unchanged in `emg_tst/`, `split_to_samples.py`, and `uMyo_python_tools/rigtest.py`.
-
+Notes:
+- dm_control downloads the CMU2020 fitted mocap file (`cmu_2020_*.h5`) on first use.
+- The repo includes runtime compatibility shims for NumPy 2.x and SB3 2.x so the multi-clip policy can run with `mocapact==0.1`.

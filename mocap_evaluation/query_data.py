@@ -14,11 +14,39 @@ class QueryBatch:
     sample_hz: float
 
 
-def load_opensim_csv(path: str | Path, thigh_col: str = "thigh_angle", knee_col: str = "knee_angle") -> tuple[np.ndarray, np.ndarray]:
+def _infer_sample_hz_from_time(time_s: np.ndarray) -> float | None:
+    t = np.asarray(time_s, dtype=np.float64).reshape(-1)
+    if t.size < 2:
+        return None
+    dt = np.diff(t)
+    dt = dt[np.isfinite(dt) & (dt > 0)]
+    if not dt.size:
+        return None
+    return float(1.0 / float(np.median(dt)))
+
+
+def load_opensim_csv(
+    path: str | Path,
+    thigh_col: str = "thigh_angle",
+    knee_col: str = "knee_angle",
+) -> tuple[np.ndarray, np.ndarray, float]:
     data = np.genfromtxt(path, delimiter=",", names=True)
     if thigh_col not in data.dtype.names or knee_col not in data.dtype.names:
         raise KeyError(f"CSV must include columns: {thigh_col}, {knee_col}")
-    return np.asarray(data[thigh_col], dtype=np.float32), np.asarray(data[knee_col], dtype=np.float32)
+
+    sample_hz: float | None = None
+    for time_col in ("time_s", "time", "t", "Time"):
+        if time_col in data.dtype.names:
+            sample_hz = _infer_sample_hz_from_time(data[time_col])
+            if sample_hz is not None:
+                break
+
+    # If no time column is present, we assume 200Hz (matches rigtest.py).
+    return (
+        np.asarray(data[thigh_col], dtype=np.float32),
+        np.asarray(data[knee_col], dtype=np.float32),
+        float(sample_hz or 200.0),
+    )
 
 
 def load_rigtest_npy(path: str | Path, pred_key: str = "knee_pred") -> tuple[np.ndarray, np.ndarray]:
