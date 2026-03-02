@@ -30,9 +30,6 @@ Given continuous batch data (currently from OpenSim samples, later from your rea
   - Validates expected snippet count (`2589`).
   - Loads thigh/knee angle trajectories from `.h5/.hdf5/.npz`.
 
-- `mocap_evaluation/download_mocapact.py`
-  - CLI to download and verify MoCapAct snippets.
-
 - `mocap_evaluation/query_data.py`
   - Loads OpenSim CSV or rigtest `.npy` inputs.
   - Builds continuous overlapping/non-overlapping batches.
@@ -57,19 +54,26 @@ pip install -r requirements_tst.txt
 
 ---
 
-## Step 1 — Download MoCapAct snippets
+## Step 1 — Download MoCapAct snippets manually
+
+Use `huggingface-cli` to download the full dataset snapshot to your local folder:
 
 ```bash
-python -m mocap_evaluation.download_mocapact --dest mocap_data/mocapact
+huggingface-cli download microsoft/mocapact-data \
+  --repo-type dataset \
+  --local-dir mocap_data/mocapact
 ```
 
-Verify-only mode:
+Then validate local count (should be **2589** snippet files):
 
 ```bash
-python -m mocap_evaluation.download_mocapact --dest mocap_data/mocapact --verify-only
+python - <<'PY'
+from mocap_evaluation.mocapact_dataset import validate_snippet_count
+count, ok = validate_snippet_count("mocap_data/mocapact")
+print({"count": count, "ok": ok})
+raise SystemExit(0 if ok else 2)
+PY
 ```
-
-The downloader enforces the expected snippet count of **2589**.
 
 ---
 
@@ -132,6 +136,19 @@ python -m mocap_evaluation.pipeline \
 ## Notes on dataset key variability
 
 MoCapAct/HDF5 variants may store thigh/knee under different key paths. The loader includes fallback key candidates and can be extended quickly in `load_snippet_angles()`.
+
+
+## Troubleshooting
+
+- **`RuntimeError: No snippet files found in MoCapAct HF dataset.`**
+  - Update to the latest code in this repo (the selector now accepts `.h5/.hdf5/.npz/.npy` files and no longer requires filenames to contain `snippet`).
+  - Re-run:
+
+```bash
+huggingface-cli download microsoft/mocapact-data --repo-type dataset --local-dir mocap_data/mocapact
+```
+
+  - If this still fails, verify files actually exist under `mocap_data/mocapact` and rerun `validate_snippet_count(...)`.
 
 ---
 
