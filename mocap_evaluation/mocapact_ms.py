@@ -34,25 +34,52 @@ appear in ``_CMU_MOCAP_JOINTS``):
 Set env variable ``MOCAPACT_MS_DIR`` to the directory containing the
 per-clip ``CMU_*.hdf5`` files before running.
 
-Quick-start download (small dataset ≈ 46 GB, 20 rollouts per snippet)
-----------------------------------------------------------------------
-Using Hugging Face CLI (recommended)::
+Dataset variants
+----------------
++----------+------------------+------+-------------------+-------------------------------+
+| Variant  | Rollouts/snippet | Size | Tarball names     | Path after extraction         |
++==========+==================+======+===================+===============================+
+| sample   |        20        | ~1GB | sample/small.tar.gz | small/                      |
++----------+------------------+------+-------------------+-------------------------------+
+| small    |        20        |~46GB | all/small/         | all/small/ (tarballs 1-3,   |
+|          |                  |      | small_1..3.tar.gz  | extract to the same dir)    |
++----------+------------------+------+-------------------+-------------------------------+
+| large    |       200        |~450GB| all/large/         | all/large/ (tarballs 1-43)  |
+|          |                  |      | large_1..43.tar.gz |                             |
++----------+------------------+------+-------------------+-------------------------------+
+
+Quick download
+--------------
+Run ``python -m mocap_evaluation.mocapact_ms --download [--variant sample|small|large]``
+to download and extract automatically via huggingface_hub, OR follow the manual
+steps below.
+
+Sample only (smoke-test, ~1 GB)::
 
     pip install huggingface_hub
-    huggingface-cli download microsoft/mocapact-data \\
-        --repo-type dataset --local-dir ~/.mocapact
-
-Then::
-
-    export MOCAPACT_MS_DIR=~/.mocapact/all/small
-
-Or for just the sample (a few clips, useful for smoke-testing)::
-
     huggingface-cli download microsoft/mocapact-data \\
         --repo-type dataset --local-dir ~/.mocapact \\
         --include "sample/small.tar.gz"
     cd ~/.mocapact && tar xf sample/small.tar.gz
     export MOCAPACT_MS_DIR=~/.mocapact/small
+
+Full small dataset (all 2 589 snippets, ~46 GB, 3 tarballs)::
+
+    huggingface-cli download microsoft/mocapact-data \\
+        --repo-type dataset --local-dir ~/.mocapact \\
+        --include "all/small/*.tar.gz"
+    cd ~/.mocapact/all/small
+    for f in *.tar.gz; do tar xf "$f"; done
+    export MOCAPACT_MS_DIR=~/.mocapact/all/small
+
+Full large dataset (200 rollouts/snippet, ~450 GB, 43 tarballs)::
+
+    huggingface-cli download microsoft/mocapact-data \\
+        --repo-type dataset --local-dir ~/.mocapact \\
+        --include "all/large/*.tar.gz"
+    cd ~/.mocapact/all/large
+    for f in *.tar.gz; do tar xf "$f"; done
+    export MOCAPACT_MS_DIR=~/.mocapact/all/large
 """
 from __future__ import annotations
 
@@ -138,18 +165,116 @@ def download_instructions() -> str:
     """Return a human-readable download guide string."""
     return (
         "Microsoft MoCapAct HDF5 files not found.\n\n"
-        "Download the small dataset (~46 GB, 20 rollouts/snippet):\n"
+        "Variants:\n"
+        "  sample  ~1 GB   (a few clips, smoke-test only)\n"
+        "  small  ~46 GB   (all 2 589 snippets, 20 rollouts each)  ← recommended\n"
+        "  large ~450 GB   (all 2 589 snippets, 200 rollouts each)\n\n"
+        "Option A — Python helper (downloads + extracts automatically):\n"
         "  pip install huggingface_hub\n"
-        "  huggingface-cli download microsoft/mocapact-data \\\n"
-        "      --repo-type dataset --local-dir ~/.mocapact\n"
-        "  export MOCAPACT_MS_DIR=~/.mocapact/all/small\n\n"
-        "Or grab just the sample clips for smoke-testing:\n"
+        "  python -m mocap_evaluation.mocapact_ms --download            # sample\n"
+        "  python -m mocap_evaluation.mocapact_ms --download --variant small\n"
+        "  python -m mocap_evaluation.mocapact_ms --download --variant large\n\n"
+        "Option B — manual CLI:\n"
+        "  # sample only\n"
         "  huggingface-cli download microsoft/mocapact-data \\\n"
         "      --repo-type dataset --local-dir ~/.mocapact \\\n"
         "      --include 'sample/small.tar.gz'\n"
         "  cd ~/.mocapact && tar xf sample/small.tar.gz\n"
-        "  export MOCAPACT_MS_DIR=~/.mocapact/small\n"
+        "  export MOCAPACT_MS_DIR=~/.mocapact/small\n\n"
+        "  # full small (3 tarballs, all 2 589 snippets)\n"
+        "  huggingface-cli download microsoft/mocapact-data \\\n"
+        "      --repo-type dataset --local-dir ~/.mocapact \\\n"
+        "      --include 'all/small/*.tar.gz'\n"
+        "  cd ~/.mocapact/all/small\n"
+        "  for f in *.tar.gz; do tar xf \"$f\"; done\n"
+        "  export MOCAPACT_MS_DIR=~/.mocapact/all/small\n"
     )
+
+
+def download_dataset(
+    target_dir: str = "~/.mocapact",
+    variant: str = "sample",
+) -> Path:
+    """Download and extract the MoCapAct dataset via huggingface_hub.
+
+    Parameters
+    ----------
+    target_dir :
+        Local root directory for the download (default: ``~/.mocapact``).
+    variant : ``"sample"`` | ``"small"`` | ``"large"``
+        Which dataset to fetch:
+
+        * ``"sample"`` — a handful of clips (~1 GB), good for smoke-testing.
+        * ``"small"``  — all 2 589 snippets, 20 rollouts each (~46 GB).
+        * ``"large"``  — all 2 589 snippets, 200 rollouts each (~450 GB).
+
+    Returns
+    -------
+    Path
+        Directory that contains the extracted ``CMU_*.hdf5`` files.
+        Set ``MOCAPACT_MS_DIR`` to this path before running the pipeline.
+    """
+    try:
+        from huggingface_hub import hf_hub_download, snapshot_download
+    except ImportError:
+        raise RuntimeError(
+            "huggingface_hub is not installed.\n"
+            "Run:  pip install huggingface_hub"
+        )
+
+    import subprocess
+
+    root = Path(target_dir).expanduser()
+    root.mkdir(parents=True, exist_ok=True)
+
+    _PATTERNS = {
+        "sample": (["sample/small.tar.gz"], root),
+        "small":  (["all/small/*.tar.gz"],  root / "all" / "small"),
+        "large":  (["all/large/*.tar.gz"],  root / "all" / "large"),
+    }
+    if variant not in _PATTERNS:
+        raise ValueError(f"variant must be 'sample', 'small', or 'large'; got {variant!r}")
+
+    patterns, extract_dir = _PATTERNS[variant]
+
+    print(f"[mocapact_ms] Downloading variant={variant!r} to {root} …")
+    snapshot_download(
+        repo_id="microsoft/mocapact-data",
+        repo_type="dataset",
+        local_dir=str(root),
+        allow_patterns=patterns,
+    )
+
+    # Extract all tarballs that were downloaded into the target directory
+    tarballs = list(extract_dir.glob("*.tar.gz"))
+    if not tarballs and variant == "sample":
+        # sample tarball lands at root level
+        tarballs = list(root.glob("sample/small.tar.gz"))
+
+    if not tarballs:
+        raise RuntimeError(
+            f"No tarballs found after download in {extract_dir}. "
+            "Check the Hugging Face repo structure."
+        )
+
+    print(f"[mocapact_ms] Extracting {len(tarballs)} tarball(s) into {extract_dir} …")
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    for tb in tarballs:
+        print(f"  tar xf {tb.name}")
+        subprocess.run(["tar", "xf", str(tb), "-C", str(extract_dir)], check=True)
+
+    # After extraction the HDF5 files live directly in extract_dir
+    # (or in a subdirectory named after the variant for the sample)
+    h5_dir = extract_dir
+    if variant == "sample":
+        candidate = root / "small"
+        if candidate.is_dir() and any(candidate.glob("CMU_*.hdf5")):
+            h5_dir = candidate
+
+    n_h5 = len(list(h5_dir.glob("CMU_*.hdf5")))
+    print(f"[mocapact_ms] Done.  {n_h5} HDF5 clip files in {h5_dir}")
+    print(f"\n  Set:  export MOCAPACT_MS_DIR={h5_dir}\n")
+    return h5_dir
 
 
 # ── Snippet enumeration ───────────────────────────────────────────────────────
@@ -443,3 +568,53 @@ def load_database_ms(
         "fps":             np.float32(target_fps),
         "source":          np.array("mocapact_ms"),
     }
+
+
+# ── CLI entry-point: python -m mocap_evaluation.mocapact_ms ──────────────────
+
+if __name__ == "__main__":
+    import argparse
+
+    ap = argparse.ArgumentParser(
+        description=(
+            "Microsoft MoCapAct dataset utility.\n\n"
+            "Download + extract:\n"
+            "  python -m mocap_evaluation.mocapact_ms --download\n"
+            "  python -m mocap_evaluation.mocapact_ms --download --variant small\n\n"
+            "Inspect a local dataset directory:\n"
+            "  python -m mocap_evaluation.mocapact_ms --info\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument("--download", action="store_true",
+                    help="Download + extract the dataset from Hugging Face")
+    ap.add_argument("--variant", default="sample",
+                    choices=["sample", "small", "large"],
+                    help=(
+                        "Dataset variant to download: "
+                        "'sample' (~1 GB, a few clips), "
+                        "'small' (~46 GB, all 2 589 snippets, 20 rollouts), "
+                        "'large' (~450 GB, all 2 589 snippets, 200 rollouts). "
+                        "Default: sample"
+                    ))
+    ap.add_argument("--target-dir", default="~/.mocapact",
+                    help="Local root directory for the download (default: ~/.mocapact)")
+    ap.add_argument("--info", action="store_true",
+                    help="Print info about the dataset found via MOCAPACT_MS_DIR / auto-discovery")
+    args = ap.parse_args()
+
+    if args.download:
+        h5_dir = download_dataset(target_dir=args.target_dir, variant=args.variant)
+        print(f"\nAdd to your shell profile:\n  export MOCAPACT_MS_DIR={h5_dir}\n")
+    elif args.info:
+        d = get_mocapact_dir()
+        if d is None:
+            print("No MoCapAct dataset found. " + download_instructions())
+        else:
+            snippets = enumerate_snippets(d)
+            n_clips = len({s.rsplit("-", 2)[0] for s, _ in snippets})
+            print(f"Dataset directory : {d}")
+            print(f"Clip HDF5 files   : {n_clips}")
+            print(f"Snippets          : {len(snippets)}")
+    else:
+        ap.print_help()
