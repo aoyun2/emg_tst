@@ -165,16 +165,25 @@ def download_instructions() -> str:
     """Return a human-readable download guide string."""
     return (
         "Microsoft MoCapAct HDF5 files not found.\n\n"
+        "Authentication required\n"
+        "-----------------------\n"
+        "The dataset is hosted on Hugging Face and requires a free account + token:\n"
+        "  1. Create an account at https://huggingface.co/join\n"
+        "  2. Accept the dataset license at https://huggingface.co/datasets/microsoft/mocapact-data\n"
+        "  3. Create an access token at https://huggingface.co/settings/tokens\n"
+        "  4. export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx\n\n"
         "Variants:\n"
         "  sample  ~1 GB   (a few clips, smoke-test only)\n"
         "  small  ~46 GB   (all 2 589 snippets, 20 rollouts each)  ← recommended\n"
         "  large ~450 GB   (all 2 589 snippets, 200 rollouts each)\n\n"
         "Option A — Python helper (downloads + extracts automatically):\n"
         "  pip install huggingface_hub\n"
+        "  export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx\n"
         "  python -m mocap_evaluation.mocapact_ms --download            # sample\n"
         "  python -m mocap_evaluation.mocapact_ms --download --variant small\n"
         "  python -m mocap_evaluation.mocapact_ms --download --variant large\n\n"
         "Option B — manual CLI:\n"
+        "  huggingface-cli login   # enter your token once\n"
         "  # sample only\n"
         "  huggingface-cli download microsoft/mocapact-data \\\n"
         "      --repo-type dataset --local-dir ~/.mocapact \\\n"
@@ -215,7 +224,7 @@ def download_dataset(
         Set ``MOCAPACT_MS_DIR`` to this path before running the pipeline.
     """
     try:
-        from huggingface_hub import hf_hub_download, snapshot_download
+        from huggingface_hub import snapshot_download
     except ImportError:
         raise RuntimeError(
             "huggingface_hub is not installed.\n"
@@ -223,6 +232,27 @@ def download_dataset(
         )
 
     import subprocess
+
+    # ── Token check ───────────────────────────────────────────────────────────
+    token = os.environ.get("HF_TOKEN", "").strip() or None
+    if token is None:
+        # Try the huggingface_hub cached login token
+        try:
+            from huggingface_hub import HfFolder
+            token = HfFolder.get_token()
+        except Exception:
+            pass
+    if token is None:
+        raise RuntimeError(
+            "No Hugging Face token found.\n\n"
+            "The microsoft/mocapact-data dataset requires authentication:\n"
+            "  1. Create a free account at https://huggingface.co/join\n"
+            "  2. Accept the license at https://huggingface.co/datasets/microsoft/mocapact-data\n"
+            "  3. Create an access token at https://huggingface.co/settings/tokens\n"
+            "  4. Either:\n"
+            "       export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx\n"
+            "     or run once:  huggingface-cli login\n"
+        )
 
     root = Path(target_dir).expanduser()
     root.mkdir(parents=True, exist_ok=True)
@@ -243,6 +273,7 @@ def download_dataset(
         repo_type="dataset",
         local_dir=str(root),
         allow_patterns=patterns,
+        token=token,
     )
 
     # Extract all tarballs that were downloaded into the target directory
@@ -587,7 +618,12 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ap.add_argument("--download", action="store_true",
-                    help="Download + extract the dataset from Hugging Face")
+                    help=(
+                        "Download + extract the dataset from Hugging Face. "
+                        "Requires HF_TOKEN env var (or prior `huggingface-cli login`). "
+                        "Accept the license first at "
+                        "https://huggingface.co/datasets/microsoft/mocapact-data"
+                    ))
     ap.add_argument("--variant", default="sample",
                     choices=["sample", "small", "large"],
                     help=(
