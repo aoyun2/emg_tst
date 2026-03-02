@@ -66,8 +66,22 @@ _CMU_QPOS_DIM = _ROOT_DOFS + _CMU_N_JOINTS   # 63
 
 # ── Reference trajectory loading ──────────────────────────────────────────────
 
+def _is_mocapact_ms_snippet(clip_id: str) -> bool:
+    """Return True if clip_id looks like a Microsoft MoCapAct snippet.
+
+    Microsoft MoCapAct snippet IDs follow the pattern ``CMU_009_12-165-363``
+    (clip_id-start_frame-end_frame) whereas dm_control clips look like
+    ``CMU_009_12`` (no trailing -NNN-NNN).
+    """
+    parts = clip_id.rsplit("-", 2)
+    return len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit()
+
+
 def _load_full_trajectory(clip_id: str) -> Optional[Tuple[np.ndarray, float]]:
     """Load a clip's full qpos trajectory (root + all joints) from HDF5.
+
+    Dispatches to the Microsoft MoCapAct loader for snippet IDs of the form
+    ``CMU_009_12-165-363``, and to the dm_control CMU HDF5 loader otherwise.
 
     Returns (qpos_array, fps) where qpos_array has shape (T, 63),
     or None if the clip cannot be loaded.
@@ -77,10 +91,23 @@ def _load_full_trajectory(clip_id: str) -> Optional[Tuple[np.ndarray, float]]:
       [3:7]   root quaternion (w, x, y, z)  — MuJoCo convention
       [7:63]  hinge joints in mocap_joints order
 
-    If root position/quaternion are absent in the HDF5, the humanoid is
-    placed at a fixed stand-up pose (no forward locomotion, but joint
-    angles still animate correctly for heuristic evaluation).
+    For Microsoft MoCapAct snippets the root is fixed at (0, 0, 1.2) because
+    the HDF5 proprioceptive observations do not store absolute position.
+    If root position/quaternion are absent in the dm_control HDF5, the same
+    fixed stand-up pose is used.
     """
+    # ── Microsoft MoCapAct snippet ───────────────────────────────────────────
+    if _is_mocapact_ms_snippet(clip_id):
+        try:
+            from mocap_evaluation.mocapact_ms import load_snippet_qpos
+            result = load_snippet_qpos(clip_id)
+            if result is not None:
+                return result
+        except Exception as exc:
+            warnings.warn(f"[sim] MoCapAct MS loader failed for {clip_id!r}: {exc}")
+        return None
+
+    # ── dm_control CMU HDF5 (original path) ──────────────────────────────────
     h5_path = get_h5_path()
     if h5_path is None:
         return None
