@@ -528,15 +528,15 @@ def _risk_trace_from_upright_and_com_margin(
                 slope = 0.0
 
             # Support-risk components.
-            # - Margin: COM can be slightly outside during walking; only penalize once it's
-            #   clearly outside for a sustained period.
-            r_margin = _clamp01((-mmin - 0.10) / 0.25)  # 0 at -10cm, 1 at -35cm
-            # - Outside fraction (tail): ignore brief outside; penalize sustained outside.
-            r_outside = _clamp01((outside - 0.80) / 0.20)
-            # - Slope: rapidly decreasing margin is a strong predictor.
-            r_slope = _clamp01((-slope - 0.08) / 0.40)
+            # These thresholds are intentionally permissive: during dynamic gait the COM
+            # can spend meaningful time outside the instantaneous support polygon.
+            # We only assign high risk once the COM is far outside for a sustained period
+            # or the margin is rapidly decreasing.
+            r_margin = _clamp01((-mmin - 0.35) / 0.45)  # 0 at -35cm, 1 at -80cm
+            r_outside = _clamp01((outside - 0.95) / 0.05)  # only penalize near-always outside
+            r_slope = _clamp01((-slope - 0.15) / 0.45)  # 0 at -0.15 m/s, 1 at -0.60 m/s
 
-            support_r = float(_clamp01(0.75 * r_margin + 0.15 * r_slope + 0.10 * r_outside))
+            support_r = float(_clamp01(0.65 * r_margin + 0.25 * r_slope + 0.10 * r_outside))
 
         # Combine such that either signal can dominate.
         out[i] = 1.0 - (1.0 - float(tilt_r)) * (1.0 - float(support_r))
@@ -563,8 +563,9 @@ def predict_fall_risk_from_traces(
         return (1.0 if bool(fell) else float("nan")), bool(fell), risk_trace
 
     W = int(max(3, min(int(tail_n), int(risk_trace.size))))
-    # Use the tail max (more predictive than whole-window average).
-    r = float(np.nanmax(np.asarray(risk_trace[-W:], dtype=np.float64)))
+    tail = np.asarray(risk_trace[-W:], dtype=np.float64)
+    # Use a high percentile of the tail (more robust than a single-step max).
+    r = float(np.nanpercentile(tail, 90))
     if bool(fell):
         r = 1.0
     r = _clamp01(r) if math.isfinite(r) else 1.0
@@ -578,13 +579,18 @@ def detect_balance_loss_step(*, risk_trace: np.ndarray, upright: np.ndarray) -> 
     n = int(min(r.size, u.size))
     if n < 1:
         return -1
+    consec = 0
     for i in range(n):
         ri = float(r[i])
         ui = float(u[i])
-        if math.isfinite(ri) and ri >= 0.90:
-            return int(i)
         if math.isfinite(ui) and ui < 0.40:
             return int(i)
+        if math.isfinite(ri) and ri >= 0.95:
+            consec += 1
+            if consec >= 5:
+                return int(i - consec + 1)
+        else:
+            consec = 0
     return -1
 
 

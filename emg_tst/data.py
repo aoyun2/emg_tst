@@ -12,6 +12,102 @@ from torch.utils.data import Dataset
 RAW_WINDOW = 32   # rolling window size for raw features (~80ms at 400Hz)
 N_FFT_BANDS = 8   # frequency bands for spectral features
 
+# Recordings are not perfectly uniform in time (Bluetooth + serial jitter). For
+# reproducible training/evaluation (and consistent window length in seconds),
+# we resample each recording to a fixed uniform rate using its timestamps.
+TARGET_HZ = 200.0
+
+
+def _ensure_strictly_increasing(t: np.ndarray, *, eps: float = 1e-6) -> np.ndarray:
+    """Return a strictly increasing copy of timestamps (seconds)."""
+    tt = np.asarray(t, dtype=np.float64).reshape(-1).copy()
+    if tt.size < 2:
+        return tt
+    # rigtest can emit repeated timestamps when draining multiple packets at once;
+    # `np.interp` expects a strictly increasing xp array.
+    if not np.isfinite(tt[0]):
+        tt[0] = 0.0
+    for i in range(1, int(tt.size)):
+        if not np.isfinite(tt[i]):
+            tt[i] = tt[i - 1] + float(eps)
+        if tt[i] <= tt[i - 1]:
+            tt[i] = tt[i - 1] + float(eps)
+    return tt
+
+
+def _resample_linear_by_timestamps(x: np.ndarray, t_src: np.ndarray, t_dst: np.ndarray) -> np.ndarray:
+    """Linear resample for 1D or 2D arrays along axis=0."""
+    xs = np.asarray(x, dtype=np.float64)
+    ts = np.asarray(t_src, dtype=np.float64).reshape(-1)
+    td = np.asarray(t_dst, dtype=np.float64).reshape(-1)
+    if xs.ndim == 1:
+        return np.interp(td, ts, xs).astype(np.float32)
+    if xs.ndim != 2:
+        raise ValueError(f"expected 1D/2D array, got shape={xs.shape}")
+    T, F = int(xs.shape[0]), int(xs.shape[1])
+    if T != int(ts.size):
+        raise ValueError(f"timestamp length mismatch: x has T={T}, t_src has {ts.size}")
+    out = np.empty((int(td.size), F), dtype=np.float32)
+    for j in range(F):
+        out[:, j] = np.interp(td, ts, xs[:, j])
+    return out
+
+
+def _quat_fix_sign_continuity_wxyz(q: np.ndarray) -> np.ndarray:
+    q = np.asarray(q, dtype=np.float64).reshape(-1, 4)
+    n = np.linalg.norm(q, axis=1, keepdims=True)
+    bad = n.reshape(-1) < 1e-8
+    if np.any(bad):
+        q[bad] = np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        n = np.linalg.norm(q, axis=1, keepdims=True)
+    q = q / np.clip(n, 1e-8, None)
+    for i in range(1, int(q.shape[0])):
+        if float(np.dot(q[i - 1], q[i])) < 0.0:
+            q[i] *= -1.0
+    return q
+
+
+def _resample_quat_slerp_wxyz_by_timestamps(q: np.ndarray, t_src: np.ndarray, t_dst: np.ndarray) -> np.ndarray:
+    """Quaternion resample by SLERP using explicit timestamps (wxyz)."""
+    qq = _quat_fix_sign_continuity_wxyz(q)
+    ts = np.asarray(t_src, dtype=np.float64).reshape(-1)
+    td = np.asarray(t_dst, dtype=np.float64).reshape(-1)
+    if qq.shape[0] != int(ts.size):
+        raise ValueError(f"timestamp length mismatch: q has T={qq.shape[0]}, t_src has {ts.size}")
+    if qq.shape[0] < 2 or td.size < 1:
+        return qq.astype(np.float32)
+
+    idx_f = np.clip(np.searchsorted(ts, td, side="right") - 1, 0, qq.shape[0] - 2).astype(np.int64)
+    idx_n = idx_f + 1
+    t0 = ts[idx_f]
+    t1 = ts[idx_n]
+    denom = np.where((t1 - t0) > 1e-12, (t1 - t0), 1.0)
+    u = (td - t0) / denom
+
+    q0 = qq[idx_f]
+    q1 = qq[idx_n].copy()
+    dot = np.sum(q0 * q1, axis=1)
+    flip = dot < 0.0
+    if np.any(flip):
+        q1[flip] *= -1.0
+    dot = np.clip(np.abs(dot), 0.0, 1.0)
+
+    close = dot > 0.9995
+    out = np.empty((int(td.size), 4), dtype=np.float64)
+    if np.any(close):
+        qc = (1.0 - u[close, None]) * q0[close] + u[close, None] * q1[close]
+        out[close] = _quat_fix_sign_continuity_wxyz(qc)
+    if np.any(~close):
+        theta = np.arccos(dot[~close])
+        sin_theta = np.sin(theta)
+        a = np.sin((1.0 - u[~close]) * theta) / sin_theta
+        b = np.sin(u[~close] * theta) / sin_theta
+        out[~close] = a[:, None] * q0[~close] + b[:, None] * q1[~close]
+        out[~close] = _quat_fix_sign_continuity_wxyz(out[~close])
+
+    return out.astype(np.float32)
+
+
 def _extract_raw_features_for_sensor(raw: np.ndarray, T_imu: int, window: int = RAW_WINDOW) -> np.ndarray:
     """
     Compute per-IMU-timestep features from native-rate raw EMG.
@@ -96,7 +192,11 @@ def load_recording(path: str | Path) -> Tuple[np.ndarray, np.ndarray, dict]:
       - right thigh orientation from uMyo sensor 2:
           - preferred: `thigh_quat_wxyz` (wxyz quaternion, 4 dims)
           - legacy fallback: `thigh_angle` (1 dim)
-    Label: knee angle from IMU-uMyo diff.
+    Label: knee included angle (degrees): 0=bent, 180=straight.
+
+    For consistent window duration across recordings (and consistent evaluation),
+    (X, y) are resampled to a uniform TARGET_HZ using the `timestamps` recorded
+    by rigtest.py.
 
     Returns:
       X: (T, F) float32
@@ -104,7 +204,11 @@ def load_recording(path: str | Path) -> Tuple[np.ndarray, np.ndarray, dict]:
       meta: dict
     """
     d = np.load(Path(path), allow_pickle=True).item()
-    y = np.asarray(d["imu"], dtype=np.float32)
+    # Prefer explicit key; fall back to legacy 'imu'.
+    if "knee_included_deg" in d:
+        y = np.asarray(d["knee_included_deg"], dtype=np.float32)
+    else:
+        y = np.asarray(d["imu"], dtype=np.float32)
 
     s1 = np.asarray(d["emg_sensor1"], dtype=np.float32)  # (N, T)
     s2 = np.asarray(d["emg_sensor2"], dtype=np.float32)
@@ -159,12 +263,50 @@ def load_recording(path: str | Path) -> Tuple[np.ndarray, np.ndarray, dict]:
         spectr = np.concatenate([s1[:, :T].T, s2[:, :T].T, s3[:, :T].T], axis=1).astype(np.float32)
         X = np.concatenate([spectr, thigh], axis=1)
 
+    # Resample to a uniform rate for reproducible training/evaluation.
+    did_resample = False
+    t = None
+    if "timestamps" in d:
+        t = np.asarray(d["timestamps"], dtype=np.float64).reshape(-1)
+    orig_hz = float(d.get("effective_hz", 0.0))
+    if t is not None and t.size >= 2 and int(X.shape[0]) >= 2:
+        t = t[: int(X.shape[0])]
+        t = _ensure_strictly_increasing(t)
+        t = t - float(t[0])
+        dur = float(t[-1])
+        if np.isfinite(dur) and dur > 1e-6:
+            T0 = int(X.shape[0])
+            orig_hz = float((T0 - 1) / dur)
+            n_dst = int(round(dur * float(TARGET_HZ))) + 1
+            n_dst = max(2, n_dst)
+            t_dst = (np.arange(n_dst, dtype=np.float64) / float(TARGET_HZ)).astype(np.float64)
+
+            if int(X.shape[1]) < 4:
+                raise RuntimeError(f"Expected last 4 features to be thigh quaternion, got F={int(X.shape[1])}")
+            X_scalar = X[:, : int(X.shape[1]) - 4]
+            X_quat = X[:, int(X.shape[1]) - 4 :]
+            if X_scalar.size > 0:
+                Xs = _resample_linear_by_timestamps(X_scalar, t, t_dst)
+            else:
+                Xs = np.zeros((int(t_dst.size), 0), dtype=np.float32)
+            Xq = _resample_quat_slerp_wxyz_by_timestamps(X_quat, t, t_dst)
+            yr = _resample_linear_by_timestamps(y, t, t_dst)
+
+            X = np.concatenate([Xs, Xq], axis=1).astype(np.float32)
+            y = np.asarray(yr, dtype=np.float32).reshape(-1)
+            T = int(X.shape[0])
+            did_resample = True
+
+    effective_hz = float(TARGET_HZ) if bool(did_resample) else float(orig_hz)
     meta = {
         "n_channels": int(n_ch),
         "n_raw_features": int(n_raw_feat),
         "n_features": int(X.shape[1]),
         "n_samples": int(T),
-        "effective_hz": float(d.get("effective_hz", 0)),
+        "effective_hz": float(effective_hz),
+        "orig_hz": float(orig_hz),
+        "target_hz": float(TARGET_HZ),
+        "resampled": bool(did_resample),
         "thigh_mode": str(thigh_mode),
         "thigh_n_features": int(thigh.shape[1]),
         "has_thigh_quat": "thigh_quat_wxyz" in d,

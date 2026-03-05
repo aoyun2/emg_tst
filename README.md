@@ -152,7 +152,9 @@ Balance signals + heuristic risk trace:
 python split_to_samples.py
 ```
 
-This writes `samples_dataset.npy` with non-overlapping 1.0s windows at 200 Hz (window=200).
+This writes `samples_dataset.npy` with non-overlapping 1.0s windows at 200 Hz (window=200). Recordings are resampled onto an exact 200 Hz grid using rigtest timestamps to remove timing jitter (so `WINDOW=200` really means 1.0s).
+
+Note on “window size 32” in the TST pipeline: `emg_tst/data.py` uses `RAW_WINDOW=32` as a **rolling raw-EMG window** (in raw samples) to compute per-timestep EMG features. It does not change the TST sample length. The TST sample/window length is `WINDOW=200` timesteps (1.0s at 200 Hz).
 
 3. Train a TST model (optional for now):
 
@@ -161,6 +163,8 @@ python -m emg_tst.run_experiment
 ```
 
 This writes checkpoints under `checkpoints/**/reg_best.pt`.
+
+The evaluator auto-selects the latest `*_all/` training run (the "ALL FEATURES" model) and picks the fold with the lowest `metrics.json.best_rmse`.
 
 4. Run the evaluator again:
    - If a checkpoint exists, `GOOD` uses the model prediction.
@@ -178,7 +182,7 @@ Each run evaluates `EvalConfig.eval_n_windows` independent windows (no aggregati
 
 1. **Query window source**
    - Preferred: `samples_dataset.npy` produced by `split_to_samples.py`.
-   - Fallback demo: downloads a real BVH from the web (non-CMU) so motion matching is not artificially inflated.
+   - Demo-only fallback (pipeline sanity check): if `samples_dataset.npy` does not exist, the evaluator downloads a real **non-CMU** BVH from the web to exercise motion matching + simulation. Once you have rig recordings, BVHs are not downloaded and the query always comes from your recorded windows.
 
 2. **Resample**
    - Query windows are recorded at 200 Hz but MoCapAct runs at ~33.33 Hz (control timestep ~0.03s), so we resample to the simulator rate.

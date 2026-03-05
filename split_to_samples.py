@@ -68,11 +68,37 @@ def main():
     file_names = [Path(p).name for p in paths]
 
     all_X, all_y, all_y_seq, all_file_id, all_start = [], [], [], [], []
+    first_meta = None
 
     for file_id, p in enumerate(tqdm(paths, desc="Processing recordings", unit="file")):
         X, y, meta = load_recording(Path(p))
-        tqdm.write(f"{Path(p).name}: T={X.shape[0]} features={X.shape[1]} "
-                   f"({meta['n_channels']} bins/sensor) ~{meta['effective_hz']:.1f} Hz")
+        if first_meta is None:
+            first_meta = dict(meta)
+        else:
+            # Make mismatches obvious (instead of failing later in np.concatenate).
+            if int(meta.get("n_features", -1)) != int(first_meta.get("n_features", -2)):
+                raise RuntimeError(
+                    f"Feature count mismatch: {Path(p).name} has F={int(meta.get('n_features', -1))}, "
+                    f"but earlier files had F={int(first_meta.get('n_features', -1))}. "
+                    "Rebuild recordings so they all have the same feature layout."
+                )
+            if str(meta.get("thigh_mode", "")) != str(first_meta.get("thigh_mode", "")) or int(meta.get("thigh_n_features", 0)) != int(first_meta.get("thigh_n_features", 0)):
+                raise RuntimeError(
+                    f"Thigh feature mismatch: {Path(p).name} has thigh_mode={meta.get('thigh_mode')!r}, "
+                    f"thigh_n_features={int(meta.get('thigh_n_features', 0))}, but earlier files had "
+                    f"thigh_mode={first_meta.get('thigh_mode')!r}, thigh_n_features={int(first_meta.get('thigh_n_features', 0))}."
+                )
+
+        eff = float(meta.get("effective_hz", 0.0))
+        orig = float(meta.get("orig_hz", eff))
+        if bool(meta.get("resampled", False)):
+            hz_msg = f"{orig:.1f} -> {eff:.1f} Hz"
+        else:
+            hz_msg = f"~{eff:.1f} Hz"
+        tqdm.write(
+            f"{Path(p).name}: T={X.shape[0]} features={X.shape[1]} "
+            f"({meta['n_channels']} bins/sensor) {hz_msg}"
+        )
 
         Xs, ys, y_seq, starts = make_nonoverlapping_windows(X, y)
         all_X.append(Xs)
@@ -99,6 +125,9 @@ def main():
         "label_shift": np.int32(LABEL_SHIFT),
         "mode": "nonoverlap",
         "created_at": datetime.now().isoformat(timespec="seconds"),
+        # Dataset sample rate after resampling (used for TST + physics eval).
+        "sample_hz": np.float32(meta.get("effective_hz", 0.0)),
+        "orig_hz": np.float32(meta.get("orig_hz", meta.get("effective_hz", 0.0))),
         # Feature layout metadata (from first file)
         "n_channels": np.int32(meta["n_channels"]),
         "n_raw_features": np.int32(meta.get("n_raw_features", 0)),

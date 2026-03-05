@@ -445,18 +445,18 @@ def main():
     print("\n" + "="*60)
     print("ABLATION RESULTS (mean best RMSE across folds)")
     print("="*60)
-    print(f"  All features (EMG + thigh): {rmse_all:8.3f}°")
+    print(f"  All features (EMG + thigh): {rmse_all:8.3f} deg")
     print(f"  Thigh only:                 {rmse_thigh:8.3f} deg")
-    print(f"  EMG only:                   {rmse_emg:8.3f}°")
+    print(f"  EMG only:                   {rmse_emg:8.3f} deg")
     print("-"*60)
 
     emg_improvement = rmse_thigh - rmse_all
     if emg_improvement > 0.5:
-        print(f"  ✓ EMG HELPS: adding EMG reduces RMSE by {emg_improvement:.2f}°")
+        print(f"  OK: EMG helps: adding EMG reduces RMSE by {emg_improvement:.2f} deg")
     elif emg_improvement > 0:
-        print(f"  ~ EMG helps marginally: {emg_improvement:.2f}° improvement")
+        print(f"  NOTE: EMG helps marginally: {emg_improvement:.2f} deg improvement")
     else:
-        print(f"  ✗ EMG NOT HELPING: thigh-only is {-emg_improvement:.2f}° better")
+        print(f"  WARNING: EMG not helping: thigh-only is {-emg_improvement:.2f} deg better")
         print(f"    Possible causes: not enough data, poor sensor contact, or EMG too noisy")
 
     thigh_contribution = rmse_emg - rmse_all
@@ -515,13 +515,13 @@ def main():
 
         # Sort by importance
         order = np.argsort(importance)[::-1]
-        print(f"\n  Baseline seq_RMSE: {baseline:.3f}°\n")
+        print(f"\n  Baseline seq_RMSE: {baseline:.3f} deg\n")
         print(f"  {'Feature':<20s} {'dRMSE (deg)':>10s}  {'Impact':>10s}")
         print(f"  {'-'*20} {'-'*10}  {'-'*10}")
         for rank, fi in enumerate(order):
             delta = importance[fi]
             name = feat_names[fi] if fi < len(feat_names) else f"col_{fi}"
-            bar = "█" * max(1, int(delta / max(importance.max(), 1e-6) * 20))
+            bar = "#" * max(1, int(delta / max(importance.max(), 1e-6) * 20))
             print(f"  {name:<20s} {delta:>+10.3f}  {bar}")
             if rank >= 19:  # top 20
                 break

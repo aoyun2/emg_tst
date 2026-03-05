@@ -117,16 +117,61 @@ def _make_bad_knee_prediction(
 
 
 def _load_tst_model_if_available(*, device: str) -> LoadedTstModel | None:
-    """Auto-discover and load the latest `checkpoints/**/reg_best.pt` if present."""
+    """Auto-discover and load a TST checkpoint if present.
+
+    Selection policy (no CLI flags):
+    - Prefer the latest training run directory that ends with `_all` (the default
+      "ALL FEATURES" model produced by emg_tst/run_experiment.py).
+    - Within that run, pick the fold with the lowest `metrics.json.best_rmse`.
+    - If no metrics are available, fall back to the most recently modified checkpoint.
+    """
     ckpts_root = Path("checkpoints")
     if not ckpts_root.exists():
         return None
 
-    candidates = sorted(ckpts_root.glob("**/reg_best.pt"))
+    candidates = list(ckpts_root.glob("**/reg_best.pt"))
     if not candidates:
         return None
 
-    ckpt_path = candidates[-1]
+    # Group by training run dir (parent of fold dir).
+    by_run: dict[Path, list[Path]] = {}
+    for p in candidates:
+        try:
+            run_dir = p.parent.parent
+        except Exception:
+            run_dir = p.parent
+        by_run.setdefault(run_dir, []).append(p)
+
+    run_dirs = sorted(by_run.keys(), key=lambda p: p.name)
+    preferred = [d for d in run_dirs if str(d.name).endswith("_all")]
+    if preferred:
+        run_dirs = preferred
+
+    # Training run dirs are named like: tst_YYYYMMDD_HHMMSS_all
+    # Lexicographic max corresponds to the latest timestamp.
+    chosen_run = max(run_dirs, key=lambda p: p.name)
+    run_candidates = by_run.get(chosen_run, [])
+    if not run_candidates:
+        return None
+
+    import json
+
+    best_path = None
+    best_rmse = None
+    for p in run_candidates:
+        mpath = p.parent / "metrics.json"
+        if not mpath.exists():
+            continue
+        try:
+            m = json.loads(mpath.read_text(encoding="utf-8"))
+            rmse = float(m.get("best_rmse"))
+        except Exception:
+            continue
+        if best_rmse is None or rmse < best_rmse:
+            best_rmse = rmse
+            best_path = p
+
+    ckpt_path = best_path if best_path is not None else max(run_candidates, key=lambda p: p.stat().st_mtime)
     try:
         import torch
 
