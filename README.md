@@ -5,9 +5,9 @@ Real-time EMG/IMU knee-angle prediction (TST) evaluated in **MoCapAct** physics 
 The evaluation pipeline:
 
 - motion-matches each fixed-length TST window to the best MoCapAct snippet
-- runs **real MuJoCo** simulation using the matched snippet’s **expert policy**
+- runs **real MuJoCo** simulation using the matched snippet's **expert policy**
 - forces the **right knee** (prosthetic knee) to follow either:
-  - `GOOD`: the TST model’s predicted knee angle (or oracle until your model is trained)
+  - `GOOD`: the TST model's predicted knee angle (or oracle until your model is trained)
   - `BAD`: a smooth ~20 deg RMSE perturbation (demo stand-in)
 - reports motion-matching error separately from model error
 
@@ -154,7 +154,7 @@ python split_to_samples.py
 
 This writes `samples_dataset.npy` with non-overlapping 1.0s windows at 200 Hz (window=200). Recordings are resampled onto an exact 200 Hz grid using rigtest timestamps to remove timing jitter (so `WINDOW=200` really means 1.0s).
 
-Note on “window size 32” in the TST pipeline: `emg_tst/data.py` uses `RAW_WINDOW=32` as a **rolling raw-EMG window** (in raw samples) to compute per-timestep EMG features. It does not change the TST sample length. The TST sample/window length is `WINDOW=200` timesteps (1.0s at 200 Hz).
+Note on "window size 32" in the TST pipeline: `emg_tst/data.py` uses `RAW_WINDOW=32` as a **causal rolling raw-EMG window** (in raw samples) to compute per-timestep EMG features. Every IMU timestep gets a feature vector; at the start of a recording we left-pad the raw stream so the first few timesteps still have a full window. This does not change the TST sample length. The TST sample/window length is `WINDOW=200` timesteps (1.0s at 200 Hz).
 
 3. Train a TST model (optional for now):
 
@@ -205,11 +205,12 @@ Override rule (important):
 
 - The RL policy controls **all other actuators** normally.
 - In `GOOD` and `BAD`, the RL policy **cannot directly control the right knee**, because the knee actuator command is overwritten each step.
+- We also overwrite the knee actuator's internal activation state (MuJoCo filter) so the forced knee command applies on the current step (not with a 1-step lag).
 - `summary.json` includes diagnostics (`ctrl_override_diag`) to confirm the applied knee control matches the forced target.
 
 ## Why Is Motion Matching Fast?
 
-Even though we match over 2589 snippets, it’s fast because:
+Even though we match over 2589 snippets, it's fast because:
 
 - each query is only **1.0s** and is resampled to ~33 Hz (so ~34 frames)
 - coarse matching uses derivative features (`dquat` + `d knee`) and `np.convolve`-based sliding SSE in NumPy (C-accelerated)

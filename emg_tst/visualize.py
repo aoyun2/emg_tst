@@ -121,7 +121,7 @@ def _plot_channels(x: np.ndarray, layout: dict, window: int, idx: int, out_dir: 
                 col = x[:, base + c]
                 if np.abs(col).max() > 1e-6:
                     ax.plot(col, linewidth=0.7, alpha=0.85, label=f"ch{c}")
-            ax.set_title(f"Sensor {s+1} — device_spectr ({n_ch} ch)")
+            ax.set_title(f"Sensor {s+1} - device_spectr ({n_ch} ch)")
             ax.legend(ncol=min(n_ch, 8), fontsize=6, frameon=False)
             ax.grid(True, linestyle="--", alpha=0.4)
             ax.set_ylabel("z-score")
@@ -138,7 +138,7 @@ def _plot_channels(x: np.ndarray, layout: dict, window: int, idx: int, out_dir: 
             for f_i in range(5):
                 col = x[:, sensor_offset + f_i]
                 ax_td.plot(col, linewidth=0.8, alpha=0.85, label=RAW_FEAT_NAMES[f_i])
-            ax_td.set_title(f"Sensor {s+1} — Raw Time-Domain (RMS, MAV, WL, ZC, SSC)")
+            ax_td.set_title(f"Sensor {s+1} - Raw Time-Domain (RMS, MAV, WL, ZC, SSC)")
             ax_td.legend(ncol=5, fontsize=7, frameon=False)
             ax_td.grid(True, linestyle="--", alpha=0.4)
             ax_td.set_ylabel("z-score")
@@ -148,7 +148,7 @@ def _plot_channels(x: np.ndarray, layout: dict, window: int, idx: int, out_dir: 
             for f_i in range(N_FFT_BANDS):
                 col = x[:, sensor_offset + 5 + f_i]
                 ax_fft.plot(col, linewidth=0.7, alpha=0.85, label=RAW_FEAT_NAMES[5 + f_i])
-            ax_fft.set_title(f"Sensor {s+1} — Raw FFT Power ({N_FFT_BANDS} bands)")
+            ax_fft.set_title(f"Sensor {s+1} - Raw FFT Power ({N_FFT_BANDS} bands)")
             ax_fft.legend(ncol=min(N_FFT_BANDS, 8), fontsize=6, frameon=False)
             ax_fft.grid(True, linestyle="--", alpha=0.4)
             ax_fft.set_ylabel("z-score")

@@ -246,6 +246,25 @@ def record_compare_rollout(
     knee_good_qpos = _targets_qpos_rad(knee_good_query_deg, sign=override.knee_sign, offset_deg=override.knee_offset_deg)
     knee_bad_qpos = _targets_qpos_rad(knee_bad_query_deg, sign=override.knee_sign, offset_deg=override.knee_offset_deg)
 
+    # Many CMU humanoid actuators use an internal first-order filter (actuator_dyntype=filter)
+    # with tau ~ control_timestep. Overriding ctrl alone can introduce a full-step lag, which
+    # inflates the realized knee-angle RMSE even with high gains.
+    #
+    # To make the prosthetic knee track the requested target at the current step (research intent),
+    # we also overwrite the actuator activation state for the overridden actuator.
+    try:
+        knee_actadr_good = int(phys_good.model.actuator_actadr[knee_act_id])
+        knee_actnum_good = int(phys_good.model.actuator_actnum[knee_act_id])
+    except Exception:
+        knee_actadr_good = -1
+        knee_actnum_good = 0
+    try:
+        knee_actadr_bad = int(phys_bad.model.actuator_actadr[knee_act_id])
+        knee_actnum_bad = int(phys_bad.model.actuator_actnum[knee_act_id])
+    except Exception:
+        knee_actadr_bad = -1
+        knee_actnum_bad = 0
+
     # Renderers (one per panel so they can have independent cameras in interactive replay).
     rend_ref = mujoco.Renderer(phys_ref.model.ptr, int(height), int(width))
     rend_good = mujoco.Renderer(phys_good.model.ptr, int(height), int(width))
@@ -556,6 +575,23 @@ def record_compare_rollout(
         knee_ctrl_bad_applied.append(float(act_bad[knee_act_id]))
         knee_ctrl_good_target.append(float(kn_good_ctrl))
         knee_ctrl_bad_target.append(float(kn_bad_ctrl))
+
+        # Also overwrite the actuator's activation state to avoid a 1-step lag from
+        # internal filtering dynamics (common in the CMU humanoid position actuators).
+        if int(knee_actnum_good) > 0 and int(knee_actadr_good) >= 0:
+            try:
+                phys_good.data.act[int(knee_actadr_good) : int(knee_actadr_good) + int(knee_actnum_good)] = float(
+                    act_good[knee_act_id]
+                )
+            except Exception:
+                pass
+        if int(knee_actnum_bad) > 0 and int(knee_actadr_bad) >= 0:
+            try:
+                phys_bad.data.act[int(knee_actadr_bad) : int(knee_actadr_bad) + int(knee_actnum_bad)] = float(
+                    act_bad[knee_act_id]
+                )
+            except Exception:
+                pass
 
         obs_ref, done_ref = _step(env_ref, np.asarray(ar, dtype=np.float32).reshape(-1))
         obs_good, done_good = _step(env_good, act_good)

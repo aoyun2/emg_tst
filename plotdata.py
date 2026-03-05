@@ -124,7 +124,7 @@ def plot_emg_and_angle(filename: str, *, assume_hz: float = 10.0):
         ax = axes[idx + 2 + ax_offset]
         for c in active_ch:
             ax.plot(t, s[c, :], linewidth=0.6, alpha=0.85, label=f"ch{c}")
-        ax.set_title(f"{name} — device_spectr (active ch only)")
+        ax.set_title(f"{name} - device_spectr (active ch only)")
         ax.set_ylabel("Spectral")
         ax.grid(True, linestyle="--", alpha=0.5)
         ax.legend(ncol=min(len(active_ch), 8), fontsize=7, frameon=False)
@@ -138,7 +138,7 @@ def plot_emg_and_angle(filename: str, *, assume_hz: float = 10.0):
             R = len(raw)
             t_raw = np.linspace(t[0], t[-1], R)
             ax.plot(t_raw, raw, linewidth=0.3, alpha=0.8, color=f"C{idx}")
-            ax.set_title(f"{name} — Raw EMG waveform ({R} samples)")
+            ax.set_title(f"{name} - Raw EMG waveform ({R} samples)")
             ax.set_ylabel("Amplitude")
             ax.grid(True, linestyle="--", alpha=0.5)
         axes[-1].set_xlabel("Time (s)")

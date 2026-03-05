@@ -412,7 +412,14 @@ def _load_demo_query_windows(cfg: EvalConfig, *, run_dir: Path, demo_idx: int, n
         skip_start_s=float(cfg.query_window_skip_s),
         top_k=max(int(cfg.query_window_top_k), int(n_windows)),
     )
-    starts = starts[: int(max(1, int(n_windows)))]
+    n_take = int(max(1, int(n_windows)))
+    # Deterministic variety: randomly sample from the top-ranked candidates.
+    # (Demo-only; rigtest windows are sampled directly from samples_dataset.npy.)
+    starts = starts[: int(max(int(cfg.query_window_top_k), int(n_take)))]
+    if len(starts) > n_take:
+        rng = np.random.default_rng(1000 + int(demo_idx))
+        starts = rng.choice(np.asarray(starts, dtype=np.int64), size=int(n_take), replace=False).tolist()
+    starts = sorted(int(s) for s in starts[:n_take])
 
     out: list[QueryWindow] = []
     for i, s in enumerate(starts):

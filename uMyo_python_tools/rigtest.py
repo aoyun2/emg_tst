@@ -12,7 +12,7 @@ import quat_math
 import numpy as np
 from serial.tools import list_ports
 
-# ─── Serial port setup ───────────────────────────────────────────────
+# --- Serial port setup ---
 port = list(list_ports.comports())
 print("available ports:")
 for p in port:
@@ -27,7 +27,7 @@ except serial.SerialException as e:
     print(f"Error opening serial port: {e}")
     exit()
 
-# ─── IMU Bluetooth setup ─────────────────────────────────────────────
+# --- IMU Bluetooth setup ---
 imu = "00:0C:BF:07:42:47"
 imu_port = 1
 try:
@@ -60,7 +60,7 @@ except socket.error as e:
 
 print("conn: " + ser.portstr)
 
-# ─── Initial sensor discovery ─────────────────────────────────────────
+# --- Initial sensor discovery ---
 cnt = ser.in_waiting
 if cnt > 0:
     data = ser.read(cnt)
@@ -84,7 +84,7 @@ else:
 N_CHANNELS = len(umyos[0].device_spectr)
 print(f"EMG: {N_CHANNELS} device_spectr channels per sensor")
 
-# ─── Data storage ─────────────────────────────────────────────────────
+# --- Data storage ---
 DISPLAY_LEN = 1000  # ~5 seconds at 200Hz
 
 xs = deque(maxlen=DISPLAY_LEN)
@@ -109,7 +109,7 @@ a = quat_math.sQ(0, 0, 0, 0)
 data_lock = threading.Lock()
 parse_unproc_cnt = 0
 
-# ─── Sensor read functions ────────────────────────────────────────────
+# --- Sensor read functions ---
 def drain_umyo():
     """Drain serial buffer to update uMyo sensor state.
     Also accumulates raw EMG samples when new packets arrive."""
@@ -151,7 +151,7 @@ def snapshot_emg():
 def read_imu():
     """Read ALL pending IMU quaternions from Bluetooth buffer.
 
-    Returns list of (knee_angle, thigh_angle, thigh_quat_wxyz) tuples — one per valid packet.
+    Returns list of (knee_angle, thigh_angle, thigh_quat_wxyz) tuples - one per valid packet.
     At 200Hz IMU, a single recv may contain multiple packets.
     """
     results = []
@@ -193,19 +193,19 @@ def read_imu():
         return results
 
 
-# ─── Main data collection loop ────────────────────────────────────────
+# --- Main data collection loop ---
 start_time = time.time()
 
 # Reduce BT socket timeout so we don't block the loop
-sock.settimeout(0.005)  # 5ms — at 200Hz packets arrive every 5ms
+sock.settimeout(0.005)  # 5ms - at 200Hz packets arrive every 5ms
 
 def update_time():
     while True:
         with data_lock:
-            # 1) Drain serial buffer — updates uMyo sensor data in place
+            # 1) Drain serial buffer - updates uMyo sensor data in place
             drain_umyo()
 
-            # 2) Drain BT buffer — get ALL pending IMU quaternions
+            # 2) Drain BT buffer - get ALL pending IMU quaternions
             imu_readings = read_imu()
 
             # 3) Save one sample per IMU packet, each with the same EMG
@@ -221,11 +221,11 @@ def update_time():
                 xs.append(global_time)
                 xssave.append(global_time)
 
-        time.sleep(0.001)  # 1ms — well under 5ms IMU packet interval
+        time.sleep(0.001)  # 1ms - well under 5ms IMU packet interval
 
 threading.Thread(target=update_time, daemon=True).start()
 
-# ─── Plot setup ───────────────────────────────────────────────────────
+# --- Plot setup ---
 fig, ax = plt.subplots(4, 1, figsize=(10, 8))
 
 line_imu, = ax[0].plot([], [], label="Knee Angle", color="blue")
@@ -271,7 +271,7 @@ def animate(frame):
 
 ani = animation.FuncAnimation(fig, animate, interval=50, blit=False)
 
-# ─── Save on exit ─────────────────────────────────────────────────────
+# --- Save on exit ---
 def done():
     print("Saving data...")
     with data_lock:

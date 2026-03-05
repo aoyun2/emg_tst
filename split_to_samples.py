@@ -15,7 +15,7 @@ OUT_FILE = Path("samples_dataset.npy")
 #   WINDOW=200 -> 1.0s windows
 #   WINDOW=100 -> 0.5s windows
 #   WINDOW=40  -> 0.2s windows
-WINDOW = 200         # ← 1 second at 200Hz
+WINDOW = 200         # 1 second at 200Hz
 LABEL_SHIFT = 0      # samples of lookahead
 
 
@@ -114,6 +114,7 @@ def main():
     file_id_out = np.concatenate(all_file_id, axis=0)
     start_out = np.concatenate(all_start, axis=0)
 
+    assert first_meta is not None
     dataset = {
         "X": X_out,                       # (N, WINDOW, F): spectr + raw_features + thigh
         "y": y_out,                       # (N,)
@@ -126,14 +127,14 @@ def main():
         "mode": "nonoverlap",
         "created_at": datetime.now().isoformat(timespec="seconds"),
         # Dataset sample rate after resampling (used for TST + physics eval).
-        "sample_hz": np.float32(meta.get("effective_hz", 0.0)),
-        "orig_hz": np.float32(meta.get("orig_hz", meta.get("effective_hz", 0.0))),
+        "sample_hz": np.float32(first_meta.get("effective_hz", 0.0)),
+        "orig_hz": np.float32(first_meta.get("orig_hz", first_meta.get("effective_hz", 0.0))),
         # Feature layout metadata (from first file)
-        "n_channels": np.int32(meta["n_channels"]),
-        "n_raw_features": np.int32(meta.get("n_raw_features", 0)),
-        "has_raw_emg": bool(meta.get("has_raw_emg", False)),
-        "thigh_mode": str(meta.get("thigh_mode", "unknown")),
-        "thigh_n_features": np.int32(meta.get("thigh_n_features", 1)),
+        "n_channels": np.int32(first_meta["n_channels"]),
+        "n_raw_features": np.int32(first_meta.get("n_raw_features", 0)),
+        "has_raw_emg": bool(first_meta.get("has_raw_emg", False)),
+        "thigh_mode": str(first_meta.get("thigh_mode", "unknown")),
+        "thigh_n_features": np.int32(first_meta.get("thigh_n_features", 1)),
     }
 
     np.save(OUT_FILE, dataset, allow_pickle=True)

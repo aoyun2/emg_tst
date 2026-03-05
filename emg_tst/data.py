@@ -8,8 +8,9 @@ import torch
 from torch.utils.data import Dataset
 
 
-# ─── Raw EMG feature extraction ──────────────────────────────────────
-RAW_WINDOW = 32   # rolling window size for raw features (~80ms at 400Hz)
+# --- Raw EMG feature extraction ---
+# RAW_WINDOW is in *raw EMG samples* (uMyo raw stream is ~400Hz).
+RAW_WINDOW = 32   # causal rolling window (~80ms at 400Hz)
 N_FFT_BANDS = 8   # frequency bands for spectral features
 
 # Recordings are not perfectly uniform in time (Bluetooth + serial jitter). For
@@ -105,6 +106,8 @@ def _resample_quat_slerp_wxyz_by_timestamps(q: np.ndarray, t_src: np.ndarray, t_
         out[~close] = a[:, None] * q0[~close] + b[:, None] * q1[~close]
         out[~close] = _quat_fix_sign_continuity_wxyz(out[~close])
 
+    # Normalize and enforce a consistent sign trajectory across the whole output.
+    out = _quat_fix_sign_continuity_wxyz(out)
     return out.astype(np.float32)
 
 
@@ -139,12 +142,29 @@ def _extract_raw_features_for_sensor(raw: np.ndarray, T_imu: int, window: int = 
     raw_idx = np.linspace(0, R - 1, T_imu).astype(np.int64)
 
     for t in range(T_imu):
-        end = raw_idx[t] + 1
-        start = max(0, end - window)
-        seg = raw[start:end].astype(np.float64)
-        n = len(seg)
-        if n < 2:
-            continue
+        end = int(raw_idx[t]) + 1
+        start = int(end - window)
+
+        # Causal fixed-length window: pad on the left for the first few timesteps.
+        if start < 0:
+            pad_n = int(-start)
+            pad_val = float(raw[0])
+            seg = np.concatenate(
+                [
+                    np.full((pad_n,), pad_val, dtype=np.float64),
+                    raw[0:end].astype(np.float64),
+                ],
+                axis=0,
+            )
+        else:
+            seg = raw[start:end].astype(np.float64)
+
+        # Defensive: ensure we always compute on a fixed window length.
+        if int(seg.size) != int(window):
+            if int(seg.size) < 2:
+                continue
+            seg = seg[-int(window) :].astype(np.float64, copy=False)
+        n = int(seg.size)
 
         # Remove DC offset for frequency features
         seg_centered = seg - seg.mean()
@@ -187,11 +207,10 @@ def load_recording(path: str | Path) -> Tuple[np.ndarray, np.ndarray, dict]:
     Loads a recording saved by rigtest.py.
 
     Features per timestep:
-      - N device_spectr channels × 3 sensors
-      - (5 + N_FFT_BANDS) raw EMG features × 3 sensors (if raw data available)
+      - N device_spectr channels x 3 sensors (legacy)
+      - (5 + N_FFT_BANDS) raw EMG features x 3 sensors (if raw data available)
       - right thigh orientation from uMyo sensor 2:
-          - preferred: `thigh_quat_wxyz` (wxyz quaternion, 4 dims)
-          - legacy fallback: `thigh_angle` (1 dim)
+          - required: `thigh_quat_wxyz` (wxyz quaternion, 4 dims)
     Label: knee included angle (degrees): 0=bent, 180=straight.
 
     For consistent window duration across recordings (and consistent evaluation),
@@ -240,7 +259,7 @@ def load_recording(path: str | Path) -> Tuple[np.ndarray, np.ndarray, dict]:
     thigh_mode = "quat"
 
     y = y[:T]
-    # device_spectr commented out — using raw EMG features instead
+    # device_spectr is legacy; prefer raw EMG features when available.
     # spectr = np.concatenate([s1[:, :T].T, s2[:, :T].T, s3[:, :T].T], axis=1).astype(np.float32)
 
     # Raw EMG features (if available)
