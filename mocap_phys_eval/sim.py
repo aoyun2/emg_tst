@@ -20,11 +20,8 @@ FALL_UPRIGHT_THRESHOLD = 0.55
 
 @dataclass(frozen=True)
 class OverrideSpec:
-    thigh_actuator: str
     knee_actuator: str
-    thigh_sign: float
     knee_sign: float
-    thigh_offset_deg: float
     knee_offset_deg: float
 
 
@@ -393,11 +390,10 @@ def patch_env_reference_for_override(
     env: Any,
     *,
     override: OverrideSpec,
-    thigh_deg: np.ndarray,
     knee_deg: np.ndarray,
     warmup_steps: int = 0,
 ) -> Any:
-    """Patch env's reference joint trajectories for thigh+knee.
+    """Patch env's reference joint trajectory for the overridden knee.
 
     IMPORTANT (determinism + experts):
     - Per-snippet MoCapAct experts (TIME_INDEX_OBSERVABLES) do NOT condition on
@@ -411,19 +407,11 @@ def patch_env_reference_for_override(
     ref_steps = np.asarray(getattr(task, "_ref_steps", (0,)), dtype=np.int64)  # noqa: SLF001
     max_ref_step = int(np.max(ref_steps)) if ref_steps.size else 0
 
-    q_th = _to_rad(thigh_deg, sign=override.thigh_sign, offset_deg=override.thigh_offset_deg)
     q_kn = _to_rad(knee_deg, sign=override.knee_sign, offset_deg=override.knee_offset_deg)
-    n = int(min(q_th.size, q_kn.size))
+    n = int(q_kn.size)
     if n < 2:
         raise RuntimeError("Override trajectory too short.")
 
-    _patch_reference_joint_series(
-        env,
-        joint_name=_joint_name_from_actuator(override.thigh_actuator),
-        targets_rad=q_th[:n],
-        warmup_steps=int(warmup_steps),
-        max_ref_step=int(max_ref_step),
-    )
     _patch_reference_joint_series(
         env,
         joint_name=_joint_name_from_actuator(override.knee_actuator),
@@ -1097,7 +1085,7 @@ def tint_geoms_by_prefix(physics: Any, *, prefix: str, rgba: tuple[float, float,
 
 def highlight_overridden_leg(physics: Any, *, override: OverrideSpec) -> None:
     # Override is right leg in v2, but keep generic.
-    name = str(override.thigh_actuator).split("/")[-1]
+    name = str(override.knee_actuator).split("/")[-1]
     side = "left" if name.startswith("l") else "right" if name.startswith("r") else "unknown"
     if side == "left":
         names = (

@@ -462,12 +462,15 @@ def ensure_full_expert_zoo(*, experts_root: str | Path, downloads_dir: str | Pat
         f"token={'yes' if have_token else 'no'} keep_tars={'yes' if keep_tars else 'no'}"
     )
 
-    # If we already have (most of) the experts, don't force-download again.
-    # Official MoCapAct reports 2589 snippets; use a fuzzy threshold to handle
-    # potential minor version differences.
-    found = discover_expert_snippets(experts_root)
-    if len(found) >= 2500:
-        return experts_root
+    # We intentionally do NOT early-exit based on "found >= 2500" here.
+    #
+    # MoCapAct's paper reports 2589 snippets, and the Hugging Face model zoo is
+    # split across multiple tarballs. Stopping early can leave the zoo incomplete,
+    # which directly harms motion matching (smaller reference bank).
+    #
+    # Instead, we rely on per-tarball ".extracted" markers to make this function
+    # resumable and idempotent: rerunning will skip already-extracted tarballs.
+    _ = discover_expert_snippets(experts_root)
 
     for i, url in enumerate(_FULL_EXPERT_TARBALL_URLS, start=1):
         tar_path = downloads_dir / f"experts_{i}.tar.gz"
@@ -496,11 +499,4 @@ def ensure_full_expert_zoo(*, experts_root: str | Path, downloads_dir: str | Pat
                     tar_path.unlink()
                 except Exception:
                     pass
-        # Stop early if we reached the expected scale.
-        try:
-            if after >= 2500:
-                break
-        except Exception:
-            pass
-
     return experts_root

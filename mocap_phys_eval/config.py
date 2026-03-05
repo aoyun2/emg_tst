@@ -22,18 +22,24 @@ class EvalConfig:
     experts_root: Path = _MODELS_DIR / "experts"
     experts_downloads_dir: Path = _MODELS_DIR / "_downloads"
 
-    # We evaluate a "prosthetic" right leg by overriding these two DoFs.
-    thigh_actuator: str = "walker/rfemurrx"  # right hip pitch
+    # We evaluate a "prosthetic" right knee by overriding the knee DoF only.
     knee_actuator: str = "walker/rtibiarx"  # right knee flexion
 
     # TST windowing (training/eval window length).
     window_hz: float = 200.0
     window_n: int = 200  # 1.0s at 200Hz
+    # How many independent windows to evaluate per run invocation.
+    # If rigtest samples exist, we pick that many random windows from samples_dataset.npy.
+    # Otherwise, we extract that many windows from the downloaded demo BVH.
+    eval_n_windows: int = 3
+
+    # Rigtest samples dataset (produced by split_to_samples.py).
+    rig_samples_path: Path = Path("samples_dataset.npy")
 
     # Motion matching.
     match_top_k: int = 12
-    # Use quaternion-derived thigh step angles + knee derivatives for offset-invariant coarse search.
-    match_feature_mode: str = "quat_knee_d"
+    # Use thigh quaternion *relative rotation* (log) + knee derivatives for offset-invariant coarse search.
+    match_feature_mode: str = "dquat_knee_d"
 
     # Compare rollout recording.
     render_width: int = 480
@@ -43,76 +49,16 @@ class EvalConfig:
     # Note: when using per-snippet experts, warmup is determined by the chosen
     # window's offset within the matched snippet (we always start at snippet start).
 
-    # Query source (BVH downloaded from the web).
-    # This is a real mocap BVH (non-synthetic) and keeps the pipeline BVH-only.
-    # To avoid always replaying the same motion, the pipeline cycles through this list
-    # (based on how many prior runs exist under artifacts/phys_eval_v2/runs/).
+    # Query source (BVH downloaded from the web) used ONLY for demo when rigtest recordings
+    # are not available. These clips must NOT be from CMU to avoid artificially inflating
+    # motion-matching performance (bank is built from CMU2020 fitted motion).
     query_bvh_urls: tuple[str, ...] = (
-        # CMU BVH dataset mirrored on GitHub (reliable raw URLs).
-        # Source repo: https://github.com/una-dinosauria/cmu-mocap
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/001/01_01.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/001/01_02.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/001/01_03.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/001/01_04.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/001/01_05.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/001/01_06.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/001/01_07.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/001/01_08.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/001/01_09.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/001/01_10.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/001/01_11.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/001/01_12.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/001/01_13.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/001/01_14.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/002/02_01.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/002/02_02.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/002/02_03.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/002/02_04.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/002/02_05.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/002/02_06.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/002/02_07.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/002/02_08.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/002/02_09.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/002/02_10.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/003/03_01.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/003/03_02.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/003/03_03.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/003/03_04.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/005/05_01.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/005/05_02.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/005/05_03.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/005/05_04.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/005/05_05.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/005/05_06.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/005/05_07.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/005/05_08.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/005/05_09.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/005/05_10.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/005/05_11.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/005/05_12.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/005/05_13.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/005/05_14.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/005/05_15.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/005/05_16.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/005/05_17.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/005/05_18.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/005/05_19.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/005/05_20.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/006/06_01.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/006/06_02.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/006/06_03.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/006/06_04.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/006/06_05.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/006/06_06.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/006/06_07.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/006/06_08.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/006/06_09.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/006/06_10.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/006/06_11.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/006/06_12.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/006/06_13.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/006/06_14.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/006/06_15.bvh",
+        # PyMO demo BVH (not CMU). Joint names follow a CMU-like convention.
+        "https://raw.githubusercontent.com/omimo/PyMO/master/demos/data/AV_8Walk_Meredith_HVHA_Rep1.bvh",
+        # Bandai Namco Research Motion Dataset (not CMU). Joint names are Mixamo-like.
+        "https://raw.githubusercontent.com/BandaiNamcoResearchInc/Bandai-Namco-Research-Motiondataset/master/dataset/Bandai-Namco-Research-Motiondataset-1/data/dataset-1_walk-right_normal_001.bvh",
+        "https://raw.githubusercontent.com/BandaiNamcoResearchInc/Bandai-Namco-Research-Motiondataset/master/dataset/Bandai-Namco-Research-Motiondataset-1/data/dataset-1_walk-left_normal_001.bvh",
+        "https://raw.githubusercontent.com/BandaiNamcoResearchInc/Bandai-Namco-Research-Motiondataset/master/dataset/Bandai-Namco-Research-Motiondataset-1/data/dataset-1_run_normal_001.bvh",
     )
 
     # When picking the single TST window from the query BVH, we prefer windows with

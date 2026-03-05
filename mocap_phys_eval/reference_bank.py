@@ -155,6 +155,10 @@ class ExpertSnippetBank:
     # aligned to the user's IMU mounting convention (+Y distal, +Z posterior).
     thigh_quat_wxyz: np.ndarray  # (N,) object[np.ndarray]
     thigh_anat_quat_wxyz: np.ndarray  # (N,) object[np.ndarray]
+    # Same anatomical frame as thigh_anat_quat_wxyz, but expressed in *world* coordinates
+    # (thigh->world). This matches how IMUs typically report orientation (sensor->world)
+    # and is the default representation for motion matching to rigtest.py recordings.
+    thigh_anat_quat_world_wxyz: np.ndarray  # (N,) object[np.ndarray]
     knee_deg: np.ndarray  # (N,) object[np.ndarray] knee flexion joint degrees for the snippet segment
     expert_model_path: np.ndarray  # (N,) object[str] path to eval_rsi/model directory
 
@@ -175,6 +179,7 @@ class ExpertSnippetBank:
             thigh_pitch_deg=self.thigh_pitch_deg,
             thigh_quat_wxyz=self.thigh_quat_wxyz,
             thigh_anat_quat_wxyz=self.thigh_anat_quat_wxyz,
+            thigh_anat_quat_world_wxyz=self.thigh_anat_quat_world_wxyz,
             knee_deg=self.knee_deg,
             expert_model_path=self.expert_model_path,
         )
@@ -187,6 +192,8 @@ class ExpertSnippetBank:
         # Backwards-compat: old banks won't have thigh_anat_quat_wxyz. In that case,
         # fall back to the stored thigh_quat_wxyz (still root-relative).
         thigh_anat = d["thigh_anat_quat_wxyz"] if "thigh_anat_quat_wxyz" in d.files else d["thigh_quat_wxyz"]
+        # Backwards-compat: older banks won't have world-frame anatomical quats.
+        thigh_anat_world = d["thigh_anat_quat_world_wxyz"] if "thigh_anat_quat_world_wxyz" in d.files else thigh_anat
         return cls(
             snippet_id=d["snippet_id"],
             clip_id=d["clip_id"],
@@ -197,6 +204,7 @@ class ExpertSnippetBank:
             thigh_pitch_deg=d["thigh_pitch_deg"],
             thigh_quat_wxyz=d["thigh_quat_wxyz"],
             thigh_anat_quat_wxyz=thigh_anat,
+            thigh_anat_quat_world_wxyz=thigh_anat_world,
             knee_deg=d["knee_deg"],
             expert_model_path=d["expert_model_path"],
         )
@@ -258,6 +266,7 @@ def build_expert_snippet_bank(*, experts_root: str | Path, side: str = "right") 
     out_th: list[np.ndarray] = []
     out_thq: list[np.ndarray] = []
     out_thq_anat: list[np.ndarray] = []
+    out_thq_anat_world: list[np.ndarray] = []
     out_kn: list[np.ndarray] = []
     out_model: list[str] = []
 
@@ -298,8 +307,12 @@ def build_expert_snippet_bank(*, experts_root: str | Path, side: str = "right") 
                 quat_conj_wxyz(quat_normalize_wxyz(root_q)),
                 quat_normalize_wxyz(fem_q_world),
             ).astype(np.float32)
-            thq_anat_full = _thigh_anat_quat_from_body_positions(
-                root_pos=root_pos, root_q=root_q, femur_pos=fem_pos, tibia_pos=tib_pos
+            thq_anat_world_full = _thigh_anat_quat_world_from_body_positions(
+                root_pos=root_pos, femur_pos=fem_pos, tibia_pos=tib_pos
+            ).astype(np.float32)
+            thq_anat_full = quat_mul_wxyz(
+                quat_conj_wxyz(quat_normalize_wxyz(root_q)),
+                quat_normalize_wxyz(thq_anat_world_full),
             ).astype(np.float32)
 
             for sn in by_clip.get(clip_id, []):
@@ -317,6 +330,7 @@ def build_expert_snippet_bank(*, experts_root: str | Path, side: str = "right") 
                 out_th.append(np.asarray(th_full[seg], dtype=np.float32))
                 out_thq.append(np.asarray(thq_full[seg], dtype=np.float32))
                 out_thq_anat.append(np.asarray(thq_anat_full[seg], dtype=np.float32))
+                out_thq_anat_world.append(np.asarray(thq_anat_world_full[seg], dtype=np.float32))
                 out_kn.append(np.asarray(kn_full[seg], dtype=np.float32))
                 # Store model path relative to repo root if possible.
                 mp = Path(sn.model_dir)
@@ -339,6 +353,7 @@ def build_expert_snippet_bank(*, experts_root: str | Path, side: str = "right") 
         thigh_pitch_deg=np.asarray(out_th, dtype=object),
         thigh_quat_wxyz=np.asarray(out_thq, dtype=object),
         thigh_anat_quat_wxyz=np.asarray(out_thq_anat, dtype=object),
+        thigh_anat_quat_world_wxyz=np.asarray(out_thq_anat_world, dtype=object),
         knee_deg=np.asarray(out_kn, dtype=object),
         expert_model_path=np.asarray(out_model, dtype=object),
     )
@@ -377,15 +392,14 @@ def _thigh_pitch_from_body_positions(
     return pitch
 
 
-def _thigh_anat_quat_from_body_positions(
+def _thigh_anat_quat_world_from_body_positions(
     *,
     root_pos: np.ndarray,
-    root_q: np.ndarray,
     femur_pos: np.ndarray,
     tibia_pos: np.ndarray,
     eps: float = 1e-8,
 ) -> np.ndarray:
-    """Compute a *root-relative* thigh orientation quaternion from body positions.
+    """Compute an IMU-like *world-frame* thigh orientation quaternion from body positions.
 
     This defines an "IMU-like" anatomical thigh frame:
     - +Y: distal (femur -> tibia)
@@ -398,13 +412,10 @@ def _thigh_anat_quat_from_body_positions(
     root = np.asarray(root_pos, dtype=np.float64)
     fem = np.asarray(femur_pos, dtype=np.float64)
     tib = np.asarray(tibia_pos, dtype=np.float64)
-    rq = quat_normalize_wxyz(np.asarray(root_q, dtype=np.float64))
     if root.ndim != 2 or root.shape[1] != 3:
         raise ValueError(f"root_pos must be (T,3), got {root.shape}")
     if fem.shape != root.shape or tib.shape != root.shape:
         raise ValueError(f"femur/tibia pos must match root shape (T,3), got {fem.shape} and {tib.shape}")
-    if rq.shape != (root.shape[0], 4):
-        raise ValueError(f"root_q must be (T,4), got {rq.shape} for T={root.shape[0]}")
 
     # Forward in the horizontal plane from overall root displacement.
     disp = (root[-1, :2] - root[0, :2]).astype(np.float64)
@@ -450,8 +461,7 @@ def _thigh_anat_quat_from_body_positions(
 
     R = np.stack([x, y, z], axis=2)  # (T,3,3), columns are local axes in world coords
     q_th_world = rotmat_to_quat_wxyz(R)  # thigh->world (wxyz)
-    q_rel = quat_mul_wxyz(quat_conj_wxyz(rq), quat_normalize_wxyz(q_th_world))  # thigh->root
-    return q_rel.astype(np.float32)
+    return quat_normalize_wxyz(q_th_world).astype(np.float32)
 
 
 def build_cmu2020_clip_bank(*, side: str = "right", limit: int | None = None) -> ClipBank:

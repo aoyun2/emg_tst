@@ -10,6 +10,7 @@ import numpy as np
 from .sim import (
     FALL_Z_THRESHOLD_M,
     OverrideSpec,
+    _is_fall,
     _balance_metrics_step,
     _body_ids,
     _geom_ids,
@@ -22,6 +23,14 @@ from .sim import (
     predict_fall_risk_from_traces,
     tint_geoms_by_prefix,
 )
+
+# Prosthetic knee tracking gains (GOOD/BAD only).
+# The default CMU humanoid "position-controlled" actuators are intentionally compliant.
+# For evaluation, we want the overridden knee angle to be physically realized (not just
+# changing the policy action), so we increase knee servo gains for GOOD/BAD.
+_PROSTHETIC_KNEE_KP = 800.0
+_PROSTHETIC_KNEE_KD = 40.0
+_PROSTHETIC_KNEE_FORCE = 800.0
 
 
 @dataclass(frozen=True)
@@ -71,6 +80,50 @@ def _targets_qpos_rad(target_deg: np.ndarray, *, sign: float, offset_deg: float)
     return np.deg2rad(float(sign) * deg + float(offset_deg)).astype(np.float64)
 
 
+def _retune_general_position_actuator_pd(
+    physics: Any,
+    *,
+    actuator_name: str,
+    kp: float,
+    kd: float,
+    force: float,
+) -> None:
+    """Retune a CMU humanoid `<general>` actuator to behave like a PD position servo.
+
+    This keeps the existing action semantics: `ctrl` in [-1,1] maps linearly to the
+    joint range, but increases tracking strength/damping.
+    """
+    m = physics.model
+    aid = int(m.name2id(str(actuator_name), "actuator"))
+    jid = int(m.actuator_trnid[aid, 0])
+    lo, hi = np.asarray(m.jnt_range[jid], dtype=np.float64).reshape(2).tolist()
+    lo = float(lo)
+    hi = float(hi)
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        return
+
+    a = 0.5 * (hi - lo)  # q_des = a*ctrl + b
+    b = 0.5 * (hi + lo)
+    kp = float(kp)
+    kd = float(kd)
+    f = float(abs(force))
+
+    # General actuator (joint transmission, affine bias):
+    #   tau = (kp*a)*ctrl + (kp*b) + (-kp)*q + (-kd)*qvel
+    try:
+        m.actuator_gainprm[aid, 0] = float(kp * a)
+        m.actuator_biasprm[aid, 0] = float(kp * b)
+        m.actuator_biasprm[aid, 1] = float(-kp)
+        m.actuator_biasprm[aid, 2] = float(-kd)
+    except Exception:
+        return
+    try:
+        m.actuator_forcerange[aid, 0] = float(-f)
+        m.actuator_forcerange[aid, 1] = float(f)
+    except Exception:
+        pass
+
+
 def record_compare_rollout(
     *,
     out_npz_path: str | Path,
@@ -81,7 +134,6 @@ def record_compare_rollout(
     warmup_steps: int = 0,
     policy: Any,
     override: OverrideSpec,
-    thigh_query_deg: np.ndarray,
     knee_good_query_deg: np.ndarray,
     knee_bad_query_deg: np.ndarray,
     width: int,
@@ -129,7 +181,12 @@ def record_compare_rollout(
     env_start_step = int(max(0, int(eval_start_step) - int(warmup_steps)))
     warmup = int(eval_start_step - env_start_step)
 
-    min_needed_end = int(eval_start_step + int(primary_steps) + int(max_ref_step))
+    # NOTE: ClipCollection end_steps are treated as inclusive indices in the
+    # rest of this codebase (and in MoCapAct snippet naming: "<clip>-<start>-<end>").
+    #
+    # We need reference frames up to:
+    #   eval_start_step + (primary_steps - 1) + max_ref_step
+    min_needed_end = int(eval_start_step + max(0, int(primary_steps) - 1) + int(max_ref_step))
     use_end_step = None if end_step is None else int(max(int(end_step), int(min_needed_end)))
 
     env_ref = make_tracking_env(
@@ -181,17 +238,12 @@ def record_compare_rollout(
     phys_good = env_good._env.physics  # noqa: SLF001
     phys_bad = env_bad._env.physics  # noqa: SLF001
 
-    # Physical override (prosthetic hip pitch + knee):
-    # We force the hip pitch and knee flexion actuators in GOOD/BAD each step so
-    # the RL policy cannot directly control these DoFs.
-    thigh_act_id = int(phys_good.model.name2id(str(override.thigh_actuator), "actuator"))
+    # Physical override (prosthetic knee):
+    # We force the knee flexion actuator in GOOD/BAD each step so the RL policy
+    # cannot directly control the knee trajectory.
     knee_act_id = int(phys_good.model.name2id(str(override.knee_actuator), "actuator"))
-    thigh_lo, thigh_hi = _joint_range_for_actuator(phys_good, override.thigh_actuator)
     knee_lo, knee_hi = _joint_range_for_actuator(phys_good, override.knee_actuator)
-    thigh_qpos = _targets_qpos_rad(thigh_query_deg, sign=override.thigh_sign, offset_deg=override.thigh_offset_deg)
-    knee_good_qpos = _targets_qpos_rad(
-        knee_good_query_deg, sign=override.knee_sign, offset_deg=override.knee_offset_deg
-    )
+    knee_good_qpos = _targets_qpos_rad(knee_good_query_deg, sign=override.knee_sign, offset_deg=override.knee_offset_deg)
     knee_bad_qpos = _targets_qpos_rad(knee_bad_query_deg, sign=override.knee_sign, offset_deg=override.knee_offset_deg)
 
     # Renderers (one per panel so they can have independent cameras in interactive replay).
@@ -272,11 +324,8 @@ def record_compare_rollout(
     bal_bad = _bal_state()
 
     # Joint qpos addr for actual angles.
-    thigh_adr_ref = _qpos_addr_for_actuator(phys_ref, override.thigh_actuator)
     knee_adr_ref = _qpos_addr_for_actuator(phys_ref, override.knee_actuator)
-    thigh_adr_good = _qpos_addr_for_actuator(phys_good, override.thigh_actuator)
     knee_adr_good = _qpos_addr_for_actuator(phys_good, override.knee_actuator)
-    thigh_adr_bad = _qpos_addr_for_actuator(phys_bad, override.thigh_actuator)
     knee_adr_bad = _qpos_addr_for_actuator(phys_bad, override.knee_actuator)
 
     # Torch no-grad helps performance.
@@ -386,28 +435,19 @@ def record_compare_rollout(
     upright_ref: list[float] = []
     upright_good: list[float] = []
     upright_bad: list[float] = []
-    thigh_ref_actual: list[float] = []
     knee_ref_actual: list[float] = []
-    thigh_good_actual: list[float] = []
     knee_good_actual: list[float] = []
-    thigh_bad_actual: list[float] = []
     knee_bad_actual: list[float] = []
 
-    # Control override diagnostics: policy output vs applied action for the forced actuators.
-    # This is the quickest way to prove the RL policy is NOT controlling these DoFs in GOOD/BAD.
-    thigh_ctrl_ref_policy: list[float] = []
+    # Control override diagnostics: policy output vs applied action for the forced actuator.
+    # This is the quickest way to prove the RL policy is NOT controlling the prosthetic knee.
     knee_ctrl_ref_policy: list[float] = []
-    thigh_ctrl_good_policy: list[float] = []
     knee_ctrl_good_policy: list[float] = []
-    thigh_ctrl_bad_policy: list[float] = []
     knee_ctrl_bad_policy: list[float] = []
 
-    thigh_ctrl_good_applied: list[float] = []
     knee_ctrl_good_applied: list[float] = []
-    thigh_ctrl_bad_applied: list[float] = []
     knee_ctrl_bad_applied: list[float] = []
 
-    thigh_ctrl_target: list[float] = []
     knee_ctrl_good_target: list[float] = []
     knee_ctrl_bad_target: list[float] = []
 
@@ -416,6 +456,9 @@ def record_compare_rollout(
     state_bad: Any = None
 
     done_any = False
+    fell_ref_hard = False
+    fell_good_hard = False
+    fell_bad_hard = False
 
     # Warmup: start earlier so we don't reset mid-motion, then roll forward to the
     # evaluation start. We do NOT apply prosthetic forcing during warmup.
@@ -432,6 +475,26 @@ def record_compare_rollout(
             if done_any:
                 break
 
+    # Prosthetic knee: retune knee actuator gains for GOOD/BAD so the override is
+    # realized in joint space (otherwise it's often too compliant to matter).
+    #
+    # IMPORTANT: do this *after* warmup so REF/GOOD/BAD start the evaluation
+    # window from comparable physical states.
+    _retune_general_position_actuator_pd(
+        phys_good,
+        actuator_name=str(override.knee_actuator),
+        kp=float(_PROSTHETIC_KNEE_KP),
+        kd=float(_PROSTHETIC_KNEE_KD),
+        force=float(_PROSTHETIC_KNEE_FORCE),
+    )
+    _retune_general_position_actuator_pd(
+        phys_bad,
+        actuator_name=str(override.knee_actuator),
+        kp=float(_PROSTHETIC_KNEE_KP),
+        kd=float(_PROSTHETIC_KNEE_KD),
+        force=float(_PROSTHETIC_KNEE_FORCE),
+    )
+
     try:
         from tqdm import tqdm  # type: ignore
     except Exception:  # pragma: no cover
@@ -443,8 +506,8 @@ def record_compare_rollout(
 
     for t in step_it:
         # REF/GOOD/BAD each run the policy normally, but GOOD/BAD have their
-        # prosthetic hip pitch + knee flexion actuators physically forced each
-        # step so the RL controller cannot directly control those DoFs.
+        # prosthetic knee actuator physically forced each step so the RL
+        # controller cannot directly command it.
         act_ref, state_ref = _predict(obs_ref, state_ref)
         act_good_pol, state_good = _predict(obs_good, state_good)
         act_bad_pol, state_bad = _predict(obs_bad, state_bad)
@@ -464,46 +527,33 @@ def record_compare_rollout(
 
         # Record "policy outputs" (pre-override).
         try:
-            thigh_ctrl_ref_policy.append(float(ar[thigh_act_id]))
             knee_ctrl_ref_policy.append(float(ar[knee_act_id]))
         except Exception:
-            thigh_ctrl_ref_policy.append(float("nan"))
             knee_ctrl_ref_policy.append(float("nan"))
         try:
-            thigh_ctrl_good_policy.append(float(ag[thigh_act_id]))
             knee_ctrl_good_policy.append(float(ag[knee_act_id]))
         except Exception:
-            thigh_ctrl_good_policy.append(float("nan"))
             knee_ctrl_good_policy.append(float("nan"))
         try:
-            thigh_ctrl_bad_policy.append(float(ab[thigh_act_id]))
             knee_ctrl_bad_policy.append(float(ab[knee_act_id]))
         except Exception:
-            thigh_ctrl_bad_policy.append(float("nan"))
             knee_ctrl_bad_policy.append(float("nan"))
 
-        # Start from each env's policy action, then force the two overridden actuators.
+        # Start from each env's policy action, then force the overridden knee actuator.
         act_good = np.asarray(ag, dtype=np.float32).reshape(-1).copy()
         act_bad = np.asarray(ab, dtype=np.float32).reshape(-1).copy()
 
-        th_des = float(thigh_qpos[min(t, int(thigh_qpos.size) - 1)])
         kn_good_des = float(knee_good_qpos[min(t, int(knee_good_qpos.size) - 1)])
         kn_bad_des = float(knee_bad_qpos[min(t, int(knee_bad_qpos.size) - 1)])
 
-        th_ctrl = float(np.clip(_ctrl_from_qpos(th_des, lower=thigh_lo, upper=thigh_hi), -1.0, 1.0))
         kn_good_ctrl = float(np.clip(_ctrl_from_qpos(kn_good_des, lower=knee_lo, upper=knee_hi), -1.0, 1.0))
         kn_bad_ctrl = float(np.clip(_ctrl_from_qpos(kn_bad_des, lower=knee_lo, upper=knee_hi), -1.0, 1.0))
-        act_good[thigh_act_id] = th_ctrl
-        act_bad[thigh_act_id] = th_ctrl
         act_good[knee_act_id] = kn_good_ctrl
         act_bad[knee_act_id] = kn_bad_ctrl
 
         # Record applied controls (after overriding) + targets.
-        thigh_ctrl_good_applied.append(float(act_good[thigh_act_id]))
         knee_ctrl_good_applied.append(float(act_good[knee_act_id]))
-        thigh_ctrl_bad_applied.append(float(act_bad[thigh_act_id]))
         knee_ctrl_bad_applied.append(float(act_bad[knee_act_id]))
-        thigh_ctrl_target.append(float(th_ctrl))
         knee_ctrl_good_target.append(float(kn_good_ctrl))
         knee_ctrl_bad_target.append(float(kn_bad_ctrl))
 
@@ -535,12 +585,18 @@ def record_compare_rollout(
         upright_good.append(float(ug))
         upright_bad.append(float(ub))
 
+        # Hard-fall detection (separate from env termination). This avoids
+        # misclassifying "end of clip" termination as a fall.
+        try:
+            fell_ref_hard = bool(fell_ref_hard or _is_fall(float(zr), float(ur)))
+            fell_good_hard = bool(fell_good_hard or _is_fall(float(zg), float(ug)))
+            fell_bad_hard = bool(fell_bad_hard or _is_fall(float(zb), float(ub)))
+        except Exception:
+            pass
+
         # Actual overridden joints.
-        thigh_ref_actual.append(float(np.rad2deg(float(np.asarray(phys_ref.data.qpos[thigh_adr_ref]).reshape(())))))
         knee_ref_actual.append(float(np.rad2deg(float(np.asarray(phys_ref.data.qpos[knee_adr_ref]).reshape(())))))
-        thigh_good_actual.append(float(np.rad2deg(float(np.asarray(phys_good.data.qpos[thigh_adr_good]).reshape(())))))
         knee_good_actual.append(float(np.rad2deg(float(np.asarray(phys_good.data.qpos[knee_adr_good]).reshape(())))))
-        thigh_bad_actual.append(float(np.rad2deg(float(np.asarray(phys_bad.data.qpos[thigh_adr_bad]).reshape(())))))
         knee_bad_actual.append(float(np.rad2deg(float(np.asarray(phys_bad.data.qpos[knee_adr_bad]).reshape(())))))
 
         _update_balance(physics=phys_ref, root_id=root_id_ref, ground=ground_ref, l_geoms=l_geoms_ref, r_geoms=r_geoms_ref, l_bodies=l_bodies_ref, r_bodies=r_bodies_ref, state=bal_ref)
@@ -569,7 +625,7 @@ def record_compare_rollout(
         frames.append(frame)
 
         # Hard stop if someone already fell badly; keeps GIF readable.
-        if done_any:
+        if done_any or fell_ref_hard or fell_good_hard or fell_bad_hard:
             break
 
     # Predict stability ("fall risk") from balance traces.
@@ -581,9 +637,9 @@ def record_compare_rollout(
     com_margin_good = np.asarray(bal_good.get("margin_trace", [])[: len(upright_good)], dtype=np.float32)
     com_margin_bad = np.asarray(bal_bad.get("margin_trace", [])[: len(upright_bad)], dtype=np.float32)
 
-    fell_ref = bool(done_ref)
-    fell_good = bool(done_good)
-    fell_bad = bool(done_bad)
+    fell_ref = bool(fell_ref_hard)
+    fell_good = bool(fell_good_hard)
+    fell_bad = bool(fell_bad_hard)
 
     risk_ref, likely_ref, risk_trace_ref = predict_fall_risk_from_traces(
         fell=fell_ref, upright=np.asarray(upright_ref, dtype=np.float32), com_margin_m=com_margin_ref, dt=float(dt)
@@ -620,12 +676,12 @@ def record_compare_rollout(
         start_step=np.asarray(int(start_step), dtype=np.int64),
         end_step=np.asarray(int(use_end_step if use_end_step is not None else min_needed_end), dtype=np.int64),
         primary_steps=np.asarray(int(steps), dtype=np.int64),
-        override_thigh_actuator=np.asarray(str(override.thigh_actuator)),
         override_knee_actuator=np.asarray(str(override.knee_actuator)),
-        override_thigh_sign=np.asarray(float(override.thigh_sign), dtype=np.float32),
         override_knee_sign=np.asarray(float(override.knee_sign), dtype=np.float32),
-        override_thigh_offset_deg=np.asarray(float(override.thigh_offset_deg), dtype=np.float32),
         override_knee_offset_deg=np.asarray(float(override.knee_offset_deg), dtype=np.float32),
+        prosthetic_knee_kp=np.asarray(float(_PROSTHETIC_KNEE_KP), dtype=np.float32),
+        prosthetic_knee_kd=np.asarray(float(_PROSTHETIC_KNEE_KD), dtype=np.float32),
+        prosthetic_knee_force=np.asarray(float(_PROSTHETIC_KNEE_FORCE), dtype=np.float32),
         states_ref=states_ref_arr,
         states_good=states_good_arr,
         states_bad=states_bad_arr,
@@ -660,26 +716,16 @@ def record_compare_rollout(
         upright_ref=np.asarray(upright_ref, dtype=np.float32),
         upright_good=np.asarray(upright_good, dtype=np.float32),
         upright_bad=np.asarray(upright_bad, dtype=np.float32),
-        thigh_ref_actual_deg=np.asarray(thigh_ref_actual, dtype=np.float32),
         knee_ref_actual_deg=np.asarray(knee_ref_actual, dtype=np.float32),
-        thigh_good_actual_deg=np.asarray(thigh_good_actual, dtype=np.float32),
         knee_good_actual_deg=np.asarray(knee_good_actual, dtype=np.float32),
-        thigh_bad_actual_deg=np.asarray(thigh_bad_actual, dtype=np.float32),
         knee_bad_actual_deg=np.asarray(knee_bad_actual, dtype=np.float32),
-        thigh_query_deg=np.asarray(thigh_query_deg[:steps], dtype=np.float32),
         knee_good_query_deg=np.asarray(knee_good_query_deg[:steps], dtype=np.float32),
         knee_bad_query_deg=np.asarray(knee_bad_query_deg[:steps], dtype=np.float32),
-        ctrl_thigh_ref_policy=np.asarray(thigh_ctrl_ref_policy[:steps], dtype=np.float32),
         ctrl_knee_ref_policy=np.asarray(knee_ctrl_ref_policy[:steps], dtype=np.float32),
-        ctrl_thigh_good_policy=np.asarray(thigh_ctrl_good_policy[:steps], dtype=np.float32),
         ctrl_knee_good_policy=np.asarray(knee_ctrl_good_policy[:steps], dtype=np.float32),
-        ctrl_thigh_bad_policy=np.asarray(thigh_ctrl_bad_policy[:steps], dtype=np.float32),
         ctrl_knee_bad_policy=np.asarray(knee_ctrl_bad_policy[:steps], dtype=np.float32),
-        ctrl_thigh_good_applied=np.asarray(thigh_ctrl_good_applied[:steps], dtype=np.float32),
         ctrl_knee_good_applied=np.asarray(knee_ctrl_good_applied[:steps], dtype=np.float32),
-        ctrl_thigh_bad_applied=np.asarray(thigh_ctrl_bad_applied[:steps], dtype=np.float32),
         ctrl_knee_bad_applied=np.asarray(knee_ctrl_bad_applied[:steps], dtype=np.float32),
-        ctrl_thigh_target=np.asarray(thigh_ctrl_target[:steps], dtype=np.float32),
         ctrl_knee_good_target=np.asarray(knee_ctrl_good_target[:steps], dtype=np.float32),
         ctrl_knee_bad_target=np.asarray(knee_ctrl_bad_target[:steps], dtype=np.float32),
     )

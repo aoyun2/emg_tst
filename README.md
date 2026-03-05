@@ -1,69 +1,71 @@
-# emg_tst: EMG TST + MoCapAct Physical Evaluation
+# emg_tst
 
-This repo has two parts:
+Real-time EMG/IMU knee-angle prediction (TST) evaluated in **MoCapAct** physics via **per-snippet expert policies** (N=2589).
 
-1. `emg_tst/`: a Time Series Transformer (TST) for EMG/IMU to knee angle inference.
-2. `mocap_phys_eval/`: a physical evaluation pipeline that motion-matches a single TST window against MoCapAct's **per-snippet expert set** (~2589 snippets), then runs **real MuJoCo physics** using the matched snippet's **expert policy** (not the distilled multi-clip policy).
+The evaluation pipeline:
 
-The goal is to evaluate a predicted knee trajectory physically (dynamic feasibility and balance), not just numerically.
+- motion-matches each fixed-length TST window to the best MoCapAct snippet
+- runs **real MuJoCo** simulation using the matched snippet’s **expert policy**
+- forces the **right knee** (prosthetic knee) to follow either:
+  - `GOOD`: the TST model’s predicted knee angle (or oracle until your model is trained)
+  - `BAD`: a smooth ~20 deg RMSE perturbation (demo stand-in)
+- reports motion-matching error separately from model error
 
-## Quick Start (No Trained Model Yet)
+**Example output (3-panel compare: REF | GOOD | BAD)**
 
-Install deps:
+![REF vs GOOD vs BAD compare replay](docs/media/compare.gif)
+
+## Repo Structure
+
+- `emg_tst/`: Time Series Transformer (TST) that maps EMG + IMU features to a knee angle (your rig convention: included angle).
+- `mocap_phys_eval/`: physical evaluation (motion matching + MuJoCo sim + viewer + plots).
+
+## Install
 
 ```bash
 pip install -r requirements_tst.txt
 ```
 
-Run the evaluation (one default configuration, no runtime flags):
+## Pipeline Overview
 
-```bash
-python -m mocap_phys_eval
+```mermaid
+flowchart LR
+  A[rigtest.py recording<br/>(EMG + IMU quat + knee included)] --> B[split_to_samples.py<br/>(1.0s windows @ 200 Hz)]
+  B --> C[TST model<br/>(optional; reg_best.pt)]
+  B --> D[mocap_phys_eval<br/>query window]
+  C --> D
+  D --> E[Resample to MoCapAct rate<br/>(~33.33 Hz)]
+  E --> F[Motion match over 2589 expert snippets<br/>(dquat + knee derivative)]
+  F --> G[Matched snippet expert policy<br/>(SB3 PPO)]
+  G --> H1[REF sim<br/>no override]
+  G --> H2[GOOD sim<br/>right knee forced]
+  G --> H3[BAD sim<br/>right knee forced]
+  H1 --> I[Artifacts: NPZ + GIF + plots + summary.json]
+  H2 --> I
+  H3 --> I
 ```
 
-Replay the latest run anytime:
-
-```bash
-python -m mocap_phys_eval.replay
-```
-
-If you only want to download/extract the expert zoo (and build the reference bank) without running the simulation:
-
-```bash
-python -m mocap_phys_eval.prefetch
-```
-
-## Disk + Download Setup (Important)
+## Disk + Download Setup (Required)
 
 The full MoCapAct expert zoo is large:
 
-- ~134 GB compressed download (8 tarballs)
+- 8 tarballs (Hugging Face)
 - ~150+ GB extracted
-- Plan on >=200 GB free (more if your drive is slow or you keep tarballs)
+- plan on >=200 GB free
 
-### Where the experts are stored
-
-By default, models are stored under `./mocapact_models/`:
-
-- `<MODELS_DIR>/_downloads/`: tarballs + extraction markers
-- `<MODELS_DIR>/experts/`: extracted expert policies (this is the big one)
-
-To store them on another drive (recommended), set:
+Set the storage location (recommended: a large non-OneDrive drive):
 
 ```powershell
 $env:MOCAPACT_MODELS_DIR = "D:\\mocapact_models"
 ```
 
-Tip: avoid putting `<MODELS_DIR>` under OneDrive.
-
-To make it permanent:
+Permanent (new terminals only):
 
 ```powershell
 setx MOCAPACT_MODELS_DIR "D:\\mocapact_models"
-# Note: `setx` does not affect the current terminal session.
 ```
 
-If your system drive is very full, you can also move outputs (runs, plots, replays, downloaded query BVHs) off the repo:
+Optional: move artifacts off the repo:
 
 ```powershell
 $env:MOCAP_PHYS_EVAL_ARTIFACTS_DIR = "D:\\phys_eval_v2_artifacts"
@@ -71,112 +73,187 @@ $env:MOCAP_PHYS_EVAL_ARTIFACTS_DIR = "D:\\phys_eval_v2_artifacts"
 
 ### Hugging Face token (avoid anonymous throttling)
 
-If your download speed is unexpectedly low, set a Hugging Face token:
-
 ```powershell
 $env:HF_TOKEN = "hf_..."
 ```
 
-The downloader will use it automatically (it is never printed).
+This is never printed; it is only used in request headers.
 
-Alternative (stores token in the Hugging Face cache instead of an env var):
+### Resume behavior
 
-```powershell
-hf auth login
-```
+Downloads are resumable:
+
+- the builtin downloader writes `*.tar.gz.part`
+- rerunning `python -m mocap_phys_eval.prefetch` resumes from the partial file
+- extraction completion is tracked with `<MODELS_DIR>/_downloads/experts_X.extracted`
 
 ### Faster downloads (optional)
 
-Default behavior:
-
-- Uses a builtin resumable downloader (creates `*.tar.gz.part` and resumes on rerun).
-- If `aria2c` is installed and on PATH, it will be used automatically (resume + parallel).
-
-You can force a backend:
+You can select a backend:
 
 ```powershell
-$env:MOCAPACT_DOWNLOAD_BACKEND = "aria2"      # requires aria2c
-# or
-$env:MOCAPACT_DOWNLOAD_BACKEND = "hf_transfer" # fastest single-shot; not a safe resume if interrupted
-# or
-$env:MOCAPACT_DOWNLOAD_BACKEND = "urllib"     # builtin resumable
+$env:MOCAPACT_DOWNLOAD_BACKEND = "urllib"      # resumable (default if aria2c not installed)
+$env:MOCAPACT_DOWNLOAD_BACKEND = "hf_transfer" # fast; not a safe resume across interruptions
 ```
 
-If you want to keep the downloaded tarballs after extraction:
+If you want to keep tarballs after extraction:
 
 ```powershell
 $env:MOCAPACT_KEEP_TARBALLS = "1"
 ```
 
-## What The Pipeline Does (Exactly)
+## One-Time Prefetch (Recommended)
 
-`python -m mocap_phys_eval` runs end-to-end:
+Download/extract the expert zoo and build the reference bank:
 
-1. Downloads a **real BVH mocap clip** (non-synthetic) from a built-in demo list (it cycles between runs).
-2. Extracts right-leg angles from the BVH:
-   - `thigh_pitch_deg`: right thigh pitch (sagittal plane, signed)
-   - `thigh_quat_wxyz`: right thigh orientation quaternion (root-relative, `wxyz`)
-   - `knee_included_deg`: right knee included angle (`180 = straight`)
-3. Converts to MoCapAct joint convention:
-   - Your rig convention: included angle (`0 = fully bent`, `180 = straight`)
-   - MoCapAct knee joint: flexion (`0 = straight`)
-   - Conversion: `knee_flex_deg = 180 - knee_included_deg`
-4. Resamples to the TST windowing rate and takes **one** fixed-length window:
-   - `window_hz = 200 Hz`
-   - `window_n = 200 samples` (1 second)
-   - No aggregation across windows (matches the intended TST train/eval shape)
-5. Ensures the full MoCapAct **expert** model zoo is present (downloads/extracts if missing).
-6. Loads (or builds) an expert-aligned reference bank over dm_control's CMU2020 fitted motion data, indexed by **MoCapAct snippet boundaries** (so we can always map a motion match to an expert).
-7. Motion-matches the one query window against the reference bank:
-   - coarse stage uses quaternion-derived thigh step angles + knee derivatives (offset-invariant)
-   - refine stage solves constant per-joint offsets and a constant thigh-quaternion alignment, then reports:
-     - knee RMSE (deg)
-     - thigh 3D orientation RMS error (deg), using quaternion geodesic distance (not a single-angle RMSE)
-8. Runs **three** physics rollouts using the matched snippet's **expert policy**:
-   - `REF`: no override, expert tracks the original reference
-   - `GOOD`: patch the right hip pitch + right knee flexion reference to match the query window (knee is physically forced; hip is still controlled by the policy while tracking the patched reference)
-   - `BAD`: same, but knee is perturbed by a smooth deterministic error (~20 deg RMSE vs `GOOD`) to demonstrate failure modes without spiky 0<->180 artifacts
+```bash
+python -m mocap_phys_eval.prefetch
+```
 
-Override details:
+## Run The Physical Evaluation
 
-- Only two DoFs are overridden (right hip pitch and right knee flexion). The policy still controls all other joints normally.
-- The override is enforced in two ways:
-  1. Patch the reference targets the policy observes (and recompute reference kinematics).
-  2. Force the prosthetic knee actuator each step so the policy cannot directly command it. (Hip pitch is *not* forced; it is controlled by the policy and should track the patched reference.)
-- Each run writes `control_override` diagnostics into `summary.json` to confirm the knee control is being overridden (and to measure how closely the policy tracks the patched hip reference).
+Run the evaluator (no CLI flags):
+
+```bash
+python -m mocap_phys_eval
+```
+
+Replay the latest run:
+
+```bash
+python -m mocap_phys_eval.replay
+```
+
+## Sample Plots (From Demo Run)
+
+Motion match quality (aligned query vs matched expert snippet):
+
+![Motion match plot](docs/media/motion_match.png)
+
+Quaternion alignment error (geodesic angle per step):
+
+![Thigh quaternion match](docs/media/thigh_quat_match.png)
+
+Simulation knee tracking (target vs actual):
+
+![Simulation knee plot](docs/media/simulation_knee.png)
+
+Balance signals + heuristic risk trace:
+
+![Simulation balance plot](docs/media/simulation_balance.png)
+
+## Using Real rigtest.py Data (The Real Pipeline)
+
+1. Record `data*.npy` using `uMyo_python_tools/rigtest.py`.
+   - Required: each recording must include `thigh_quat_wxyz` (wxyz quaternion).
+2. Build windowed samples:
+
+```bash
+python split_to_samples.py
+```
+
+This writes `samples_dataset.npy` with non-overlapping 1.0s windows at 200 Hz (window=200).
+
+3. Train a TST model (optional for now):
+
+```bash
+python -m emg_tst.run_experiment
+```
+
+This writes checkpoints under `checkpoints/**/reg_best.pt`.
+
+4. Run the evaluator again:
+   - If a checkpoint exists, `GOOD` uses the model prediction.
+   - If no checkpoint exists, `GOOD` is an oracle (ground truth knee) and is still useful to validate motion matching + simulation.
+
+## Angle Conventions
+
+- Your rig label is the **absolute included knee angle**: `0 = fully bent`, `180 = straight`.
+- MoCapAct's knee joint is **flexion**: `0 = straight`.
+- Conversion used everywhere in `mocap_phys_eval`: `knee_flex_deg = 180 - knee_included_deg`.
+
+## What `python -m mocap_phys_eval` Does (Per Window)
+
+Each run evaluates `EvalConfig.eval_n_windows` independent windows (no aggregation; window length matches TST train/eval). Default is `3` so each run produces a small batch of results; set it to `1` in `mocap_phys_eval/config.py` if you want a single window per run.
+
+1. **Query window source**
+   - Preferred: `samples_dataset.npy` produced by `split_to_samples.py`.
+   - Fallback demo: downloads a real BVH from the web (non-CMU) so motion matching is not artificially inflated.
+
+2. **Resample**
+   - Query windows are recorded at 200 Hz but MoCapAct runs at ~33.33 Hz (control timestep ~0.03s), so we resample to the simulator rate.
+
+3. **Motion match (full expert bank)**
+   - Matches against all N=2589 expert snippets.
+   - Uses thigh orientation quaternion + knee flexion derivatives (offset-invariant coarse stage), then refines for the top candidates:
+     - constant thigh quaternion alignment (wxyz, geodesic error)
+     - constant knee sign + offset (deg)
+   - Reports motion-matching error:
+     - `rmse_knee_deg`
+     - `rms_thigh_ori_err_deg` (RMS quaternion geodesic error)
+
+4. **MuJoCo simulation (expert policy)**
+   - `REF`: matched expert policy runs normally (no overrides).
+   - `GOOD`: same policy, but the **right knee actuator** is forced each step to a target knee angle.
+   - `BAD`: same, but knee is perturbed with a smooth deterministic ~20 deg RMSE error (demo-only stand-in).
+
+Override rule (important):
+
+- The RL policy controls **all other actuators** normally.
+- In `GOOD` and `BAD`, the RL policy **cannot directly control the right knee**, because the knee actuator command is overwritten each step.
+- `summary.json` includes diagnostics (`ctrl_override_diag`) to confirm the applied knee control matches the forced target.
+
+## Why Is Motion Matching Fast?
+
+Even though we match over 2589 snippets, it’s fast because:
+
+- each query is only **1.0s** and is resampled to ~33 Hz (so ~34 frames)
+- coarse matching uses derivative features (`dquat` + `d knee`) and `np.convolve`-based sliding SSE in NumPy (C-accelerated)
+- only `top_k` candidates are refined; only the final best match loads an expert policy for simulation
+
+## Prosthetic Foot / Ankle (Not Implemented Yet)
+
+The current evaluator keeps the CMU humanoid morphology intact and only overrides the **right knee**.
+
+This is intentional: MoCapAct's expert zoo (N=2589) is trained for the original model. If you remove/lock/change the right ankle or foot geometry/joints, the expert policies are no longer "experts" for that modified body and `REF` will often fail. Doing this rigorously requires retraining experts (or distilling a new multi-clip policy) on the modified morphology.
+
+If/when you want to emulate a passive ankle/foot (no ankle actuation) without changing geometry, the right-foot actuators in the model are:
+
+- `walker/rfootrx`
+- `walker/rfootrz`
+- `walker/rtoesrx`
+
+5. **Stability heuristic**
+   - Outputs a per-step `predicted_fall_risk_trace_*` and scalar `predicted_fall_risk_*`.
+   - Uses uprightness + COM support margin (no root-height heuristics).
+   - `balance_loss_step_*` is the first timestep the heuristic considers the walker unstable.
 
 ## Visualization
 
-Each run records a `REF | GOOD | BAD` compare rollout and opens an interactive viewer with:
+Each window records a compare replay and opens an interactive viewer with 3 panels:
 
-- 3 panels in one window: `REF`, `GOOD`, `BAD`
-- a light-grey translucent "ghost" in each panel
-- the overridden ("prosthetic") right leg highlighted in magenta in `GOOD` and `BAD`
+- `REF` (grey walker, no override)
+- `GOOD` (orange walker, right leg highlighted in magenta)
+- `BAD` (blue walker, right leg highlighted in magenta)
 
-Per-panel camera controls:
+Controls:
 
-- mouse right-drag: rotate
-- mouse left-drag: pan
-- mouse wheel: zoom
-- keys `WASD` or arrow keys: translate, `Q/E` (or `PgUp/PgDn`) up/down, `Shift` = faster
-- keys `1/2/3`: select panel, `r`: reset selected camera
+- Mouse: RMB drag rotate, LMB drag pan, wheel zoom
+- Keys: WASD or arrows translate, Q/E (or PgUp/PgDn) up/down, Shift = faster
+- Keys: 1/2/3 select panel, r reset selected camera
 
 ## Outputs
 
-Outputs are written under:
+Per run:
 
 - `artifacts/phys_eval_v2/runs/<run_id>/summary.json`
-- `artifacts/phys_eval_v2/runs/<run_id>/plots/`
-- `artifacts/phys_eval_v2/runs/<run_id>/replay/compare.npz` and `compare.gif`
+- `artifacts/phys_eval_v2/runs/<run_id>/evals/<idx>_<query_id>/summary.json`
+- plots under each `evals/.../plots/`
+- replay under each `evals/.../replay/compare.npz` and `compare.gif`
 
 Convenience pointers:
 
 - `artifacts/phys_eval_v2/latest_compare.npz`
 - `artifacts/phys_eval_v2/latest_compare.gif`
 - `artifacts/phys_eval_v2/latest_motion_match.png`
-
-Plots include:
-
-- motion-match plot (query-aligned vs reference: thigh pitch + knee + thigh 3D orientation error)
-- simulation joint plots (targets vs actuals, `REF/GOOD/BAD`)
-- balance plots (stability metrics)
+- `artifacts/phys_eval_v2/latest_thigh_quat_match.png`

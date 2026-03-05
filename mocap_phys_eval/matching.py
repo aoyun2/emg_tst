@@ -25,6 +25,7 @@ class MatchCandidate:
     rmse_thigh_deg: float
     rmse_knee_deg: float
     thigh_quat_offset_wxyz: tuple[float, float, float, float]
+    thigh_quat_conjugated: bool
     thigh_sign: float
     knee_sign: float
     thigh_offset_deg: float
@@ -69,6 +70,47 @@ def _quat_step_angles_deg(q: np.ndarray) -> np.ndarray:
     w = np.clip(np.abs(dq[:, 0]), 0.0, 1.0)
     ang = 2.0 * np.arccos(w)
     return np.degrees(ang).astype(np.float64)
+
+
+def _quat_dlog_vec(q: np.ndarray, *, eps: float = 1e-12) -> np.ndarray:
+    """Quaternion relative-rotation log vectors (rad), shape (T-1, 3).
+
+    dq[t] = conj(q[t]) * q[t+1]
+
+    This is invariant to left-multiplication by a constant quaternion (unknown
+    global frame offset), which is exactly what we need for IMU-style matching.
+    """
+    q = quat_normalize_wxyz(np.asarray(q, dtype=np.float64).reshape(-1, 4))
+    if q.shape[0] < 2:
+        return np.zeros((0, 3), dtype=np.float64)
+
+    # Enforce sign continuity (q and -q are the same rotation).
+    qq = q.copy()
+    for i in range(1, int(qq.shape[0])):
+        if float(np.dot(qq[i - 1], qq[i])) < 0.0:
+            qq[i] *= -1.0
+
+    dq = quat_mul_wxyz(quat_conj_wxyz(qq[:-1]), qq[1:])  # (T-1,4)
+    # Canonicalize to dq.w >= 0 for a stable log (shortest path).
+    neg = dq[:, 0] < 0.0
+    if bool(np.any(neg)):
+        dq[neg] *= -1.0
+
+    w = np.clip(dq[:, 0], -1.0, 1.0)
+    v = dq[:, 1:4]
+    vnorm = np.linalg.norm(v, axis=1)
+    # Robust angle: 2*atan2(||v||, w). Works near w~1 better than acos.
+    ang = 2.0 * np.arctan2(vnorm, np.maximum(float(eps), w))
+
+    out = np.zeros((dq.shape[0], 3), dtype=np.float64)
+    small = vnorm < float(1e-8)
+    if bool(np.any(~small)):
+        axis = v[~small] / vnorm[~small, None]
+        out[~small] = axis * ang[~small, None]
+    if bool(np.any(small)):
+        # For tiny angles, sin(theta/2) ~ theta/2 so axis*theta ~ 2*v.
+        out[small] = 2.0 * v[small]
+    return out.astype(np.float64)
 
 
 def _coarse_match_candidates(
@@ -175,10 +217,92 @@ def _coarse_match_candidates_quat(
     return heap[:want]
 
 
+def _coarse_match_candidates_dquat(
+    *,
+    bank_thigh_quat: np.ndarray,
+    bank_knee: np.ndarray,
+    query_thigh_quat_wxyz: np.ndarray,
+    query_knee: np.ndarray,
+    top_k: int,
+    per_clip: int = 3,
+) -> list[tuple[float, int, int]]:
+    """Coarse scan using thigh quaternion relative-rotation log vectors + knee derivative.
+
+    Compared to `_coarse_match_candidates_quat`, this preserves directionality (3D) while
+    still being invariant to constant global frame offsets (IMU heading alignment).
+    """
+    try:
+        from tqdm import tqdm  # type: ignore
+    except Exception:  # pragma: no cover
+        tqdm = None  # type: ignore[assignment]
+
+    q_th = np.asarray(query_thigh_quat_wxyz, dtype=np.float64).reshape(-1, 4)
+    q_kn = np.asarray(query_knee, dtype=np.float64).reshape(-1)
+    if q_th.shape[0] < 2 or q_kn.size < 2:
+        return []
+
+    q_dv = _quat_dlog_vec(q_th)  # (L-1,3) rad
+    q_dv_neg = -q_dv
+    q_dk = np.diff(np.deg2rad(q_kn)).astype(np.float64)  # (L-1,) rad
+    Ld = int(min(q_dv.shape[0], q_dk.size))
+    if Ld < 2:
+        return []
+    q_dv = q_dv[:Ld]
+    q_dv_neg = q_dv_neg[:Ld]
+    q_dk = q_dk[:Ld]
+
+    heap: list[tuple[float, int, int]] = []
+    want = int(max(1, top_k))
+    per_clip = int(max(1, per_clip))
+
+    clip_range = range(int(bank_knee.shape[0]))
+    if tqdm is not None:
+        clip_range = tqdm(clip_range, desc="Motion match (coarse scan)", unit="clip", leave=False)
+
+    for clip_i in clip_range:
+        thq_full = np.asarray(bank_thigh_quat[int(clip_i)], dtype=np.float64).reshape(-1, 4)
+        kn_full = np.asarray(bank_knee[int(clip_i)], dtype=np.float64).reshape(-1)
+        if thq_full.shape[0] < (Ld + 1) or kn_full.size < (Ld + 1):
+            continue
+
+        dv = _quat_dlog_vec(thq_full)  # (T-1,3) rad
+        dk = np.diff(np.deg2rad(kn_full)).astype(np.float64)  # (T-1,) rad
+        Td = int(min(dv.shape[0], dk.size))
+        if Td < Ld:
+            continue
+        dv = dv[:Td]
+        dk = dk[:Td]
+
+        sse_pos = (
+            _sliding_sse_1d(dv[:, 0], q_dv[:, 0])
+            + _sliding_sse_1d(dv[:, 1], q_dv[:, 1])
+            + _sliding_sse_1d(dv[:, 2], q_dv[:, 2])
+            + _sliding_sse_1d(dk, q_dk)
+        )
+        sse_neg = (
+            _sliding_sse_1d(dv[:, 0], q_dv_neg[:, 0])
+            + _sliding_sse_1d(dv[:, 1], q_dv_neg[:, 1])
+            + _sliding_sse_1d(dv[:, 2], q_dv_neg[:, 2])
+            + _sliding_sse_1d(dk, q_dk)
+        )
+        if sse_pos.size < 1:
+            continue
+        sse = np.minimum(sse_pos, sse_neg)
+
+        k = min(per_clip, int(sse.size))
+        idxs = np.argpartition(sse, kth=(k - 1))[:k]
+        for start in idxs.tolist():
+            score = float(sse[int(start)])
+            heapq.heappush(heap, (score, int(clip_i), int(start)))
+
+    heap.sort(key=lambda t: t[0])
+    return heap[:want]
+
+
 def motion_match_one_window(
     *,
     bank,
-    query_thigh_deg: np.ndarray,
+    query_thigh_deg: np.ndarray | None,
     query_thigh_quat_wxyz: np.ndarray | None,
     query_knee_deg: np.ndarray,
     top_k: int = 12,
@@ -188,10 +312,10 @@ def motion_match_one_window(
 
     Args:
       bank: ClipBank (from reference_bank.py)
-      query_thigh_deg: (L,) query thigh segment pitch (world) in degrees
-      query_thigh_quat_wxyz: (L,4) query thigh orientation in wxyz (root-relative); used for 3D thigh error metric
+      query_thigh_deg: (L,) optional query thigh segment pitch (world) in degrees (only required for feature_mode='thigh_knee_d')
+      query_thigh_quat_wxyz: (L,4) optional query thigh orientation in wxyz; used for 3D thigh error metric
       query_knee_deg: (L,) query knee flexion in degrees
-      feature_mode: currently only supports 'thigh_knee_d' (derivative coarse search)
+      feature_mode: 'thigh_knee_d', 'quat_knee_d', or 'dquat_knee_d'
 
     Notes:
       - When query_thigh_quat_wxyz is provided and bank.thigh_quat_wxyz exists, the
@@ -199,27 +323,55 @@ def motion_match_one_window(
         not an RMSE of a single scalar thigh angle.
     """
     feature_mode = str(feature_mode).strip().lower()
-    if feature_mode not in {"thigh_knee_d", "quat_knee_d"}:
-        raise ValueError("feature_mode must be 'thigh_knee_d' or 'quat_knee_d'.")
+    if feature_mode not in {"thigh_knee_d", "quat_knee_d", "dquat_knee_d"}:
+        raise ValueError("feature_mode must be 'thigh_knee_d', 'quat_knee_d', or 'dquat_knee_d'.")
 
-    q_th = np.asarray(query_thigh_deg, dtype=np.float64).reshape(-1)
+    q_th = None
+    if query_thigh_deg is not None:
+        q_th = np.asarray(query_thigh_deg, dtype=np.float64).reshape(-1)
     q_thq = None
     if query_thigh_quat_wxyz is not None:
         q_thq = quat_normalize_wxyz(np.asarray(query_thigh_quat_wxyz, dtype=np.float64))
     q_kn = np.asarray(query_knee_deg, dtype=np.float64).reshape(-1)
-    if q_th.size < 2 or q_kn.size < 2:
+    if q_kn.size < 2:
         raise RuntimeError("Query window too short for motion matching.")
-    L = int(min(q_th.size, q_kn.size))
-    q_th = q_th[:L]
+    L = int(q_kn.size)
+    if q_th is not None:
+        L = int(min(L, q_th.size))
+        q_th = q_th[:L]
     if q_thq is not None:
+        L = int(min(L, int(q_thq.shape[0])))
         q_thq = q_thq[:L]
     q_kn = q_kn[:L]
+    if L < 2:
+        raise RuntimeError("Query window too short for motion matching.")
 
-    if feature_mode == "quat_knee_d":
+    if feature_mode == "dquat_knee_d":
+        if q_thq is None:
+            raise RuntimeError("feature_mode='dquat_knee_d' requires query_thigh_quat_wxyz.")
+        # Prefer world-frame anatomical thigh quaternions if available.
+        bank_thq = getattr(bank, "thigh_anat_quat_world_wxyz", None)
+        if bank_thq is None:
+            bank_thq = getattr(bank, "thigh_anat_quat_wxyz", None)
+        if bank_thq is None:
+            bank_thq = getattr(bank, "thigh_quat_wxyz", None)
+        if bank_thq is None:
+            raise RuntimeError("Bank does not provide thigh quaternions for dquat motion matching.")
+        coarse = _coarse_match_candidates_dquat(
+            bank_thigh_quat=bank_thq,
+            bank_knee=bank.knee_deg,
+            query_thigh_quat_wxyz=q_thq,
+            query_knee=q_kn,
+            top_k=int(top_k),
+            per_clip=3,
+        )
+    elif feature_mode == "quat_knee_d":
         if q_thq is None:
             raise RuntimeError("feature_mode='quat_knee_d' requires query_thigh_quat_wxyz.")
-        # Prefer anatomical thigh quaternions if available.
-        bank_thq = getattr(bank, "thigh_anat_quat_wxyz", None)
+        # Prefer world-frame anatomical thigh quaternions if available.
+        bank_thq = getattr(bank, "thigh_anat_quat_world_wxyz", None)
+        if bank_thq is None:
+            bank_thq = getattr(bank, "thigh_anat_quat_wxyz", None)
         if bank_thq is None:
             bank_thq = getattr(bank, "thigh_quat_wxyz", None)
         if bank_thq is None:
@@ -233,6 +385,8 @@ def motion_match_one_window(
             per_clip=3,
         )
     else:
+        if q_th is None:
+            raise RuntimeError("feature_mode='thigh_knee_d' requires query_thigh_deg.")
         coarse = _coarse_match_candidates(
             bank_thigh_pitch=bank.thigh_pitch_deg,
             bank_knee=bank.knee_deg,
@@ -252,44 +406,70 @@ def motion_match_one_window(
         ref_th = th_full[start : start + L]
         ref_kn = kn_full[start : start + L]
 
-        # Knee offset (degrees). Knee sign should not differ.
-        knee_sign = 1.0
-        knee_off = float(np.mean(ref_kn - knee_sign * q_kn))
-        q_kn_al = knee_sign * q_kn + knee_off
-        rmse_kn = float(np.sqrt(float(np.mean((q_kn_al - ref_kn) ** 2))))
+        # Knee offset (degrees). Allow sign flip for robustness (some sensors use opposite sign).
+        best_knee = None
+        for knee_sign in (+1.0, -1.0):
+            knee_off = float(np.mean(ref_kn - knee_sign * q_kn))
+            q_kn_al = knee_sign * q_kn + knee_off
+            rmse_kn = float(np.sqrt(float(np.mean((q_kn_al - ref_kn) ** 2))))
+            cand = (rmse_kn, knee_sign, knee_off)
+            if best_knee is None or cand[0] < best_knee[0]:
+                best_knee = cand
+        if best_knee is None:
+            continue
+        rmse_kn, knee_sign, knee_off = best_knee
 
         # Thigh pitch alignment is still computed for plotting/debugging, but the
         # *score* uses 3D thigh orientation error when quaternions are available.
-        best_pitch = None
-        for thigh_sign in (+1.0, -1.0):
-            thigh_off = float(np.mean(ref_th - thigh_sign * q_th))
-            q_th_al = thigh_sign * q_th + thigh_off
-            rmse_th_pitch = float(np.sqrt(float(np.mean((q_th_al - ref_th) ** 2))))
-            cand = (rmse_th_pitch, thigh_sign, thigh_off)
-            if best_pitch is None or cand[0] < best_pitch[0]:
-                best_pitch = cand
-        if best_pitch is None:
-            continue
-        _, thigh_sign, thigh_off = best_pitch
+        thigh_sign = 1.0
+        thigh_off = 0.0
+        if q_th is not None:
+            best_pitch = None
+            for ts in (+1.0, -1.0):
+                toff = float(np.mean(ref_th - ts * q_th))
+                q_th_al = ts * q_th + toff
+                rmse_th_pitch = float(np.sqrt(float(np.mean((q_th_al - ref_th) ** 2))))
+                cand = (rmse_th_pitch, ts, toff)
+                if best_pitch is None or cand[0] < best_pitch[0]:
+                    best_pitch = cand
+            if best_pitch is not None:
+                _, thigh_sign, thigh_off = best_pitch
 
         qoff = np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
         rmse_th = float("nan")
+        quat_conjugated = False
         if q_thq is not None:
             ref_bank_quat = None
-            if hasattr(bank, "thigh_anat_quat_wxyz"):
+            if hasattr(bank, "thigh_anat_quat_world_wxyz"):
+                ref_bank_quat = getattr(bank, "thigh_anat_quat_world_wxyz")
+            elif hasattr(bank, "thigh_anat_quat_wxyz"):
                 ref_bank_quat = getattr(bank, "thigh_anat_quat_wxyz")
             elif hasattr(bank, "thigh_quat_wxyz"):
                 ref_bank_quat = getattr(bank, "thigh_quat_wxyz")
+            ref_thq_full = np.zeros((0, 4), dtype=np.float64)
             if ref_bank_quat is not None:
                 ref_thq_full = np.asarray(ref_bank_quat[int(clip_i)], dtype=np.float64)
             if ref_thq_full.ndim == 2 and ref_thq_full.shape[1] == 4 and (start + L) <= int(ref_thq_full.shape[0]):
                 ref_thq = quat_normalize_wxyz(ref_thq_full[start : start + L])
-                qoff, q_thq_al = quat_align_constant_offset_wxyz(ref_thq, q_thq)
-                err_deg = quat_geodesic_deg_wxyz(ref_thq, q_thq_al)
-                rmse_th = float(np.sqrt(float(np.mean(err_deg**2))))
+
+                # Query quats can be either "segment->world" or "world->segment".
+                # Try both and take the smaller RMS geodesic error.
+                best_q = None
+                for conj_query in (False, True):
+                    qq = quat_conj_wxyz(q_thq) if conj_query else q_thq
+                    qoff_i, q_thq_al = quat_align_constant_offset_wxyz(ref_thq, qq)
+                    err_deg = quat_geodesic_deg_wxyz(ref_thq, q_thq_al)
+                    rmse_i = float(np.sqrt(float(np.mean(err_deg**2))))
+                    cand = (rmse_i, conj_query, qoff_i)
+                    if best_q is None or cand[0] < best_q[0]:
+                        best_q = cand
+                if best_q is not None:
+                    rmse_th, quat_conjugated, qoff = best_q
 
         # Fallback: if quaternion path unavailable, use pitch RMSE.
         if not np.isfinite(rmse_th):
+            if q_th is None:
+                continue
             q_th_al = float(thigh_sign) * q_th + float(thigh_off)
             rmse_th = float(np.sqrt(float(np.mean((q_th_al - ref_th) ** 2))))
 
@@ -314,6 +494,7 @@ def motion_match_one_window(
                 rmse_thigh_deg=float(rmse_th),
                 rmse_knee_deg=float(rmse_kn),
                 thigh_quat_offset_wxyz=(float(qoff[0]), float(qoff[1]), float(qoff[2]), float(qoff[3])),
+                thigh_quat_conjugated=bool(quat_conjugated),
                 thigh_sign=float(thigh_sign),
                 knee_sign=float(knee_sign),
                 thigh_offset_deg=float(thigh_off),

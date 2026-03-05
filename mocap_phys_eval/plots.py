@@ -18,48 +18,108 @@ def plot_motion_match(
     *,
     out_path: str | Path,
     sample_hz: float,
-    ref_thigh_deg: np.ndarray,
+    ref_thigh_deg: np.ndarray | None,
     ref_knee_deg: np.ndarray,
-    query_thigh_aligned_deg: np.ndarray,
+    query_thigh_aligned_deg: np.ndarray | None,
     query_knee_aligned_deg: np.ndarray,
     rmse_thigh_deg: float,
     rmse_knee_deg: float,
     thigh_ori_err_deg: np.ndarray | None = None,
     title: str,
 ) -> Path:
-    t = np.arange(int(min(len(ref_thigh_deg), len(query_thigh_aligned_deg))), dtype=np.float32) / float(sample_hz)
-    nrows = 3 if thigh_ori_err_deg is not None else 2
-    fig, axes = plt.subplots(nrows, 1, figsize=(10.5, 7.2 if nrows == 3 else 6.0), sharex=True)
-    if nrows == 2:
-        axes = [axes[0], axes[1]]  # type: ignore[assignment]
+    has_thigh = ref_thigh_deg is not None and query_thigh_aligned_deg is not None
+    if has_thigh:
+        n_base = int(min(len(ref_thigh_deg), len(query_thigh_aligned_deg), len(ref_knee_deg), len(query_knee_aligned_deg)))  # type: ignore[arg-type]
+    else:
+        n_base = int(min(len(ref_knee_deg), len(query_knee_aligned_deg)))
+    t = np.arange(int(n_base), dtype=np.float32) / float(sample_hz)
 
-    axes[0].plot(t, ref_thigh_deg[: t.size], color="0.2", lw=1.8, label="ref (CMU)")
-    axes[0].plot(t, query_thigh_aligned_deg[: t.size], color="#d55e00", lw=1.6, label="query aligned")
-    axes[0].set_ylabel("Thigh segment pitch (deg)")
-    axes[0].grid(True, alpha=0.25)
-    axes[0].legend(loc="upper right")
+    # Layout:
+    # - Thigh pitch subplot only if provided (BVH demo)
+    # - Knee subplot always
+    # - Thigh orientation error subplot if provided
+    nrows = 1  # knee
+    if has_thigh:
+        nrows += 1
+    if thigh_ori_err_deg is not None:
+        nrows += 1
 
-    axes[1].plot(t, ref_knee_deg[: t.size], color="0.2", lw=1.8, label="ref (CMU)")
-    axes[1].plot(t, query_knee_aligned_deg[: t.size], color="#d55e00", lw=1.6, label="query aligned")
-    axes[1].set_ylabel("Knee flexion (deg)")
-    axes[1].grid(True, alpha=0.25)
-    axes[1].legend(loc="upper right")
+    fig, axes = plt.subplots(nrows, 1, figsize=(10.5, 3.0 + 2.3 * nrows), sharex=True)
+    if nrows == 1:
+        axes = [axes]  # type: ignore[assignment]
+
+    ax_i = 0
+    if has_thigh:
+        axes[ax_i].plot(t, np.asarray(ref_thigh_deg, dtype=np.float64)[: t.size], color="0.2", lw=1.8, label="ref (CMU)")  # type: ignore[arg-type]
+        axes[ax_i].plot(t, np.asarray(query_thigh_aligned_deg, dtype=np.float64)[: t.size], color="#d55e00", lw=1.6, label="query aligned")  # type: ignore[arg-type]
+        axes[ax_i].set_ylabel("Thigh pitch (deg)")
+        axes[ax_i].grid(True, alpha=0.25)
+        axes[ax_i].legend(loc="upper right")
+        ax_i += 1
+
+    axes[ax_i].plot(t, ref_knee_deg[: t.size], color="0.2", lw=1.8, label="ref (CMU)")
+    axes[ax_i].plot(t, query_knee_aligned_deg[: t.size], color="#d55e00", lw=1.6, label="query aligned")
+    axes[ax_i].set_ylabel("Knee flexion (deg)")
+    axes[ax_i].grid(True, alpha=0.25)
+    axes[ax_i].legend(loc="upper right")
+    ax_i += 1
 
     if thigh_ori_err_deg is not None:
         e = np.asarray(thigh_ori_err_deg, dtype=np.float64).reshape(-1)
         n = int(min(int(t.size), int(e.size)))
-        axes[2].plot(t[:n], e[:n], color="#0072b2", lw=1.6, label="thigh ori err (deg)")
-        axes[2].axhline(float(np.sqrt(float(np.mean(e[:n] ** 2)))) if n > 0 else 0.0, color="0.6", lw=1.0, ls="--")
-        axes[2].set_ylabel("Thigh ori err (deg)")
-        axes[2].set_xlabel("Time (s)")
-        axes[2].grid(True, alpha=0.25)
-        axes[2].legend(loc="upper right")
+        axes[ax_i].plot(t[:n], e[:n], color="#0072b2", lw=1.6, label="thigh ori err (deg)")
+        axes[ax_i].axhline(
+            float(np.sqrt(float(np.mean(e[:n] ** 2)))) if n > 0 else 0.0, color="0.6", lw=1.0, ls="--"
+        )
+        axes[ax_i].set_ylabel("Thigh ori err (deg)")
+        axes[ax_i].set_xlabel("Time (s)")
+        axes[ax_i].grid(True, alpha=0.25)
+        axes[ax_i].legend(loc="upper right")
     else:
-        axes[1].set_xlabel("Time (s)")
+        axes[ax_i - 1].set_xlabel("Time (s)")
 
-    fig.suptitle(
-        f"{title}\nRMS thigh orientation err={rmse_thigh_deg:.2f} deg, RMSE knee flexion={rmse_knee_deg:.2f} deg"
+    fig.suptitle(f"{title}\nRMS thigh ori err={rmse_thigh_deg:.2f} deg, RMSE knee={rmse_knee_deg:.2f} deg")
+    return _save(fig, out_path)
+
+
+def plot_simulation_knee(
+    *,
+    out_path: str | Path,
+    sample_hz: float,
+    ref_target_knee_deg: np.ndarray,
+    good_target_knee_deg: np.ndarray,
+    bad_target_knee_deg: np.ndarray,
+    ref_actual_knee_deg: np.ndarray,
+    good_actual_knee_deg: np.ndarray,
+    bad_actual_knee_deg: np.ndarray,
+    title: str,
+) -> Path:
+    n = int(
+        min(
+            len(ref_target_knee_deg),
+            len(good_target_knee_deg),
+            len(bad_target_knee_deg),
+            len(ref_actual_knee_deg),
+            len(good_actual_knee_deg),
+            len(bad_actual_knee_deg),
+        )
     )
+    t = np.arange(n, dtype=np.float32) / float(sample_hz)
+    fig, ax = plt.subplots(1, 1, figsize=(11.5, 4.3), sharex=True)
+
+    ax.plot(t, ref_target_knee_deg[:n], color="0.6", lw=1.2, ls="--", label="REF target")
+    ax.plot(t, ref_actual_knee_deg[:n], color="0.2", lw=1.8, label="REF actual")
+    ax.plot(t, good_target_knee_deg[:n], color="#f0ad4e", lw=1.2, ls="--", label="ORACLE target")
+    ax.plot(t, good_actual_knee_deg[:n], color="#d55e00", lw=1.8, label="ORACLE actual")
+    ax.plot(t, bad_target_knee_deg[:n], color="#9ecae1", lw=1.2, ls="--", label="BAD target")
+    ax.plot(t, bad_actual_knee_deg[:n], color="#0072b2", lw=1.8, label="BAD actual")
+
+    ax.set_ylabel("Right knee flexion (deg)")
+    ax.set_xlabel("Time (s)")
+    ax.grid(True, alpha=0.25)
+    ax.legend(loc="upper right", ncol=3)
+
+    fig.suptitle(title)
     return _save(fig, out_path)
 
 

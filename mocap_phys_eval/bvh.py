@@ -364,18 +364,71 @@ def extract_right_leg_thigh_quat_and_knee_included_deg(
     - Thigh pitch is a *signed* pitch angle in the sagittal plane:
         pitch = atan2(forward_component, down_component)
       where down_component = -thigh_vec_z (after basis mapping).
-    - Thigh quaternion is an IMU-like *segment frame* orientation relative to the BVH root
-      joint, expressed in the same MuJoCo-like basis, as wxyz. The local axes are:
+    - Thigh quaternion is an IMU-like *segment frame* orientation in world coordinates
+      (segment->world), expressed in the same MuJoCo-like basis, as wxyz. The local axes are:
         +Y distal (hip -> knee), +Z posterior/back (opposite clip forward), +X completes
         a right-handed frame (points roughly to subject's left).
     - Knee included angle is the included angle at the knee:
         180 = straight, 0 = fully folded.
     """
-    # Common BVH joint names.
-    root_name = bvh.joints[0].name
-    hip_name = "RightUpLeg"
-    knee_name = "RightLeg"
-    ankle_name = "RightFoot"
+    def _pick_right_leg_names() -> tuple[str, str, str, str]:
+        """Select (root, hip, knee, ankle) joint names for the right leg.
+
+        We support multiple BVH naming conventions so demo clips can come from
+        non-CMU datasets (e.g., Mixamo/Bandai).
+        """
+        names = bvh.joint_index
+        root = bvh.joints[0].name
+
+        triples: tuple[tuple[str, str, str], ...] = (
+            # CMU-style
+            ("RightUpLeg", "RightLeg", "RightFoot"),
+            # Mixamo-style / Bandai Namco Research dataset
+            ("UpperLeg_R", "LowerLeg_R", "Foot_R"),
+        )
+        for hip, knee, ankle in triples:
+            if hip in names and knee in names and ankle in names:
+                return root, hip, knee, ankle
+
+        # Fallback: try a few common alternatives.
+        hip_cands = (
+            "RightUpLeg",
+            "UpperLeg_R",
+            "UpLeg_R",
+            "Thigh_R",
+            "RightThigh",
+        )
+        knee_cands = (
+            "RightLeg",
+            "LowerLeg_R",
+            "Leg_R",
+            "Shin_R",
+            "RightShin",
+        )
+        ankle_cands = (
+            "RightFoot",
+            "Foot_R",
+            "Ankle_R",
+            "RightAnkle",
+        )
+
+        hip = next((n for n in hip_cands if n in names), None)
+        knee = next((n for n in knee_cands if n in names), None)
+        ankle = next((n for n in ankle_cands if n in names), None)
+        if hip and knee and ankle:
+            return root, hip, knee, ankle
+
+        # If we got here, provide a useful error message.
+        available = sorted(list(names.keys()))
+        preview = ", ".join(available[:40]) + (" ..." if len(available) > 40 else "")
+        raise KeyError(
+            "Could not find right-leg joints in BVH. "
+            "Tried CMU-style (RightUpLeg/RightLeg/RightFoot) and Mixamo-style "
+            "(UpperLeg_R/LowerLeg_R/Foot_R). "
+            f"Available joints (preview): {preview}"
+        )
+
+    root_name, hip_name, knee_name, ankle_name = _pick_right_leg_names()
 
     pos_bvh, rot_bvh, hz = joint_world_transforms(bvh, joint_names=[root_name, hip_name, knee_name, ankle_name])
 
@@ -444,21 +497,5 @@ def extract_right_leg_thigh_quat_and_knee_included_deg(
     R_th = np.stack([x, y, z], axis=2)  # thigh->world
     q_th_world = rotmat_to_quat_wxyz(R_th).astype(np.float32)
 
-    # Root orientation (world) for root-relative quaternion.
-    rot = np.asarray(rot_bvh, dtype=np.float64)  # (F,4,3,3)
-    root_R = B @ rot[:, 0, :, :] @ B.T
-    q_root_world = rotmat_to_quat_wxyz(root_R).astype(np.float32)
-
-    # thigh->root = (root->world)^-1 * (thigh->world)
-    q_root_inv = q_root_world.copy().astype(np.float64)
-    q_root_inv[:, 1:] *= -1.0  # conjugate (unit quaternion)
-    # Use explicit mul for clarity; avoids importing utils into bvh.py.
-    rw, rx, ry, rz = q_root_inv[:, 0], q_root_inv[:, 1], q_root_inv[:, 2], q_root_inv[:, 3]
-    tw, tx, ty, tz = q_th_world[:, 0], q_th_world[:, 1], q_th_world[:, 2], q_th_world[:, 3]
-    w = rw * tw - rx * tx - ry * ty - rz * tz
-    xq = rw * tx + rx * tw + ry * tz - rz * ty
-    yq = rw * ty - rx * tz + ry * tw + rz * tx
-    zq = rw * tz + rx * ty - ry * tx + rz * tw
-    q_th_rel = np.stack([w, xq, yq, zq], axis=1).astype(np.float32)
-
-    return thigh_pitch, q_th_rel, knee_included, float(hz)
+    # For evaluation, we return thigh->world (IMU-style), not root-relative.
+    return thigh_pitch, q_th_world, knee_included, float(hz)

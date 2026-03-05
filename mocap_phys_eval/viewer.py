@@ -49,11 +49,8 @@ def view_compare_npz(path: str | Path) -> None:
         raise RuntimeError("Recording does not contain physics states (states_ref/...).")
 
     override = OverrideSpec(
-        thigh_actuator=str(np.asarray(raw.get("override_thigh_actuator", "walker/rfemurrx")).reshape(())),
         knee_actuator=str(np.asarray(raw.get("override_knee_actuator", "walker/rtibiarx")).reshape(())),
-        thigh_sign=float(np.asarray(raw.get("override_thigh_sign", 1.0)).reshape(())),
         knee_sign=float(np.asarray(raw.get("override_knee_sign", 1.0)).reshape(())),
-        thigh_offset_deg=float(np.asarray(raw.get("override_thigh_offset_deg", 0.0)).reshape(())),
         knee_offset_deg=float(np.asarray(raw.get("override_knee_offset_deg", 0.0)).reshape(())),
     )
 

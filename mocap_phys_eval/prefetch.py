@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+
 from .config import EvalConfig
 from .experts import discover_expert_snippets, ensure_full_expert_zoo
 from .reference_bank import ExpertSnippetBank, build_expert_snippet_bank
@@ -31,7 +33,13 @@ def main() -> None:
     if bank_path.exists():
         try:
             bank = ExpertSnippetBank.load_npz(bank_path)
-            bank_ok = bool(len(bank) >= int(n))
+            has_world = False
+            try:
+                with np.load(bank_path, allow_pickle=True) as d:
+                    has_world = bool("thigh_anat_quat_world_wxyz" in getattr(d, "files", ()))
+            except Exception:
+                has_world = False
+            bank_ok = bool(len(bank) >= int(n)) and bool(has_world)
         except Exception:
             bank_ok = False
     if not bank_ok:
@@ -43,4 +51,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
