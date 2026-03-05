@@ -7,7 +7,7 @@ def plot_emg_and_angle(filename: str, *, assume_hz: float = 10.0):
     """
     Loads a recording and plots all channels:
       - Knee angle (label)
-      - Thigh angle (input feature)
+      - Thigh orientation (input feature): scalar thigh_angle (legacy) and/or thigh_quat_wxyz (wxyz)
       - device_spectr per sensor (active channels only)
       - Raw EMG waveform per sensor (if available)
     """
@@ -79,7 +79,8 @@ def plot_emg_and_angle(filename: str, *, assume_hz: float = 10.0):
     active_ch = sorted(active_ch)
 
     # Layout: knee + thigh + 3 spectr + (3 raw if available)
-    n_rows = 5 + (3 if has_raw else 0)
+    has_thigh_quat = "thigh_quat_wxyz" in data
+    n_rows = (6 if has_thigh_quat else 5) + (3 if has_raw else 0)
     fig, axes = plt.subplots(n_rows, 1, figsize=(14, 2.5 * n_rows), sharex=False)
 
     title = f"{os.path.basename(filename)}  |  {len(active_ch)}/{n_ch} active ch  |  ~{hz:.1f} Hz  |  {T} samples  |  {duration:.1f}s"
@@ -94,17 +95,33 @@ def plot_emg_and_angle(filename: str, *, assume_hz: float = 10.0):
     axes[0].set_ylabel("Degrees")
     axes[0].grid(True, linestyle="--", alpha=0.5)
 
-    # Thigh angle
+    # Thigh angle (legacy scalar feature, kept for debugging)
     if "thigh_angle" in data:
         thigh = np.asarray(data["thigh_angle"]).reshape(-1).astype(np.float32)[:T]
-        axes[1].plot(t, thigh, linewidth=1.0, color="orange")
-    axes[1].set_title("Thigh Angle (input feature)")
+        axes[1].plot(t, thigh, linewidth=1.0, color="orange", label="thigh_angle")
+    axes[1].set_title("Thigh Angle (legacy scalar feature)")
     axes[1].set_ylabel("Degrees")
     axes[1].grid(True, linestyle="--", alpha=0.5)
+    axes[1].legend(frameon=False)
+
+    # Thigh quaternion (new feature)
+    ax_offset = 0
+    if has_thigh_quat:
+        ax_q = axes[2]
+        q = np.asarray(data["thigh_quat_wxyz"], dtype=np.float32).reshape(-1, 4)[:T]
+        ax_q.plot(t, q[:, 0], linewidth=0.9, label="w")
+        ax_q.plot(t, q[:, 1], linewidth=0.9, label="x")
+        ax_q.plot(t, q[:, 2], linewidth=0.9, label="y")
+        ax_q.plot(t, q[:, 3], linewidth=0.9, label="z")
+        ax_q.set_title("Thigh Quaternion (wxyz) - input feature")
+        ax_q.set_ylabel("Quat")
+        ax_q.grid(True, linestyle="--", alpha=0.5)
+        ax_q.legend(ncol=4, fontsize=8, frameon=False)
+        ax_offset = 1
 
     # device_spectr per sensor (only active channels)
     for idx, (s, name) in enumerate([(s1, "Sensor 1"), (s2, "Sensor 2"), (s3, "Sensor 3")]):
-        ax = axes[idx + 2]
+        ax = axes[idx + 2 + ax_offset]
         for c in active_ch:
             ax.plot(t, s[c, :], linewidth=0.6, alpha=0.85, label=f"ch{c}")
         ax.set_title(f"{name} — device_spectr (active ch only)")
@@ -112,12 +129,12 @@ def plot_emg_and_angle(filename: str, *, assume_hz: float = 10.0):
         ax.grid(True, linestyle="--", alpha=0.5)
         ax.legend(ncol=min(len(active_ch), 8), fontsize=7, frameon=False)
 
-    axes[4].set_xlabel("Time (s)")
+    axes[4 + ax_offset].set_xlabel("Time (s)")
 
     # Raw EMG waveform per sensor
     if has_raw:
         for idx, (raw, name) in enumerate([(raw1, "Sensor 1"), (raw2, "Sensor 2"), (raw3, "Sensor 3")]):
-            ax = axes[5 + idx]
+            ax = axes[5 + ax_offset + idx]
             R = len(raw)
             t_raw = np.linspace(t[0], t[-1], R)
             ax.plot(t_raw, raw, linewidth=0.3, alpha=0.8, color=f"C{idx}")

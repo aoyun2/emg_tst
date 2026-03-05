@@ -49,16 +49,19 @@ def load_ckpt(path: Path, device: torch.device):
 def _parse_feature_layout(data: dict, F: int):
     """Parse feature layout from samples dataset metadata.
 
-    New recordings (has_raw=True):  [raw_features × 3 sensors] + [thigh]
+    New recordings (has_raw=True):  [raw_features x 3 sensors] + [thigh]
       raw_features = 5 time-domain + N_FFT_BANDS spectral per sensor
-      total = (5 + N_FFT_BANDS) * 3 + 1 = 40
+      total = (5 + N_FFT_BANDS) * 3 + thigh_n
 
-    Legacy recordings (has_raw=False): [device_spectr × 3 sensors] + [thigh]
-      total = n_ch * 3 + 1
+    Legacy recordings (has_raw=False): [device_spectr x 3 sensors] + [thigh]
+      total = n_ch * 3 + thigh_n
     """
     n_ch = int(data.get("n_channels", 16))
     n_raw = int(data.get("n_raw_features", 0))
     has_raw = bool(data.get("has_raw_emg", False))
+    thigh_n = int(data.get("thigh_n_features", 1))
+    if thigh_n < 1 or thigh_n > F:
+        thigh_n = 1
 
     # Fallback: infer from feature count
     if not has_raw:
@@ -67,14 +70,16 @@ def _parse_feature_layout(data: dict, F: int):
             has_raw = True
             n_raw = expected_raw
 
-    thigh_idx = F - 1
+    thigh_start = int(F - thigh_n)
+    thigh_slice = slice(thigh_start, int(F))
 
     if has_raw:
         return {
             "n_ch": n_ch, "has_raw": True, "has_spectr": False,
             "raw_start": 0, "raw_end": n_raw,
             "spectr_start": None, "spectr_end": None,
-            "thigh_idx": thigh_idx,
+            "thigh_slice": thigh_slice,
+            "thigh_n": int(thigh_n),
         }
     else:
         spectr_total = n_ch * 3
@@ -82,7 +87,8 @@ def _parse_feature_layout(data: dict, F: int):
             "n_ch": n_ch, "has_raw": False, "has_spectr": True,
             "raw_start": None, "raw_end": None,
             "spectr_start": 0, "spectr_end": spectr_total,
-            "thigh_idx": thigh_idx,
+            "thigh_slice": thigh_slice,
+            "thigh_n": int(thigh_n),
         }
 
 
@@ -149,8 +155,16 @@ def _plot_channels(x: np.ndarray, layout: dict, window: int, idx: int, out_dir: 
 
     # --- Thigh angle ---
     ax_th = axes[ax_i]
-    ax_th.plot(x[:, layout["thigh_idx"]], linewidth=1.0, color="orange", label="thigh angle")
-    ax_th.set_title("Thigh Angle (uMyo sensor 2)")
+    th = x[:, layout["thigh_slice"]]
+    if int(layout.get("thigh_n", 1)) == 4 and th.shape[1] == 4:
+        ax_th.plot(th[:, 0], linewidth=0.9, label="thigh_q_w")
+        ax_th.plot(th[:, 1], linewidth=0.9, label="thigh_q_x")
+        ax_th.plot(th[:, 2], linewidth=0.9, label="thigh_q_y")
+        ax_th.plot(th[:, 3], linewidth=0.9, label="thigh_q_z")
+        ax_th.set_title("Thigh Quaternion (wxyz) - uMyo sensor 2")
+    else:
+        ax_th.plot(th[:, 0], linewidth=1.0, color="orange", label="thigh angle")
+        ax_th.set_title("Thigh Angle - uMyo sensor 2")
     ax_th.legend(fontsize=8, frameon=False)
     ax_th.grid(True, linestyle="--", alpha=0.4)
     ax_th.set_ylabel("z-score")
@@ -189,9 +203,11 @@ def main():
     F = X.shape[2]
     layout = _parse_feature_layout(data, F)
 
-    print(f"Feature layout: {F} total — spectr={layout['n_ch']}x3  "
+    ts = layout["thigh_slice"]
+    ts_label = f"cols{int(ts.start)}..{int(ts.stop) - 1}"
+    print(f"Feature layout: {F} total - spectr={layout['n_ch']}x3  "
           f"raw={'yes ('+str(layout['raw_end']-layout['raw_start'])+')' if layout['has_raw'] else 'no'}  "
-          f"thigh=col{layout['thigh_idx']}")
+          f"thigh={ts_label}")
 
     # normalize
     Xn = (X - mean[None, None, :]) / std[None, None, :]

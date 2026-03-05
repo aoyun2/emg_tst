@@ -1,0 +1,12 @@
+"""MoCapAct physical evaluation pipeline (v2).
+
+This package is intentionally self-contained and has a single "right" default
+configuration (no CLI flags). See README.md at the repo root for details.
+"""
+
+from __future__ import annotations
+
+__all__ = ["__version__"]
+
+__version__ = "0.1.0"
+

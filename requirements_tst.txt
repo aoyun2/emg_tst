@@ -1,15 +1,15 @@
 numpy
 torch
-scipy          # signal resampling, spatial transforms (motion matching)
-mujoco         # physics simulation (prosthetic_sim.py)
-pillow         # GIF generation (prosthetic_sim.py / save_stick_figure_gifs)
+scipy          # signal processing + (optional) resampling utilities for TST experiments
+mujoco         # MuJoCo renderer for `mocap_phys_eval` recording + interactive replay
+pillow         # GIF export + viewer overlays
 tqdm           # progress bars
-huggingface_hub
+matplotlib     # evaluation plots (mocap_phys_eval)
+hf-transfer    # optional: faster parallel downloads from Hugging Face (mocap_phys_eval experts)
 
-# MoCapAct adaptive-policy evaluation backend (mocapact_sim.py / mocapact_dataset.py)
+# MoCapAct physical evaluation backend (multi-clip policy + dm_control humanoid).
 setuptools         # provides pkg_resources, required by mocapact at import time (missing in Python 3.12+)
 h5py               # direct HDF5 read for MocapAct reference trajectories
 dm_control>=1.0.7  # DeepMind Control Suite (CMU humanoid + HDF5 motion data)
-# Optional: full MoCapAct multi-clip policy evaluation (--mocapact mode):
-# mocapact           # Microsoft MoCapAct multi-clip policies
-# stable-baselines3  # RL policy loading
+mocapact           # Microsoft MoCapAct tracking environments + policies
+stable-baselines3  # multi-clip policy loading

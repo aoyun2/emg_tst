@@ -93,7 +93,9 @@ def load_recording(path: str | Path) -> Tuple[np.ndarray, np.ndarray, dict]:
     Features per timestep:
       - N device_spectr channels × 3 sensors
       - (5 + N_FFT_BANDS) raw EMG features × 3 sensors (if raw data available)
-      - 1 thigh angle from uMyo sensor 2
+      - right thigh orientation from uMyo sensor 2:
+          - preferred: `thigh_quat_wxyz` (wxyz quaternion, 4 dims)
+          - legacy fallback: `thigh_angle` (1 dim)
     Label: knee angle from IMU-uMyo diff.
 
     Returns:
@@ -111,13 +113,27 @@ def load_recording(path: str | Path) -> Tuple[np.ndarray, np.ndarray, dict]:
     n_ch = s1.shape[0]
     T = min(y.shape[0], s1.shape[1], s2.shape[1], s3.shape[1])
 
-    # Thigh angle
-    if "thigh_angle" in d:
-        thigh = np.asarray(d["thigh_angle"], dtype=np.float32)
-        T = min(T, thigh.shape[0])
-        thigh = thigh[:T].reshape(-1, 1)
-    else:
-        thigh = np.zeros((T, 1), dtype=np.float32)
+    # Thigh feature: require quaternion (no fallback to scalar thigh_angle).
+    if "thigh_quat_wxyz" not in d:
+        raise KeyError(
+            f"Recording {str(path)!r} is missing required key 'thigh_quat_wxyz'. "
+            "Re-record with the updated uMyo_python_tools/rigtest.py."
+        )
+    q = np.asarray(d["thigh_quat_wxyz"], dtype=np.float32).reshape(-1, 4)
+    T = min(T, q.shape[0])
+    q = q[:T].astype(np.float32)
+    # Normalize and enforce sign continuity (q and -q are equivalent).
+    n = np.linalg.norm(q, axis=1, keepdims=True)
+    bad = n.reshape(-1) < 1e-6
+    if np.any(bad):
+        q[bad, :] = np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        n = np.linalg.norm(q, axis=1, keepdims=True)
+    q = q / np.clip(n, 1e-6, None)
+    for i in range(1, q.shape[0]):
+        if float(np.dot(q[i - 1], q[i])) < 0.0:
+            q[i] *= -1.0
+    thigh = q.astype(np.float32)
+    thigh_mode = "quat"
 
     y = y[:T]
     # device_spectr commented out — using raw EMG features instead
@@ -149,7 +165,9 @@ def load_recording(path: str | Path) -> Tuple[np.ndarray, np.ndarray, dict]:
         "n_features": int(X.shape[1]),
         "n_samples": int(T),
         "effective_hz": float(d.get("effective_hz", 0)),
-        "has_thigh_angle": "thigh_angle" in d,
+        "thigh_mode": str(thigh_mode),
+        "thigh_n_features": int(thigh.shape[1]),
+        "has_thigh_quat": "thigh_quat_wxyz" in d,
         "has_raw_emg": has_raw,
     }
     return X, y, meta

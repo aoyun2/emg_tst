@@ -379,6 +379,16 @@ def main():
 
     print(f"Dataset: {n_all} samples, window={seq_len}, features={n_vars}, files={n_files}")
 
+    # Enforce quaternion thigh features (no scalar thigh_angle mode).
+    thigh_mode = str(data.get("thigh_mode", ""))
+    thigh_n = int(data.get("thigh_n_features", 0))
+    if thigh_mode != "quat" or thigh_n != 4:
+        raise SystemExit(
+            "This pipeline requires thigh quaternion features (thigh_quat_wxyz, 4 dims). "
+            f"Got thigh_mode={thigh_mode!r}, thigh_n_features={thigh_n}. "
+            "Rebuild samples_dataset.npy from recordings produced by the updated rigtest.py."
+        )
+
     # LOFO when multiple files, random k-fold fallback for single file
     if n_files >= 2:
         folds = lofo_indices(file_ids)
@@ -393,14 +403,14 @@ def main():
 
     # Feature column indices
     all_cols = np.arange(n_vars)
-    thigh_col = np.array([n_vars - 1])          # last column
-    emg_cols = np.arange(n_vars - 1)            # everything except last
+    thigh_col = np.arange(n_vars - thigh_n, n_vars)  # last thigh_n columns
+    emg_cols = np.arange(n_vars - thigh_n)           # everything except thigh features
 
     # ==========================================
     # ABLATION STUDY: compare feature subsets
     # ==========================================
     print("\n" + "="*60)
-    print("ABLATION STUDY: Does EMG help beyond thigh angle alone?")
+    print("ABLATION STUDY: Does EMG help beyond thigh orientation alone?")
     print("="*60)
 
     results = {}
@@ -413,8 +423,8 @@ def main():
     rmse_all = np.mean([m["best_rmse"] for m in metrics_all])
     results["all"] = rmse_all
 
-    # 2) Thigh angle only
-    print("\n>>> [2/3] THIGH ANGLE ONLY (baseline)")
+    # 2) Thigh only
+    print("\n>>> [2/3] THIGH ONLY (baseline)")
     run_dir_thigh = SAVE_DIR / (RUN_NAME + "_thigh_only")
     run_dir_thigh.mkdir(parents=True, exist_ok=True)
     metrics_thigh = _train_cv(X_all, y_all, y_seq_all, folds, thigh_col, device, run_dir_thigh, "THIGH-ONLY", data)
@@ -422,7 +432,7 @@ def main():
     results["thigh_only"] = rmse_thigh
 
     # 3) EMG only
-    print("\n>>> [3/3] EMG ONLY (no thigh angle)")
+    print("\n>>> [3/3] EMG ONLY (no thigh features)")
     run_dir_emg = SAVE_DIR / (RUN_NAME + "_emg_only")
     run_dir_emg.mkdir(parents=True, exist_ok=True)
     metrics_emg = _train_cv(X_all, y_all, y_seq_all, folds, emg_cols, device, run_dir_emg, "EMG-ONLY", data)
@@ -436,7 +446,7 @@ def main():
     print("ABLATION RESULTS (mean best RMSE across folds)")
     print("="*60)
     print(f"  All features (EMG + thigh): {rmse_all:8.3f}°")
-    print(f"  Thigh angle only:           {rmse_thigh:8.3f}°")
+    print(f"  Thigh only:                 {rmse_thigh:8.3f} deg")
     print(f"  EMG only:                   {rmse_emg:8.3f}°")
     print("-"*60)
 
@@ -450,7 +460,7 @@ def main():
         print(f"    Possible causes: not enough data, poor sensor contact, or EMG too noisy")
 
     thigh_contribution = rmse_emg - rmse_all
-    print(f"  Thigh angle contribution:   {thigh_contribution:.2f}° improvement over EMG-only")
+    print(f"  Thigh contribution:         {thigh_contribution:.2f} deg improvement over EMG-only")
 
     # ==========================================
     # PERMUTATION IMPORTANCE (on best full model, fold 1)
@@ -496,12 +506,17 @@ def main():
             for s in range(3):
                 for c in range(n_ch):
                     feat_names.append(f"s{s+1}_spectr{c}")
-        feat_names.append("thigh_angle")
+        thigh_mode = str(data.get("thigh_mode", "angle"))
+        thigh_n = int(data.get("thigh_n_features", 1))
+        if thigh_mode == "quat" or thigh_n == 4:
+            feat_names.extend(["thigh_q_w", "thigh_q_x", "thigh_q_y", "thigh_q_z"])
+        else:
+            feat_names.append("thigh_angle")
 
         # Sort by importance
         order = np.argsort(importance)[::-1]
         print(f"\n  Baseline seq_RMSE: {baseline:.3f}°\n")
-        print(f"  {'Feature':<20s} {'ΔRMSE (°)':>10s}  {'Impact':>10s}")
+        print(f"  {'Feature':<20s} {'dRMSE (deg)':>10s}  {'Impact':>10s}")
         print(f"  {'-'*20} {'-'*10}  {'-'*10}")
         for rank, fi in enumerate(order):
             delta = importance[fi]
@@ -511,7 +526,7 @@ def main():
             if rank >= 19:  # top 20
                 break
     else:
-        print("  (skipped — no checkpoint found)")
+        print("  (skipped - no checkpoint found)")
 
     # Save ablation summary
     summary = {

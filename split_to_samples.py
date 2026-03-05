@@ -23,7 +23,7 @@ def make_nonoverlapping_windows(X, y, w=WINDOW, label_shift=LABEL_SHIFT):
     """Partition into consecutive, non-overlapping windows. Drops remainder.
 
     Returns:
-      Xs:    (N, W, F)   input windows (13 features: 12 EMG + 1 thigh angle)
+      Xs:    (N, W, F)   input windows (EMG features + thigh orientation features)
       ys:    (N,)         scalar label (last timestep + shift)
       y_seq: (N, W)       full angle trajectory per window (with shift)
       starts:(N,)         start indices
@@ -103,6 +103,8 @@ def main():
         "n_channels": np.int32(meta["n_channels"]),
         "n_raw_features": np.int32(meta.get("n_raw_features", 0)),
         "has_raw_emg": bool(meta.get("has_raw_emg", False)),
+        "thigh_mode": str(meta.get("thigh_mode", "unknown")),
+        "thigh_n_features": np.int32(meta.get("thigh_n_features", 1)),
     }
 
     np.save(OUT_FILE, dataset, allow_pickle=True)

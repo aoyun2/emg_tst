@@ -96,6 +96,7 @@ ys_emg = [[deque(maxlen=DISPLAY_LEN) for _ in range(N_CHANNELS)] for _ in range(
 
 yssave_imu = []
 yssave_thigh = []  # thigh angle (feature input, NOT label)
+yssave_thigh_quat = []  # thigh quaternion (wxyz) from uMyo sensor 2 (feature input)
 yssave_emg = [[[] for _ in range(N_CHANNELS)] for _ in range(3)]
 
 # Raw EMG accumulator (native rate ~400Hz, 8 samples per uMyo packet)
@@ -150,7 +151,7 @@ def snapshot_emg():
 def read_imu():
     """Read ALL pending IMU quaternions from Bluetooth buffer.
 
-    Returns list of (knee_angle, thigh_angle) tuples — one per valid packet.
+    Returns list of (knee_angle, thigh_angle, thigh_quat_wxyz) tuples — one per valid packet.
     At 200Hz IMU, a single recv may contain multiple packets.
     """
     results = []
@@ -179,7 +180,11 @@ def read_imu():
                 dt2 = t2 * 180 / math.pi
                 diff = 180 - (dt1 - dt2)
 
-                results.append((diff, dt2))
+                # Capture the latest thigh quaternion (from uMyo sensor 2).
+                # NOTE: This is the uMyo-reported orientation in wxyz order (normalized).
+                thigh_quat = (float(a.w), float(a.x), float(a.y), float(a.z))
+
+                results.append((diff, dt2, thigh_quat))
         return results
     except socket.timeout:
         return results
@@ -206,12 +211,13 @@ def update_time():
             # 3) Save one sample per IMU packet, each with the same EMG
             #    snapshot (uMyo updates at its own rate, we read latest values)
             global_time = time.time() - start_time
-            for knee_angle, thigh_angle in imu_readings:
+            for knee_angle, thigh_angle, thigh_quat in imu_readings:
                 snapshot_emg()  # saves current EMG state (1 row per IMU packet)
                 ys_imu.append(knee_angle)
                 yssave_imu.append(knee_angle)
                 ys_thigh.append(thigh_angle)
                 yssave_thigh.append(thigh_angle)
+                yssave_thigh_quat.append(thigh_quat)
                 xs.append(global_time)
                 xssave.append(global_time)
 
@@ -277,7 +283,9 @@ def done():
         data_dict = {
             "timestamps": np.array(xssave, dtype=np.float64),
             "imu": np.array(yssave_imu, dtype=np.float64),
+            "knee_included_deg": np.array(yssave_imu, dtype=np.float64),
             "thigh_angle": np.array(yssave_thigh, dtype=np.float64),  # uMyo sensor 2 orientation (model input feature)
+            "thigh_quat_wxyz": np.array(yssave_thigh_quat, dtype=np.float64),  # (T,4) wxyz
             "emg_sensor1": np.array([np.array(yssave_emg[0][i], dtype=np.float64)
                                       for i in range(N_CHANNELS)]),  # (C, T)
             "emg_sensor2": np.array([np.array(yssave_emg[1][i], dtype=np.float64)
@@ -290,6 +298,8 @@ def done():
             "raw_emg_sensor3": np.array(yssave_raw[2], dtype=np.float64),
             "n_channels": N_CHANNELS,
             "effective_hz": n_samples / (xssave[-1] - xssave[0]) if xssave[-1] > xssave[0] else 0,
+            # Sensor mount axes (right thigh, biceps femoris): +Y distal, +X left, +Z posterior.
+            "thigh_sensor_axes_note": "right thigh sensor axes: +Y distal (toward feet), +X left of subject, +Z posterior/back",
         }
 
         raw_len = len(yssave_raw[0])
