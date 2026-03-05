@@ -30,17 +30,17 @@ pip install -r requirements_tst.txt
 
 ```mermaid
 flowchart LR
-  A[rigtest.py recording<br/>(EMG + IMU quat + knee included)] --> B[split_to_samples.py<br/>(1.0s windows @ 200 Hz)]
-  B --> C[TST model<br/>(optional; reg_best.pt)]
-  B --> D[mocap_phys_eval<br/>query window]
+  A["rigtest.py recording\nEMG + IMU quat + knee included"] --> B["split_to_samples.py\n1.0s windows @ 200 Hz"]
+  B --> C["TST model (optional)\nreg_best.pt"]
+  B --> D["mocap_phys_eval\nquery window"]
   C --> D
-  D --> E[Resample to MoCapAct rate<br/>(~33.33 Hz)]
-  E --> F[Motion match over 2589 expert snippets<br/>(dquat + knee derivative)]
-  F --> G[Matched snippet expert policy<br/>(SB3 PPO)]
-  G --> H1[REF sim<br/>no override]
-  G --> H2[GOOD sim<br/>right knee forced]
-  G --> H3[BAD sim<br/>right knee forced]
-  H1 --> I[Artifacts: NPZ + GIF + plots + summary.json]
+  D --> E["Resample to MoCapAct rate\n~33.33 Hz"]
+  E --> F["Motion match over 2589 expert snippets\ndquat + knee derivative"]
+  F --> G["Matched snippet expert policy\nSB3 PPO"]
+  G --> H1["REF sim\nno override"]
+  G --> H2["GOOD sim\nright knee forced"]
+  G --> H3["BAD sim\nright knee forced"]
+  H1 --> I["Artifacts\nNPZ + GIF + plots + summary.json"]
   H2 --> I
   H3 --> I
 ```
