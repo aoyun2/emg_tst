@@ -230,7 +230,7 @@ If/when you want to emulate a passive ankle/foot (no ankle actuation) without ch
 
 5. **Stability heuristic**
    - Outputs a per-step `predicted_fall_risk_trace_*` and scalar `predicted_fall_risk_*`.
-   - Uses uprightness + COM support margin (no root-height heuristics).
+   - Uses uprightness + XCoM support margin (+ tilt-rate + smoothing), with no root-height heuristics.
    - `balance_loss_step_*` is the first timestep the heuristic considers the walker unstable.
 
 ## Visualization
