@@ -148,4 +148,7 @@ def plot_emg_and_angle(filename: str, *, assume_hz: float = 10.0):
 
 
 if __name__ == "__main__":
-    plot_emg_and_angle("data0.npy")
+    import sys
+
+    path = sys.argv[1] if len(sys.argv) > 1 else "data0.npy"
+    plot_emg_and_angle(path)

@@ -364,14 +364,18 @@ def record_compare_rollout(
             act, next_state = policy.predict(obs_in, state=state_in, deterministic=deterministic_policy)
         return np.asarray(act, dtype=np.float32), next_state
 
-    def _step(env: Any, action: np.ndarray) -> tuple[Any, bool]:
+    def _step(env: Any, action: np.ndarray) -> tuple[Any, bool, float]:
         step_out = env.step(action)
         if isinstance(step_out, tuple) and len(step_out) == 5:
             obs2, _reward, terminated, truncated, _info = step_out
             done = bool(terminated or truncated)
         else:
             obs2, _reward, done, _info = step_out
-        return obs2, bool(done)
+        try:
+            r = float(np.asarray(_reward, dtype=np.float64).reshape(()))
+        except Exception:
+            r = float("nan")
+        return obs2, bool(done), r
 
     def _update_balance(
         *,
@@ -457,6 +461,18 @@ def record_compare_rollout(
     knee_ref_actual: list[float] = []
     knee_good_actual: list[float] = []
     knee_bad_actual: list[float] = []
+    reward_ref: list[float] = []
+    reward_good: list[float] = []
+    reward_bad: list[float] = []
+    termination_error_ref: list[float] = []
+    termination_error_good: list[float] = []
+    termination_error_bad: list[float] = []
+
+    termination_error_threshold = float("nan")
+    try:
+        termination_error_threshold = float(getattr(env_ref._env.task, "_termination_error_threshold", float("nan")))  # noqa: SLF001
+    except Exception:
+        termination_error_threshold = float("nan")
 
     # Control override diagnostics: policy output vs applied action for the forced actuator.
     # This is the quickest way to prove the RL policy is NOT controlling the prosthetic knee.
@@ -487,9 +503,9 @@ def record_compare_rollout(
             act_good_pol, state_good = _predict(obs_good, state_good)
             act_bad_pol, state_bad = _predict(obs_bad, state_bad)
 
-            obs_ref, done_ref = _step(env_ref, np.asarray(act_ref, dtype=np.float32).reshape(-1))
-            obs_good, done_good = _step(env_good, np.asarray(act_good_pol, dtype=np.float32).reshape(-1))
-            obs_bad, done_bad = _step(env_bad, np.asarray(act_bad_pol, dtype=np.float32).reshape(-1))
+            obs_ref, done_ref, _ = _step(env_ref, np.asarray(act_ref, dtype=np.float32).reshape(-1))
+            obs_good, done_good, _ = _step(env_good, np.asarray(act_good_pol, dtype=np.float32).reshape(-1))
+            obs_bad, done_bad, _ = _step(env_bad, np.asarray(act_bad_pol, dtype=np.float32).reshape(-1))
             done_any = bool(done_any or done_ref or done_good or done_bad)
             if done_any:
                 break
@@ -593,10 +609,26 @@ def record_compare_rollout(
             except Exception:
                 pass
 
-        obs_ref, done_ref = _step(env_ref, np.asarray(ar, dtype=np.float32).reshape(-1))
-        obs_good, done_good = _step(env_good, act_good)
-        obs_bad, done_bad = _step(env_bad, act_bad)
+        obs_ref, done_ref, r_ref = _step(env_ref, np.asarray(ar, dtype=np.float32).reshape(-1))
+        obs_good, done_good, r_good = _step(env_good, act_good)
+        obs_bad, done_bad, r_bad = _step(env_bad, act_bad)
         done_any = bool(done_any or done_ref or done_good or done_bad)
+
+        reward_ref.append(float(r_ref))
+        reward_good.append(float(r_good))
+        reward_bad.append(float(r_bad))
+        try:
+            termination_error_ref.append(float(getattr(env_ref._env.task, "_termination_error", float("nan"))))  # noqa: SLF001
+        except Exception:
+            termination_error_ref.append(float("nan"))
+        try:
+            termination_error_good.append(float(getattr(env_good._env.task, "_termination_error", float("nan"))))  # noqa: SLF001
+        except Exception:
+            termination_error_good.append(float("nan"))
+        try:
+            termination_error_bad.append(float(getattr(env_bad._env.task, "_termination_error", float("nan"))))  # noqa: SLF001
+        except Exception:
+            termination_error_bad.append(float("nan"))
 
         # Record states for interactive replay.
         try:
@@ -767,12 +799,22 @@ def record_compare_rollout(
             bal_good.get("xcom_margin_trace", [])[: len(root_z_good)], dtype=np.float32
         ),
         balance_xcom_margin_bad_m=np.asarray(bal_bad.get("xcom_margin_trace", [])[: len(root_z_bad)], dtype=np.float32),
+        balance_had_contact_ref=np.asarray(bal_ref.get("had_contact_trace", [])[: len(root_z_ref)], dtype=np.bool_),
+        balance_had_contact_good=np.asarray(bal_good.get("had_contact_trace", [])[: len(root_z_good)], dtype=np.bool_),
+        balance_had_contact_bad=np.asarray(bal_bad.get("had_contact_trace", [])[: len(root_z_bad)], dtype=np.bool_),
         root_z_ref_m=np.asarray(root_z_ref, dtype=np.float32),
         root_z_good_m=np.asarray(root_z_good, dtype=np.float32),
         root_z_bad_m=np.asarray(root_z_bad, dtype=np.float32),
         upright_ref=np.asarray(upright_ref, dtype=np.float32),
         upright_good=np.asarray(upright_good, dtype=np.float32),
         upright_bad=np.asarray(upright_bad, dtype=np.float32),
+        reward_ref=np.asarray(reward_ref, dtype=np.float32),
+        reward_good=np.asarray(reward_good, dtype=np.float32),
+        reward_bad=np.asarray(reward_bad, dtype=np.float32),
+        termination_error_ref=np.asarray(termination_error_ref, dtype=np.float32),
+        termination_error_good=np.asarray(termination_error_good, dtype=np.float32),
+        termination_error_bad=np.asarray(termination_error_bad, dtype=np.float32),
+        termination_error_threshold=np.asarray(float(termination_error_threshold), dtype=np.float32),
         knee_ref_actual_deg=np.asarray(knee_ref_actual, dtype=np.float32),
         knee_good_actual_deg=np.asarray(knee_good_actual, dtype=np.float32),
         knee_bad_actual_deg=np.asarray(knee_bad_actual, dtype=np.float32),

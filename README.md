@@ -144,6 +144,10 @@ Balance signals + heuristic risk trace:
 
 ## Using Real rigtest.py Data (The Real Pipeline)
 
+### Data recording plan + “how much data for <3° RMSE?”
+
+See `docs/data_recording_plan.md` for a full recording protocol (free-motion blocks, QC checklist, and how to use `python -m emg_tst.learning_curve` to estimate how many recorded hours you need to reach <3° RMSE on held-out files).
+
 1. Record `data*.npy` using `uMyo_python_tools/rigtest.py`.
    - Required: each recording must include `thigh_quat_wxyz` (wxyz quaternion).
 2. Build windowed samples:
@@ -248,6 +252,7 @@ If/when you want to emulate a passive ankle/foot (no ankle actuation) without ch
    - Outputs a per-step `predicted_fall_risk_trace_*` and scalar `predicted_fall_risk_*`.
    - Uses uprightness + XCoM support margin (+ tilt-rate + smoothing), with no root-height heuristics.
    - `balance_loss_step_*` is the first timestep the heuristic considers the walker unstable.
+   - Also records MoCapAct tracking-task signals in `compare.npz` (`termination_error_*`, `reward_*`, `termination_error_threshold`) so you can experiment with reward/critic-based “risk” proxies.
 
 ## Visualization
 

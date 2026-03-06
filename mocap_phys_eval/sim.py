@@ -432,11 +432,41 @@ def _patch_tracking_no_error_truncation(env: Any) -> None:
     except Exception:
         return
     try:
-        # Some mocapact versions expose task._termination_error_threshold; zeroing it avoids truncation.
-        if hasattr(task, "_termination_error_threshold"):
-            task._termination_error_threshold = float("inf")  # noqa: SLF001
+        # IMPORTANT:
+        # - We do NOT mutate `_termination_error_threshold` because that also changes reward channels
+        #   (and the PPO value function calibration).
+        # - Instead we override the termination hook to ignore `_should_truncate` and only terminate
+        #   at end-of-mocap.
+        if bool(getattr(task, "_codex_no_truncation_patched", False)):
+            return
+        task._codex_no_truncation_patched = True  # noqa: SLF001
+
+        orig_should_terminate = getattr(task, "should_terminate_episode", None)
+        orig_get_discount = getattr(task, "get_discount", None)
+        if callable(orig_should_terminate):
+            task._codex_orig_should_terminate_episode = orig_should_terminate  # noqa: SLF001
+        if callable(orig_get_discount):
+            task._codex_orig_get_discount = orig_get_discount  # noqa: SLF001
+
+        def _should_terminate_episode(_physics: Any) -> bool:
+            try:
+                return bool(getattr(task, "_end_mocap", False))
+            except Exception:
+                return False
+
+        def _get_discount(_physics: Any) -> float:
+            # Keep discount stable even if tracking error exceeds threshold.
+            try:
+                if bool(getattr(task, "_end_mocap", False)) and callable(orig_get_discount):
+                    return float(orig_get_discount(_physics))
+            except Exception:
+                pass
+            return 1.0
+
+        task.should_terminate_episode = _should_terminate_episode  # type: ignore[assignment]
+        task.get_discount = _get_discount  # type: ignore[assignment]
     except Exception:
-        pass
+        return
 
 
 def _uprightness_cos_tilt(physics: Any, *, body_id: int | None) -> float:
@@ -559,30 +589,28 @@ def _risk_trace_from_upright_and_margin(
         tilt_r = 1.0 - (1.0 - float(tilt_abs_r)) * (1.0 - float(tilt_rate_r))
 
         # Support risk from margin magnitude + trend.
-        if hc is not None and not bool(hc[i]):
-            # No ground contact: no base of support. Treat as highly unstable.
-            support_r = 1.0
+        j0 = int(max(0, i - W + 1))
+        mw = m[j0 : i + 1]
+        mw = mw[np.isfinite(mw)]
+        if mw.size < 1:
+            # Can't compute a support margin (e.g., aerial phase or contact detection glitch).
+            # Keep this as *mild* risk rather than immediately declaring a likely fall.
+            support_r = 0.25
         else:
-            j0 = int(max(0, i - W + 1))
-            mw = m[j0 : i + 1]
-            mw = mw[np.isfinite(mw)]
-            if mw.size < 1:
-                support_r = 0.5
+            mmin = float(np.min(mw))
+            mend = float(mw[-1])
+            if mw.size >= 2:
+                slope = float((float(mw[-1]) - float(mw[0])) / (float(mw.size - 1) * float(dt)))
             else:
-                mmin = float(np.min(mw))
-                mend = float(mw[-1])
-                if mw.size >= 2:
-                    slope = float((float(mw[-1]) - float(mw[0])) / (float(mw.size - 1) * float(dt)))
-                else:
-                    slope = 0.0
+                slope = 0.0
 
-                # Thresholds tuned empirically on REF walking/running so stable motion stays low-risk,
-                # while large negative (and/or rapidly decreasing) margins drive risk to 1.
-                r_mmin = _clamp01((-mmin - 0.42) / 0.40)  # 0 at -42cm, 1 at -82cm
-                r_mend = _clamp01((-mend - 0.30) / 0.35)  # 0 at -30cm, 1 at -65cm
-                r_slope = _clamp01((-slope - 0.15) / 0.45)  # 0 at -0.15 m/s, 1 at -0.60 m/s
+            # Thresholds tuned empirically on REF walking/running so stable motion stays low-risk,
+            # while large negative (and/or rapidly decreasing) margins drive risk to 1.
+            r_mmin = _clamp01((-mmin - 0.42) / 0.40)  # 0 at -42cm, 1 at -82cm
+            r_mend = _clamp01((-mend - 0.30) / 0.35)  # 0 at -30cm, 1 at -65cm
+            r_slope = _clamp01((-slope - 0.15) / 0.45)  # 0 at -0.15 m/s, 1 at -0.60 m/s
 
-                support_r = float(_clamp01(0.55 * r_mmin + 0.25 * r_mend + 0.20 * r_slope))
+            support_r = float(_clamp01(0.55 * r_mmin + 0.25 * r_mend + 0.20 * r_slope))
 
         # Combine such that either signal can dominate.
         out[i] = 1.0 - (1.0 - float(tilt_r)) * (1.0 - float(support_r))
@@ -619,7 +647,6 @@ def predict_fall_risk_from_traces(
     tail = np.asarray(risk_smooth[-W:], dtype=np.float64)
     # Use a high percentile of the tail for robustness, but allow sustained peaks to show.
     r = float(np.nanpercentile(tail, 90))
-    r = max(r, float(np.nanmax(tail)))
     if bool(fell):
         r = 1.0
     r = _clamp01(r) if math.isfinite(r) else 1.0
