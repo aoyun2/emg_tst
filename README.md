@@ -164,7 +164,23 @@ python -m emg_tst.run_experiment
 
 This writes checkpoints under `checkpoints/**/reg_best.pt`.
 
+Within each outer fold, the model selects the best checkpoint using an internal **train/val split** (preferably holding out an entire recording file), and the held-out test file is evaluated once at the end. This avoids picking epochs directly on the test set.
+
 The evaluator auto-selects the latest `*_all/` training run (the "ALL FEATURES" model) and picks the fold with the lowest `metrics.json.best_rmse`.
+
+Optional (recommended while you are still collecting data): generate a learning-curve report showing how RMSE improves as you add more recorded minutes/hours:
+
+```bash
+python -m emg_tst.learning_curve
+```
+
+This writes a self-contained report under `artifacts/learning_curve/**/`:
+
+- `learning_curve.png`
+- `summary.csv` (mean test RMSE across outer folds, with 95% CI)
+- `results.json` (all per-fold raw metrics)
+
+By default it uses a subset of outer folds for runtime (`MAX_OUTER_FOLDS=8` in [emg_tst/learning_curve.py](emg_tst/learning_curve.py)).
 
 4. Run the evaluator again:
    - If a checkpoint exists, `GOOD` uses the model prediction.

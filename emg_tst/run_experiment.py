@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import json
+import copy
 from pathlib import Path
 from datetime import datetime
 
@@ -40,6 +41,10 @@ EPOCHS_FINETUNE = 20
 # Masked reconstruction pretraining (stateful Markov masking)
 MASK_R = 0.15
 MASK_LM = 3
+
+# Validation split (used to pick the best checkpoint; test is only evaluated once at the end).
+# Prefer splitting by file_id to avoid temporal leakage between adjacent windows.
+VAL_FRAC_FALLBACK = 0.1
 
 def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
@@ -95,6 +100,275 @@ class SamplesArrayDataset(torch.utils.data.Dataset):
         y = np.float32(self.y_all[idx])
         y_seq = self.y_seq_all[idx].astype(np.float32)  # (W,)
         return torch.from_numpy(x).float(), torch.tensor([y], dtype=torch.float32), torch.from_numpy(y_seq).float()
+
+
+def _split_train_val(train_idx: np.ndarray, file_ids: np.ndarray, *, seed: int, val_frac: float = VAL_FRAC_FALLBACK):
+    """Split a training index array into (train_idx2, val_idx).
+
+    Primary mode: hold out an entire recording file (session) for validation.
+    Fallback: random window split when there is only one training file.
+    """
+    train_idx = np.asarray(train_idx, dtype=np.int64).reshape(-1)
+    if train_idx.size < 2:
+        # Degenerate: force a minimal split.
+        return train_idx[:1], train_idx[:0]
+
+    rng = np.random.default_rng(int(seed))
+    train_files = np.unique(file_ids[train_idx])
+
+    if train_files.size >= 2:
+        val_file = int(rng.choice(train_files))
+        val_mask = file_ids[train_idx] == val_file
+        val_idx = train_idx[val_mask]
+        train_idx2 = train_idx[~val_mask]
+    else:
+        perm = rng.permutation(train_idx)
+        n_val = int(max(1, round(float(val_frac) * perm.size)))
+        val_idx = perm[:n_val]
+        train_idx2 = perm[n_val:]
+
+    if train_idx2.size < 1:
+        # Ensure non-empty train split.
+        perm = rng.permutation(train_idx)
+        val_idx = perm[:1]
+        train_idx2 = perm[1:]
+
+    return train_idx2.astype(np.int64), val_idx.astype(np.int64)
+
+
+def _make_pretrain_dataset(ds_train: torch.utils.data.Dataset):
+    class _Pre(torch.utils.data.Dataset):
+        def __init__(self, base): self.base = base
+        def __len__(self): return len(self.base)
+        def __getitem__(self, i):
+            x, _, _ = self.base[i]
+            return x
+    return _Pre(ds_train)
+
+
+def train_one_fold(
+    *,
+    X_all: np.ndarray,
+    y_all: np.ndarray,
+    y_seq_all: np.ndarray,
+    file_ids: np.ndarray,
+    train_idx: np.ndarray,
+    val_idx: np.ndarray | None = None,
+    test_idx: np.ndarray,
+    feature_cols: np.ndarray,
+    device: torch.device,
+    run_dir: Path | None,
+    fold_i: int,
+    label: str,
+    data_meta: dict,
+    quiet: bool = False,
+    early_stop_patience: int = 0,
+    epochs_pretrain: int = EPOCHS_PRETRAIN,
+    epochs_finetune: int = EPOCHS_FINETUNE,
+) -> dict:
+    """Train one fold using an internal train/val split for model selection."""
+    n_vars = int(len(feature_cols))
+    seq_len = int(X_all.shape[1])
+
+    # Train/val split for checkpoint selection (avoid peeking at test).
+    if val_idx is None:
+        train_idx2, val_idx = _split_train_val(train_idx, file_ids, seed=SEED + fold_i * 1000)
+    else:
+        train_idx2 = np.asarray(train_idx, dtype=np.int64).reshape(-1)
+        val_idx = np.asarray(val_idx, dtype=np.int64).reshape(-1)
+
+    scaler = StandardScaler.fit([X_all[train_idx2].reshape(-1, X_all.shape[2])])
+
+    ds_train = SamplesArrayDataset(X_all, y_all, y_seq_all, train_idx2, scaler.mean_, scaler.std_, feature_cols)
+    ds_val   = SamplesArrayDataset(X_all, y_all, y_seq_all, val_idx,    scaler.mean_, scaler.std_, feature_cols)
+    ds_test  = SamplesArrayDataset(X_all, y_all, y_seq_all, test_idx,   scaler.mean_, scaler.std_, feature_cols)
+
+    ds_pre = _make_pretrain_dataset(ds_train)
+
+    bs = min(BATCH_SIZE, len(ds_train))
+    dl_pre = DataLoader(ds_pre, batch_size=bs, shuffle=True, drop_last=len(ds_pre) > bs)
+    dl_train = DataLoader(ds_train, batch_size=bs, shuffle=True, drop_last=len(ds_train) > bs)
+    dl_val = DataLoader(ds_val, batch_size=min(BATCH_SIZE, len(ds_val)), shuffle=False)
+    dl_test = DataLoader(ds_test, batch_size=min(BATCH_SIZE, len(ds_test)), shuffle=False)
+
+    if not quiet:
+        print(f"window={seq_len} vars={n_vars} train={len(ds_train)} val={len(ds_val)} test={len(ds_test)}")
+
+    encoder = TSTEncoder(
+        n_vars=n_vars, seq_len=seq_len,
+        d_model=D_MODEL, n_heads=N_HEADS,
+        d_ff=D_FF, n_layers=N_LAYERS,
+        dropout=DROPOUT
+    ).to(device)
+
+    # -------- PRETRAIN --------
+    pre = TSTPretrainDenoiser(encoder).to(device)
+    opt = torch.optim.RAdam(pre.parameters(), lr=LR)
+
+    if not quiet:
+        print("[Pretrain]")
+    epoch_iter = tqdm(range(1, int(epochs_pretrain) + 1), desc="Pretrain", unit="epoch", disable=quiet)
+    for epoch in epoch_iter:
+        pre.train()
+        num_sum = 0.0
+        den_sum = 0.0
+        for xb in dl_pre:
+            xb = xb.to(device)
+            mask = stateful_variable_mask(
+                batch_size=xb.shape[0],
+                seq_len=xb.shape[1],
+                n_vars=xb.shape[2],
+                r=MASK_R,
+                lm=MASK_LM,
+                device=device,
+            )
+            xb_masked = xb * mask
+            pred = pre(xb_masked)
+
+            inv = 1.0 - mask
+            se = (pred - xb) ** 2
+            num = (se * inv).sum()
+            den = inv.sum().clamp_min(1.0)
+            loss = num / den
+
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(pre.parameters(), 1.0)
+            opt.step()
+
+            num_sum += float(num.detach().item())
+            den_sum += float(den.detach().item())
+
+        recon_mse = num_sum / max(den_sum, 1e-8)
+        epoch_iter.set_postfix(recon_mse=f"{recon_mse:.6f}")
+
+    # -------- FINETUNE --------
+    reg = TSTRegressor(encoder, out_dim=1).to(device)
+    opt2 = torch.optim.RAdam(reg.parameters(), lr=LR)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt2, T_max=int(epochs_finetune), eta_min=LR * 0.01)
+    mse = torch.nn.MSELoss()
+
+    if not quiet:
+        print("[Finetune]")
+    best_val_rmse = float("inf")
+    best_val_seq_rmse = float("inf")
+    best_epoch = 0
+    best_state = None
+    best_patience_left = int(early_stop_patience)
+    last_val_metrics = {"rmse": float("inf"), "seq_rmse": float("inf")}
+
+    ft_iter = tqdm(range(1, int(epochs_finetune) + 1), desc="Finetune", unit="epoch", disable=quiet)
+    for epoch in ft_iter:
+        reg.train()
+        total = 0.0
+        n = 0
+        for batch in dl_train:
+            xb, _yb_scalar, yb_seq = batch
+            xb = xb.to(device)
+            yb_seq = yb_seq.to(device)
+            out = reg(xb)               # [B,T,1]
+            pred_seq = out[:, :, 0]      # [B,T]
+            loss = mse(pred_seq, yb_seq)
+
+            opt2.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(reg.parameters(), 1.0)
+            opt2.step()
+
+            total += float(loss.detach().item()) * yb_seq.numel()
+            n += yb_seq.numel()
+
+        scheduler.step()
+
+        val_metrics = eval_regressor(reg, dl_val, device=device) if len(ds_val) > 0 else {"rmse": float("inf"), "seq_rmse": float("inf")}
+        last_val_metrics = dict(val_metrics)
+        train_rmse = math.sqrt(total / max(n, 1))
+        ft_iter.set_postfix(
+            train=f"{train_rmse:.3f}",
+            val=f"{val_metrics['rmse']:.3f}",
+            vseq=f"{val_metrics['seq_rmse']:.3f}",
+        )
+
+        improved = float(val_metrics["rmse"]) < float(best_val_rmse) - 1e-8
+        if improved:
+            best_val_rmse = float(val_metrics["rmse"])
+            best_val_seq_rmse = float(val_metrics["seq_rmse"])
+            best_epoch = int(epoch)
+            best_state = copy.deepcopy(reg.state_dict())
+            best_patience_left = int(early_stop_patience)
+        elif early_stop_patience > 0:
+            best_patience_left -= 1
+            if best_patience_left <= 0:
+                if not quiet:
+                    print(f"Early stop at epoch {epoch} (no val RMSE improvement for {early_stop_patience} epochs)")
+                break
+
+    # Evaluate test once using the best-by-validation weights.
+    last_state = copy.deepcopy(reg.state_dict())
+    if best_state is not None:
+        reg.load_state_dict(best_state, strict=True)
+    test_metrics = eval_regressor(reg, dl_test, device=device)
+
+    out = {
+        "fold": int(fold_i),
+        "n_train": int(len(ds_train)),
+        "n_val": int(len(ds_val)),
+        "n_test": int(len(ds_test)),
+        "epochs_pretrain": int(epochs_pretrain),
+        "epochs_finetune": int(epochs_finetune),
+        "best_val_rmse": float(best_val_rmse),
+        "best_val_seq_rmse": float(best_val_seq_rmse),
+        "best_epoch": int(best_epoch),
+        "final_val_rmse": float(last_val_metrics.get("rmse", float("inf"))),
+        "test_rmse": float(test_metrics["rmse"]),
+        "test_seq_rmse": float(test_metrics["seq_rmse"]),
+        "test_mae": float(test_metrics["mae"]),
+        # Backward compatibility: older tooling expects metrics.json.best_rmse.
+        # This is the test RMSE at the checkpoint selected by validation RMSE.
+        "best_rmse": float(test_metrics["rmse"]),
+    }
+
+    if run_dir is not None:
+        fold_dir = run_dir / f"fold_{fold_i:02d}"
+        fold_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save best checkpoint (by validation RMSE).
+        save_checkpoint(
+            fold_dir / "reg_best.pt",
+            reg=reg, encoder=encoder, scaler=scaler,
+            extra={
+                "stage": "finetune_best_val",
+                "fold": int(fold_i),
+                "epoch": int(best_epoch),
+                "best_val_rmse": float(best_val_rmse),
+                "best_val_seq_rmse": float(best_val_seq_rmse),
+                "test_rmse": float(test_metrics["rmse"]),
+                "test_seq_rmse": float(test_metrics["seq_rmse"]),
+                "label_shift": int(data_meta.get("label_shift", 0)),
+                "feature_cols": feature_cols.tolist(),
+            },
+        )
+
+        # Save last checkpoint (for debugging).
+        reg.load_state_dict(last_state, strict=True)
+        save_checkpoint(
+            fold_dir / "reg_last.pt",
+            reg=reg, encoder=encoder, scaler=scaler,
+            extra={
+                "stage": "finetune_last",
+                "fold": int(fold_i),
+                "epoch": int(epoch),
+                "best_val_rmse": float(best_val_rmse),
+                "label_shift": int(data_meta.get("label_shift", 0)),
+                "feature_cols": feature_cols.tolist(),
+            },
+        )
+
+        with open(fold_dir / "metrics.json", "w", encoding="utf-8") as f:
+            json.dump(out, f, indent=2)
+
+    return out
+
 
 @torch.no_grad()
 def eval_regressor(model: TSTRegressor, loader: DataLoader, device: torch.device) -> dict:
@@ -167,154 +441,31 @@ def _train_cv(X_all, y_all, y_seq_all, folds, feature_cols, device, run_dir, lab
         if not quiet:
             print(f"\n========== {label} | Fold {fold_i}/{n_folds} ==========")
 
-        # Fit scaler on ALL features, but dataset selects feature_cols
-        scaler = StandardScaler.fit([X_all[train_idx].reshape(-1, X_all.shape[2])])
-
-        ds_train = SamplesArrayDataset(X_all, y_all, y_seq_all, train_idx, scaler.mean_, scaler.std_, feature_cols)
-        ds_test  = SamplesArrayDataset(X_all, y_all, y_seq_all, test_idx,  scaler.mean_, scaler.std_, feature_cols)
-
-        class _Pre(torch.utils.data.Dataset):
-            def __init__(self, base): self.base = base
-            def __len__(self): return len(self.base)
-            def __getitem__(self, i):
-                x, _, _ = self.base[i]
-                return x
-
-        ds_pre = _Pre(ds_train)
-
-        bs = min(BATCH_SIZE, len(ds_train))
-        dl_pre = DataLoader(ds_pre, batch_size=bs, shuffle=True, drop_last=len(ds_pre) > bs)
-        dl_train = DataLoader(ds_train, batch_size=bs, shuffle=True, drop_last=len(ds_train) > bs)
-        dl_test = DataLoader(ds_test, batch_size=min(BATCH_SIZE, len(ds_test)), shuffle=False)
-
-        if not quiet:
-            print(f"window={seq_len} vars={n_vars} train={len(ds_train)} test={len(ds_test)}")
-
-        # Fresh model per fold
-        encoder = TSTEncoder(
-            n_vars=n_vars, seq_len=seq_len,
-            d_model=D_MODEL, n_heads=N_HEADS,
-            d_ff=D_FF, n_layers=N_LAYERS,
-            dropout=DROPOUT
-        ).to(device)
-
-        # -------- PRETRAIN --------
-        pre = TSTPretrainDenoiser(encoder).to(device)
-        opt = torch.optim.RAdam(pre.parameters(), lr=LR)
-
-        if not quiet:
-            print("[Pretrain]")
-        epoch_iter = tqdm(range(1, EPOCHS_PRETRAIN + 1), desc="Pretrain", unit="epoch", disable=quiet)
-        for epoch in epoch_iter:
-            pre.train()
-            num_sum = 0.0
-            den_sum = 0.0
-            for xb in dl_pre:
-                xb = xb.to(device)
-                mask = stateful_variable_mask(
-                    batch_size=xb.shape[0],
-                    seq_len=xb.shape[1],
-                    n_vars=xb.shape[2],
-                    r=MASK_R,
-                    lm=MASK_LM,
-                    device=device,
-                )
-                xb_masked = xb * mask
-                pred = pre(xb_masked)
-
-                inv = 1.0 - mask
-                se = (pred - xb) ** 2
-                num = (se * inv).sum()
-                den = inv.sum().clamp_min(1.0)
-                loss = num / den
-
-                opt.zero_grad(set_to_none=True)
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(pre.parameters(), 1.0)
-                opt.step()
-
-                num_sum += float(num.detach().item())
-                den_sum += float(den.detach().item())
-
-            recon_mse = num_sum / max(den_sum, 1e-8)
-            epoch_iter.set_postfix(recon_mse=f"{recon_mse:.6f}")
-
-        # -------- FINETUNE --------
-        reg = TSTRegressor(encoder, out_dim=1).to(device)
-        opt2 = torch.optim.RAdam(reg.parameters(), lr=LR)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt2, T_max=EPOCHS_FINETUNE, eta_min=LR * 0.01)
-        mse = torch.nn.MSELoss()
-
-        if not quiet:
-            print("[Finetune]")
-        best_rmse = float("inf")
-        fold_dir = run_dir / f"fold_{fold_i:02d}"
-        fold_dir.mkdir(parents=True, exist_ok=True)
-
-        ft_iter = tqdm(range(1, EPOCHS_FINETUNE + 1), desc="Finetune", unit="epoch", disable=quiet)
-        for epoch in ft_iter:
-            reg.train()
-            total = 0.0
-            n = 0
-            for batch in dl_train:
-                xb, _yb_scalar, yb_seq = batch
-                xb = xb.to(device)
-                yb_seq = yb_seq.to(device)
-                out = reg(xb)               # [B,T,1]
-                pred_seq = out[:, :, 0]      # [B,T]
-                loss = mse(pred_seq, yb_seq)
-
-                opt2.zero_grad(set_to_none=True)
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(reg.parameters(), 1.0)
-                opt2.step()
-
-                total += float(loss.detach().item()) * yb_seq.numel()
-                n += yb_seq.numel()
-
-            scheduler.step()
-
-            metrics = eval_regressor(reg, dl_test, device=device)
-            train_rmse = math.sqrt(total / max(n, 1))
-            ft_iter.set_postfix(
-                train=f"{train_rmse:.3f}",
-                test=f"{metrics['rmse']:.3f}",
-                seq=f"{metrics['seq_rmse']:.3f}",
-            )
-
-            if metrics["rmse"] < best_rmse:
-                best_rmse = metrics["rmse"]
-                save_checkpoint(
-                    fold_dir / "reg_best.pt",
-                    reg=reg, encoder=encoder, scaler=scaler,
-                    extra={"stage":"finetune_best", "fold": fold_i, "epoch": epoch, "test_rmse": float(metrics["rmse"]),
-                           "label_shift": int(data.get("label_shift", 0)), "feature_cols": feature_cols.tolist()}
-                )
-
-        # Always save last
-        save_checkpoint(
-            fold_dir / "reg_last.pt",
-            reg=reg, encoder=encoder, scaler=scaler,
-            extra={"stage":"finetune_last", "fold": fold_i, "epoch": EPOCHS_FINETUNE, "best_rmse": float(best_rmse),
-                   "label_shift": int(data.get("label_shift", 0)), "feature_cols": feature_cols.tolist()}
+        fold_metrics = train_one_fold(
+            X_all=X_all,
+            y_all=y_all,
+            y_seq_all=y_seq_all,
+            file_ids=file_ids,
+            train_idx=train_idx,
+            test_idx=test_idx,
+            feature_cols=feature_cols,
+            device=device,
+            run_dir=run_dir,
+            fold_i=fold_i,
+            label=label,
+            data_meta=data,
+            quiet=quiet,
+            early_stop_patience=0,
         )
 
-        # Write fold metrics
-        with open(fold_dir / "metrics.json", "w", encoding="utf-8") as f:
-            json.dump({
-                "fold": fold_i,
-                "best_rmse": float(best_rmse),
-                "final_test_rmse": float(metrics["rmse"]),
-                "final_test_seq_rmse": float(metrics["seq_rmse"]),
-                "final_test_mae": float(metrics["mae"]),
-            }, f, indent=2)
-
+        # Keep backward-compatible keys: "best_rmse" is the test RMSE at the best validation epoch.
         all_fold_metrics.append({
-            "fold": fold_i,
-            "best_rmse": float(best_rmse),
-            "final_rmse": float(metrics["rmse"]),
-            "final_seq_rmse": float(metrics["seq_rmse"]),
-            "final_mae": float(metrics["mae"]),
+            "fold": int(fold_i),
+            "best_rmse": float(fold_metrics["test_rmse"]),
+            "best_val_rmse": float(fold_metrics["best_val_rmse"]),
+            "final_rmse": float(fold_metrics["test_rmse"]),
+            "final_seq_rmse": float(fold_metrics["test_seq_rmse"]),
+            "final_mae": float(fold_metrics["test_mae"]),
         })
 
     return all_fold_metrics
@@ -472,14 +623,22 @@ def main():
 
     set_seed(SEED)
     train_idx, test_idx = folds[0]
-    scaler = StandardScaler.fit([X_all[train_idx].reshape(-1, n_vars)])
-    ds_test = SamplesArrayDataset(X_all, y_all, y_seq_all, test_idx, scaler.mean_, scaler.std_, all_cols)
 
     # Load best model from fold 1
     ckpt_path = run_dir_all / "fold_01" / "reg_best.pt"
     if ckpt_path.exists():
         ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
         cfg = ckpt["model_cfg"]
+        scaler_obj = ckpt.get("scaler", {})
+        mean = np.asarray(scaler_obj.get("mean", None), dtype=np.float32)
+        std = np.asarray(scaler_obj.get("std", None), dtype=np.float32)
+        if mean.size == 0 or std.size == 0:
+            # Fallback if older checkpoints exist.
+            scaler = StandardScaler.fit([X_all[train_idx].reshape(-1, n_vars)])
+            mean, std = scaler.mean_, scaler.std_
+
+        feature_cols_pi = np.asarray(ckpt.get("extra", {}).get("feature_cols", all_cols.tolist()), dtype=np.int64)
+        ds_test = SamplesArrayDataset(X_all, y_all, y_seq_all, test_idx, mean, std, feature_cols_pi)
         encoder = TSTEncoder(
             n_vars=int(cfg["n_vars"]), seq_len=int(cfg["seq_len"]),
             d_model=int(cfg["d_model"]), n_heads=int(cfg["n_heads"]),
@@ -489,7 +648,7 @@ def main():
         reg = TSTRegressor(encoder, out_dim=1).to(device)
         reg.load_state_dict(ckpt["reg_state_dict"])
 
-        importance, baseline = permutation_importance(reg, ds_test, all_cols, device, n_repeats=5)
+        importance, baseline = permutation_importance(reg, ds_test, feature_cols_pi, device, n_repeats=5)
 
         # Build feature names
         n_raw = int(data.get("n_raw_features", 0))
@@ -520,7 +679,9 @@ def main():
         print(f"  {'-'*20} {'-'*10}  {'-'*10}")
         for rank, fi in enumerate(order):
             delta = importance[fi]
-            name = feat_names[fi] if fi < len(feat_names) else f"col_{fi}"
+            # `importance` is indexed by the selected feature columns; map back to original feature id.
+            col = int(feature_cols_pi[fi]) if fi < int(feature_cols_pi.size) else int(fi)
+            name = feat_names[col] if col < len(feat_names) else f"col_{col}"
             bar = "#" * max(1, int(delta / max(importance.max(), 1e-6) * 20))
             print(f"  {name:<20s} {delta:>+10.3f}  {bar}")
             if rank >= 19:  # top 20
