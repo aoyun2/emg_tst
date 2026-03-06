@@ -672,19 +672,40 @@ def record_compare_rollout(
     com_margin_ref = np.asarray(bal_ref.get("margin_trace", [])[: len(upright_ref)], dtype=np.float32)
     com_margin_good = np.asarray(bal_good.get("margin_trace", [])[: len(upright_good)], dtype=np.float32)
     com_margin_bad = np.asarray(bal_bad.get("margin_trace", [])[: len(upright_bad)], dtype=np.float32)
+    xcom_margin_ref = np.asarray(bal_ref.get("xcom_margin_trace", [])[: len(upright_ref)], dtype=np.float32)
+    xcom_margin_good = np.asarray(bal_good.get("xcom_margin_trace", [])[: len(upright_good)], dtype=np.float32)
+    xcom_margin_bad = np.asarray(bal_bad.get("xcom_margin_trace", [])[: len(upright_bad)], dtype=np.float32)
+    had_contact_ref = np.asarray(bal_ref.get("had_contact_trace", [])[: len(upright_ref)], dtype=np.bool_)
+    had_contact_good = np.asarray(bal_good.get("had_contact_trace", [])[: len(upright_good)], dtype=np.bool_)
+    had_contact_bad = np.asarray(bal_bad.get("had_contact_trace", [])[: len(upright_bad)], dtype=np.bool_)
 
     fell_ref = bool(fell_ref_hard)
     fell_good = bool(fell_good_hard)
     fell_bad = bool(fell_bad_hard)
 
     risk_ref, likely_ref, risk_trace_ref = predict_fall_risk_from_traces(
-        fell=fell_ref, upright=np.asarray(upright_ref, dtype=np.float32), com_margin_m=com_margin_ref, dt=float(dt)
+        fell=fell_ref,
+        upright=np.asarray(upright_ref, dtype=np.float32),
+        com_margin_m=com_margin_ref,
+        xcom_margin_m=xcom_margin_ref,
+        had_contact=had_contact_ref,
+        dt=float(dt),
     )
     risk_good, likely_good, risk_trace_good = predict_fall_risk_from_traces(
-        fell=fell_good, upright=np.asarray(upright_good, dtype=np.float32), com_margin_m=com_margin_good, dt=float(dt)
+        fell=fell_good,
+        upright=np.asarray(upright_good, dtype=np.float32),
+        com_margin_m=com_margin_good,
+        xcom_margin_m=xcom_margin_good,
+        had_contact=had_contact_good,
+        dt=float(dt),
     )
     risk_bad, likely_bad, risk_trace_bad = predict_fall_risk_from_traces(
-        fell=fell_bad, upright=np.asarray(upright_bad, dtype=np.float32), com_margin_m=com_margin_bad, dt=float(dt)
+        fell=fell_bad,
+        upright=np.asarray(upright_bad, dtype=np.float32),
+        com_margin_m=com_margin_bad,
+        xcom_margin_m=xcom_margin_bad,
+        had_contact=had_contact_bad,
+        dt=float(dt),
     )
 
     # "Balance loss" step is the first time we consider the walker unstable, even if it

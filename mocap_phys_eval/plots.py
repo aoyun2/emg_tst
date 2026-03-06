@@ -222,9 +222,9 @@ def plot_balance_traces(
     *,
     out_path: str | Path,
     sample_hz: float,
-    com_margin_ref_m: np.ndarray,
-    com_margin_good_m: np.ndarray,
-    com_margin_bad_m: np.ndarray,
+    xcom_margin_ref_m: np.ndarray,
+    xcom_margin_good_m: np.ndarray,
+    xcom_margin_bad_m: np.ndarray,
     upright_ref: np.ndarray,
     upright_good: np.ndarray,
     upright_bad: np.ndarray,
@@ -241,9 +241,9 @@ def plot_balance_traces(
 ) -> Path:
     n = int(
         min(
-            com_margin_ref_m.size,
-            com_margin_good_m.size,
-            com_margin_bad_m.size,
+            xcom_margin_ref_m.size,
+            xcom_margin_good_m.size,
+            xcom_margin_bad_m.size,
             upright_ref.size,
             upright_good.size,
             upright_bad.size,
@@ -256,11 +256,11 @@ def plot_balance_traces(
 
     fig, axes = plt.subplots(3, 1, figsize=(11.5, 8.2), sharex=True)
 
-    axes[0].plot(t, com_margin_ref_m[:n], color="0.2", lw=1.8, label=f"REF (risk={risk_ref:.2f})")
-    axes[0].plot(t, com_margin_good_m[:n], color="#d55e00", lw=1.8, label=f"GOOD (risk={risk_good:.2f})")
-    axes[0].plot(t, com_margin_bad_m[:n], color="#0072b2", lw=1.8, label=f"BAD (risk={risk_bad:.2f})")
+    axes[0].plot(t, xcom_margin_ref_m[:n], color="0.2", lw=1.8, label=f"REF (risk={risk_ref:.2f})")
+    axes[0].plot(t, xcom_margin_good_m[:n], color="#d55e00", lw=1.8, label=f"GOOD (risk={risk_good:.2f})")
+    axes[0].plot(t, xcom_margin_bad_m[:n], color="#0072b2", lw=1.8, label=f"BAD (risk={risk_bad:.2f})")
     axes[0].axhline(0.0, color="0.6", lw=1.0, ls="--")
-    axes[0].set_ylabel("COM margin (m)")
+    axes[0].set_ylabel("XCoM margin (m)")
     axes[0].grid(True, alpha=0.25)
     axes[0].legend(loc="upper right")
 

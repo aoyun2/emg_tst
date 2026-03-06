@@ -731,9 +731,9 @@ def main() -> None:
         bal_plot = plot_balance_traces(
             out_path=plots_dir / "simulation_balance.png",
             sample_hz=float(match_hz),
-            com_margin_ref_m=np.asarray(rr["balance_margin_ref_m"], dtype=np.float32),
-            com_margin_good_m=np.asarray(rr["balance_margin_good_m"], dtype=np.float32),
-            com_margin_bad_m=np.asarray(rr["balance_margin_bad_m"], dtype=np.float32),
+            xcom_margin_ref_m=np.asarray(rr["balance_xcom_margin_ref_m"], dtype=np.float32),
+            xcom_margin_good_m=np.asarray(rr["balance_xcom_margin_good_m"], dtype=np.float32),
+            xcom_margin_bad_m=np.asarray(rr["balance_xcom_margin_bad_m"], dtype=np.float32),
             upright_ref=np.asarray(rr["upright_ref"], dtype=np.float32),
             upright_good=np.asarray(rr["upright_good"], dtype=np.float32),
             upright_bad=np.asarray(rr["upright_bad"], dtype=np.float32),

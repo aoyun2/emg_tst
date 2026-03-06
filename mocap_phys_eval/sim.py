@@ -476,28 +476,62 @@ def _clamp01(x: float) -> float:
     return float(max(0.0, min(1.0, float(x))))
 
 
-def _risk_trace_from_upright_and_com_margin(
+def _moving_average(x: np.ndarray, *, window: int) -> np.ndarray:
+    """Simple moving average with edge padding (returns same length as x)."""
+    v = np.asarray(x, dtype=np.float64).reshape(-1)
+    n = int(v.size)
+    w = int(max(1, int(window)))
+    if n < 1:
+        return v.astype(np.float64)
+    if w <= 1 or n == 1:
+        return v.copy()
+    kernel = np.ones((w,), dtype=np.float64) / float(w)
+    # Pad with edge values so we don't artificially depress the ends.
+    pad = w // 2
+    left = np.full((pad,), float(v[0]), dtype=np.float64)
+    right = np.full((w - 1 - pad,), float(v[-1]), dtype=np.float64)
+    vp = np.concatenate([left, v, right], axis=0)
+    y = np.convolve(vp, kernel, mode="valid")
+    return y.astype(np.float64)
+
+
+def _risk_trace_from_upright_and_margin(
     *,
     upright: np.ndarray,
-    com_margin_m: np.ndarray,
+    margin_m: np.ndarray,
+    had_contact: np.ndarray | None,
     dt: float,
     tail_n: int = 10,
 ) -> np.ndarray:
     """Heuristic per-step instability score in [0, 1].
 
     Inputs:
-    - upright: cosine of tilt (1=upright).
-    - com_margin_m: signed distance of COM to support polygon boundary (m).
+    - upright: cosine of tilt (1=upright). In the CMU humanoid, the root's +Y axis is "up",
+      so this is effectively dot(root_y_axis, world_z_axis).
+    - margin_m: signed distance to the support polygon boundary (m). Positive means inside.
+      This is typically the XCoM margin (more predictive), but COM margin also works.
+    - had_contact: optional boolean trace indicating whether either foot contacted the ground.
 
     Design goals:
     - Avoid root-height based heuristics (crouching/kneeling should not be flagged).
-    - Be conservative (low false positives on normal walking).
+    - Reduce false positives on dynamic walking (brief negative margins can occur).
+    - Catch "about to fall" cases earlier using margin *trend* + tilt-rate.
     """
     u = np.asarray(upright, dtype=np.float64).reshape(-1)
-    m = np.asarray(com_margin_m, dtype=np.float64).reshape(-1)
+    m = np.asarray(margin_m, dtype=np.float64).reshape(-1)
     n = int(min(u.size, m.size))
     if n < 1:
         return np.zeros((0,), dtype=np.float32)
+
+    if had_contact is not None:
+        hc0 = np.asarray(had_contact, dtype=np.bool_).reshape(-1)
+        if int(hc0.size) < int(n):
+            # Missing or truncated contact trace; treat as "unknown" (assume contact).
+            hc = None
+        else:
+            hc = hc0[:n]
+    else:
+        hc = None
 
     dt = float(dt)
     if not math.isfinite(dt) or dt <= 0:
@@ -505,38 +539,50 @@ def _risk_trace_from_upright_and_com_margin(
 
     W = int(max(3, min(int(tail_n), n)))
     out = np.zeros((n,), dtype=np.float64)
+
+    prev_ui = float(u[0]) if math.isfinite(float(u[0])) else 0.0
     for i in range(n):
         ui = float(u[i])
         if not math.isfinite(ui):
-            ui = -1.0
+            ui = prev_ui
 
-        # Tilt risk: near 1 is good; below ~0.9 starts to matter; below ~0.55 is severe.
-        # This is intentionally steep to catch tipping early.
-        tilt_r = _clamp01((0.90 - ui) / 0.35)
-
-        j0 = int(max(0, i - W + 1))
-        mw = m[j0 : i + 1]
-        mw = mw[np.isfinite(mw)]
-        if mw.size < 1:
-            support_r = 0.0
+        # Tilt risk:
+        # - Absolute tilt is permissive (we avoid flagging crouching/leaning as a fall).
+        # - Tilt *rate* catches tipping early.
+        tilt_abs_r = _clamp01((0.75 - ui) / 0.35)  # 0 at 0.75, 1 at 0.40
+        if i == 0:
+            du = 0.0
         else:
-            mmin = float(np.min(mw))
-            outside = float(np.mean(mw < 0.0))
-            if mw.size >= 2:
-                slope = float((float(mw[-1]) - float(mw[0])) / (float(mw.size - 1) * float(dt)))
+            du = (ui - prev_ui) / float(dt)
+        prev_ui = ui
+        tilt_rate_r = _clamp01((-du - 0.40) / 1.20)  # 0 at -0.40/s, 1 at -1.60/s
+        tilt_r = 1.0 - (1.0 - float(tilt_abs_r)) * (1.0 - float(tilt_rate_r))
+
+        # Support risk from margin magnitude + trend.
+        if hc is not None and not bool(hc[i]):
+            # No ground contact: no base of support. Treat as highly unstable.
+            support_r = 1.0
+        else:
+            j0 = int(max(0, i - W + 1))
+            mw = m[j0 : i + 1]
+            mw = mw[np.isfinite(mw)]
+            if mw.size < 1:
+                support_r = 0.5
             else:
-                slope = 0.0
+                mmin = float(np.min(mw))
+                mend = float(mw[-1])
+                if mw.size >= 2:
+                    slope = float((float(mw[-1]) - float(mw[0])) / (float(mw.size - 1) * float(dt)))
+                else:
+                    slope = 0.0
 
-            # Support-risk components.
-            # These thresholds are intentionally permissive: during dynamic gait the COM
-            # can spend meaningful time outside the instantaneous support polygon.
-            # We only assign high risk once the COM is far outside for a sustained period
-            # or the margin is rapidly decreasing.
-            r_margin = _clamp01((-mmin - 0.35) / 0.45)  # 0 at -35cm, 1 at -80cm
-            r_outside = _clamp01((outside - 0.95) / 0.05)  # only penalize near-always outside
-            r_slope = _clamp01((-slope - 0.15) / 0.45)  # 0 at -0.15 m/s, 1 at -0.60 m/s
+                # Thresholds tuned empirically on REF walking/running so stable motion stays low-risk,
+                # while large negative (and/or rapidly decreasing) margins drive risk to 1.
+                r_mmin = _clamp01((-mmin - 0.42) / 0.40)  # 0 at -42cm, 1 at -82cm
+                r_mend = _clamp01((-mend - 0.30) / 0.35)  # 0 at -30cm, 1 at -65cm
+                r_slope = _clamp01((-slope - 0.15) / 0.45)  # 0 at -0.15 m/s, 1 at -0.60 m/s
 
-            support_r = float(_clamp01(0.65 * r_margin + 0.25 * r_slope + 0.10 * r_outside))
+                support_r = float(_clamp01(0.55 * r_mmin + 0.25 * r_mend + 0.20 * r_slope))
 
         # Combine such that either signal can dominate.
         out[i] = 1.0 - (1.0 - float(tilt_r)) * (1.0 - float(support_r))
@@ -549,23 +595,31 @@ def predict_fall_risk_from_traces(
     fell: bool,
     upright: np.ndarray,
     com_margin_m: np.ndarray,
+    xcom_margin_m: np.ndarray | None = None,
+    had_contact: np.ndarray | None = None,
     dt: float,
     tail_n: int = 10,
 ) -> tuple[float, bool, np.ndarray]:
     """Return (scalar_risk, likely_fall, risk_trace)."""
-    risk_trace = _risk_trace_from_upright_and_com_margin(
+    # Prefer XCoM margin when available: it incorporates COM velocity and is more predictive.
+    m = np.asarray(xcom_margin_m if xcom_margin_m is not None else com_margin_m, dtype=np.float32)
+    risk_trace = _risk_trace_from_upright_and_margin(
         upright=np.asarray(upright, dtype=np.float32),
-        com_margin_m=np.asarray(com_margin_m, dtype=np.float32),
+        margin_m=m,
+        had_contact=(None if had_contact is None else np.asarray(had_contact, dtype=np.bool_)),
         dt=float(dt),
         tail_n=int(tail_n),
     )
     if risk_trace.size < 1:
         return (1.0 if bool(fell) else float("nan")), bool(fell), risk_trace
 
-    W = int(max(3, min(int(tail_n), int(risk_trace.size))))
-    tail = np.asarray(risk_trace[-W:], dtype=np.float64)
-    # Use a high percentile of the tail (more robust than a single-step max).
+    # Smooth before summarizing to reduce single-frame spikes.
+    risk_smooth = _moving_average(risk_trace, window=5)
+    W = int(max(3, min(int(tail_n), int(risk_smooth.size))))
+    tail = np.asarray(risk_smooth[-W:], dtype=np.float64)
+    # Use a high percentile of the tail for robustness, but allow sustained peaks to show.
     r = float(np.nanpercentile(tail, 90))
+    r = max(r, float(np.nanmax(tail)))
     if bool(fell):
         r = 1.0
     r = _clamp01(r) if math.isfinite(r) else 1.0
@@ -579,15 +633,17 @@ def detect_balance_loss_step(*, risk_trace: np.ndarray, upright: np.ndarray) -> 
     n = int(min(r.size, u.size))
     if n < 1:
         return -1
+    # Smooth risk to avoid triggering on single-frame spikes.
+    r_s = _moving_average(r, window=5)
     consec = 0
     for i in range(n):
-        ri = float(r[i])
+        ri = float(r_s[i])
         ui = float(u[i])
         if math.isfinite(ui) and ui < 0.40:
             return int(i)
-        if math.isfinite(ri) and ri >= 0.95:
+        if math.isfinite(ri) and ri >= 0.85:
             consec += 1
-            if consec >= 5:
+            if consec >= 4:
                 return int(i - consec + 1)
         else:
             consec = 0
@@ -995,7 +1051,8 @@ def run_reference_stability_check(
     min_root_z = float("inf")
     min_upright = float("inf")
     upright_trace: list[float] = []
-    com_margin_trace: list[float] = []
+    xcom_margin_trace: list[float] = []
+    had_contact_trace: list[bool] = []
     terminated_early = False
 
     for t in range(int(primary_steps)):
@@ -1016,7 +1073,7 @@ def run_reference_stability_check(
         upright_trace.append(float(u))
 
         # Balance (XCoM margin).
-        com_xy, com_vel_xy, xcom_xy, com_margin, _xcom_margin, _had_contact, centroid = _balance_metrics_step(
+        com_xy, com_vel_xy, xcom_xy, _com_margin, xcom_margin, had_contact, centroid = _balance_metrics_step(
             physics=physics,
             root_body_id=root_id,
             left_foot_geoms=left_geoms,
@@ -1028,14 +1085,15 @@ def run_reference_stability_check(
             prev_com_xy=prev_com_xy,
         )
         prev_com_xy = com_xy
-        com_margin_trace.append(float(com_margin))
-        if math.isfinite(float(com_margin)):
-            min_margin = min(min_margin, float(com_margin))
-            margin_end = float(com_margin)
-            if float(com_margin) < 0.0:
+        xcom_margin_trace.append(float(xcom_margin))
+        had_contact_trace.append(bool(had_contact))
+        if math.isfinite(float(xcom_margin)):
+            min_margin = min(min_margin, float(xcom_margin))
+            margin_end = float(xcom_margin)
+            if float(xcom_margin) < 0.0:
                 outside += 1
             count += 1
-            tail_margin.append(float(com_margin))
+            tail_margin.append(float(xcom_margin))
             if len(tail_margin) > 10:
                 tail_margin = tail_margin[-10:]
 
@@ -1056,7 +1114,9 @@ def run_reference_stability_check(
     risk, likely, risk_trace = predict_fall_risk_from_traces(
         fell=bool(terminated_early),
         upright=np.asarray(upright_trace, dtype=np.float32),
-        com_margin_m=np.asarray(com_margin_trace, dtype=np.float32),
+        com_margin_m=np.asarray(np.zeros((len(xcom_margin_trace),), dtype=np.float32)),
+        xcom_margin_m=np.asarray(xcom_margin_trace, dtype=np.float32),
+        had_contact=np.asarray(had_contact_trace, dtype=np.bool_),
         dt=float(dt),
         tail_n=10,
     )
