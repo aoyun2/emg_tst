@@ -10,7 +10,7 @@ from .sim import OverrideSpec, highlight_overridden_leg, make_tracking_env, tint
 
 
 def view_compare_npz(path: str | Path) -> None:
-    """Interactive compare replay (REF | GOOD | BAD) with per-panel camera controls."""
+    """Interactive compare replay (REF | PRED | BAD) with per-panel camera controls."""
     npz_path = Path(path).expanduser()
     if not npz_path.exists():
         raise FileNotFoundError(npz_path)
@@ -108,12 +108,12 @@ def view_compare_npz(path: str | Path) -> None:
 
     panels = [
         {"name": "REF", "phys": phys_ref, "rend": rend_ref, "cam": cam_ref},
-        {"name": "GOOD", "phys": phys_good, "rend": rend_good, "cam": cam_good},
+        {"name": "PRED", "phys": phys_good, "rend": rend_good, "cam": cam_good},
         {"name": "BAD", "phys": phys_bad, "rend": rend_bad, "cam": cam_bad},
     ]
 
     root = tk.Tk()
-    root.title(f"MoCapAct Compare Replay (REF | GOOD | BAD)  clip={clip_id}  start={start_step}  [{npz_path.name}]")
+    root.title(f"MoCapAct Compare Replay (REF | PRED | BAD)  clip={clip_id}  start={start_step}  [{npz_path.name}]")
 
     img_lbl = tk.Label(root)
     img_lbl.pack()
@@ -163,7 +163,7 @@ def view_compare_npz(path: str | Path) -> None:
         pad = 8
         w = int(width)
         draw.text((pad + 0 * w, pad), "REF (no override)", fill=(255, 255, 255), font=font)
-        draw.text((pad + 1 * w, pad), "GOOD (override)", fill=(255, 255, 255), font=font)
+        draw.text((pad + 1 * w, pad), "PRED (override)", fill=(255, 255, 255), font=font)
         draw.text((pad + 2 * w, pad), "BAD (override)", fill=(255, 255, 255), font=font)
         draw.text(
             (pad, int(height) - 18),
@@ -364,7 +364,7 @@ def view_compare_npz(path: str | Path) -> None:
         )
         good_info.configure(
             text=_fmt_line(
-                "GOOD",
+                "PRED",
                 i=i,
                 fall_step=fall_step_good,
                 risk=risk_good,

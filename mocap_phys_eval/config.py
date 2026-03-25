@@ -28,10 +28,13 @@ class EvalConfig:
     # TST windowing (training/eval window length).
     window_hz: float = 200.0
     window_n: int = 200  # 1.0s at 200Hz
-    # How many independent windows to evaluate per run invocation.
-    # If rigtest samples exist, we pick that many random windows from samples_dataset.npy.
-    # Otherwise, we extract that many windows from the downloaded demo BVH.
-    eval_n_windows: int = 3
+    # Paper protocol on real rigtest data:
+    # sample from the held-out LOFO pool with a fixed random seed and keep
+    # replacing failed trials until this many successful evaluations are obtained.
+    paper_eval_n_trials: int = 80
+    paper_eval_seed: int = 42
+    # Demo-only fallback window count when rigtest samples / trained folds are unavailable.
+    demo_n_windows: int = 3
 
     # Rigtest samples dataset (produced by split_to_samples.py).
     rig_samples_path: Path = Path("samples_dataset.npy")

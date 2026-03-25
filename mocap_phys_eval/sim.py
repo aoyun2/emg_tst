@@ -136,6 +136,7 @@ def load_multiclip_policy(ckpt_path: str, *, device: str = "cpu") -> Any:
 def load_expert_policy(model_dir: str | Path, *, device: str = "cpu") -> Any:
     """Load a per-snippet MoCapAct expert (SB3 PPO) from an extracted model zoo directory."""
     from pathlib import Path
+    import sys
 
     model_dir = Path(model_dir)
     if not model_dir.is_absolute():
@@ -147,7 +148,10 @@ def load_expert_policy(model_dir: str | Path, *, device: str = "cpu") -> Any:
         from mocapact import observables  # type: ignore
         from mocapact.sb3 import utils as sb3_utils  # type: ignore
     except Exception as e:  # pragma: no cover
-        raise RuntimeError("Missing mocapact runtime deps required to load expert policies.") from e
+        raise RuntimeError(
+            "Missing mocapact runtime deps required to load expert policies. "
+            f"python={sys.executable} cause={type(e).__name__}: {e}"
+        ) from e
 
     # Experts use TIME_INDEX_OBSERVABLES (proprio + time_in_clip), and do not depend on ref_steps.
     return sb3_utils.load_policy(str(model_dir), observables.TIME_INDEX_OBSERVABLES, device=str(device), seed=0)

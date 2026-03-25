@@ -109,8 +109,8 @@ def plot_simulation_knee(
 
     ax.plot(t, ref_target_knee_deg[:n], color="0.6", lw=1.2, ls="--", label="REF target")
     ax.plot(t, ref_actual_knee_deg[:n], color="0.2", lw=1.8, label="REF actual")
-    ax.plot(t, good_target_knee_deg[:n], color="#f0ad4e", lw=1.2, ls="--", label="ORACLE target")
-    ax.plot(t, good_actual_knee_deg[:n], color="#d55e00", lw=1.8, label="ORACLE actual")
+    ax.plot(t, good_target_knee_deg[:n], color="#f0ad4e", lw=1.2, ls="--", label="PRED target")
+    ax.plot(t, good_actual_knee_deg[:n], color="#d55e00", lw=1.8, label="PRED actual")
     ax.plot(t, bad_target_knee_deg[:n], color="#9ecae1", lw=1.2, ls="--", label="BAD target")
     ax.plot(t, bad_actual_knee_deg[:n], color="#0072b2", lw=1.8, label="BAD actual")
 
@@ -194,8 +194,8 @@ def plot_simulation_angles(
     # Thigh
     axes[0].plot(t, ref_target_thigh_deg[:n], color="0.6", lw=1.4, ls="--", label="REF target")
     axes[0].plot(t, ref_actual_thigh_deg[:n], color="0.2", lw=1.8, label="REF actual")
-    axes[0].plot(t, good_target_thigh_deg[:n], color="#f0ad4e", lw=1.2, ls="--", label="GOOD target")
-    axes[0].plot(t, good_actual_thigh_deg[:n], color="#d55e00", lw=1.8, label="GOOD actual")
+    axes[0].plot(t, good_target_thigh_deg[:n], color="#f0ad4e", lw=1.2, ls="--", label="PRED target")
+    axes[0].plot(t, good_actual_thigh_deg[:n], color="#d55e00", lw=1.8, label="PRED actual")
     axes[0].plot(t, bad_target_thigh_deg[:n], color="#9ecae1", lw=1.2, ls="--", label="BAD target")
     axes[0].plot(t, bad_actual_thigh_deg[:n], color="#0072b2", lw=1.8, label="BAD actual")
     axes[0].set_ylabel("Hip pitch / thigh (deg)")
@@ -205,8 +205,8 @@ def plot_simulation_angles(
     # Knee
     axes[1].plot(t, ref_target_knee_deg[:n], color="0.6", lw=1.4, ls="--", label="REF target")
     axes[1].plot(t, ref_actual_knee_deg[:n], color="0.2", lw=1.8, label="REF actual")
-    axes[1].plot(t, good_target_knee_deg[:n], color="#f0ad4e", lw=1.2, ls="--", label="GOOD target")
-    axes[1].plot(t, good_actual_knee_deg[:n], color="#d55e00", lw=1.8, label="GOOD actual")
+    axes[1].plot(t, good_target_knee_deg[:n], color="#f0ad4e", lw=1.2, ls="--", label="PRED target")
+    axes[1].plot(t, good_actual_knee_deg[:n], color="#d55e00", lw=1.8, label="PRED actual")
     axes[1].plot(t, bad_target_knee_deg[:n], color="#9ecae1", lw=1.2, ls="--", label="BAD target")
     axes[1].plot(t, bad_actual_knee_deg[:n], color="#0072b2", lw=1.8, label="BAD actual")
     axes[1].set_ylabel("Knee flexion (deg)")
@@ -257,7 +257,7 @@ def plot_balance_traces(
     fig, axes = plt.subplots(3, 1, figsize=(11.5, 8.2), sharex=True)
 
     axes[0].plot(t, xcom_margin_ref_m[:n], color="0.2", lw=1.8, label=f"REF (risk={risk_ref:.2f})")
-    axes[0].plot(t, xcom_margin_good_m[:n], color="#d55e00", lw=1.8, label=f"GOOD (risk={risk_good:.2f})")
+    axes[0].plot(t, xcom_margin_good_m[:n], color="#d55e00", lw=1.8, label=f"PRED (risk={risk_good:.2f})")
     axes[0].plot(t, xcom_margin_bad_m[:n], color="#0072b2", lw=1.8, label=f"BAD (risk={risk_bad:.2f})")
     axes[0].axhline(0.0, color="0.6", lw=1.0, ls="--")
     axes[0].set_ylabel("XCoM margin (m)")
@@ -265,7 +265,7 @@ def plot_balance_traces(
     axes[0].legend(loc="upper right")
 
     axes[1].plot(t, upright_ref[:n], color="0.2", lw=1.8, label=f"REF (bal_loss_step={balance_loss_step_ref})")
-    axes[1].plot(t, upright_good[:n], color="#d55e00", lw=1.8, label=f"GOOD (bal_loss_step={balance_loss_step_good})")
+    axes[1].plot(t, upright_good[:n], color="#d55e00", lw=1.8, label=f"PRED (bal_loss_step={balance_loss_step_good})")
     axes[1].plot(t, upright_bad[:n], color="#0072b2", lw=1.8, label=f"BAD (bal_loss_step={balance_loss_step_bad})")
     axes[1].axhline(0.40, color="0.6", lw=1.0, ls="--")
     axes[1].set_ylabel("Uprightness (cos tilt)")
@@ -273,7 +273,7 @@ def plot_balance_traces(
     axes[1].legend(loc="upper right")
 
     axes[2].plot(t, risk_trace_ref[:n], color="0.2", lw=1.8, label="REF risk_now")
-    axes[2].plot(t, risk_trace_good[:n], color="#d55e00", lw=1.8, label="GOOD risk_now")
+    axes[2].plot(t, risk_trace_good[:n], color="#d55e00", lw=1.8, label="PRED risk_now")
     axes[2].plot(t, risk_trace_bad[:n], color="#0072b2", lw=1.8, label="BAD risk_now")
     axes[2].axhline(0.70, color="0.6", lw=1.0, ls="--")
     axes[2].axhline(0.90, color="0.6", lw=1.0, ls=":")

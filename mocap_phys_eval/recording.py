@@ -24,10 +24,10 @@ from .sim import (
     tint_geoms_by_prefix,
 )
 
-# Prosthetic knee tracking gains (GOOD/BAD only).
+# Prosthetic knee tracking gains (PRED/BAD only).
 # The default CMU humanoid "position-controlled" actuators are intentionally compliant.
 # For evaluation, we want the overridden knee angle to be physically realized (not just
-# changing the policy action), so we increase knee servo gains for GOOD/BAD.
+# changing the policy action), so we increase knee servo gains for PRED/BAD.
 _PROSTHETIC_KNEE_KP = 800.0
 _PROSTHETIC_KNEE_KD = 40.0
 _PROSTHETIC_KNEE_FORCE = 800.0
@@ -142,7 +142,7 @@ def record_compare_rollout(
     deterministic_policy: bool = True,
     seed: int = 0,
 ) -> CompareRecordingPaths:
-    """Record a (REF | GOOD | BAD) compare rollout to a replayable NPZ and a quick GIF."""
+    """Record a (REF | PRED | BAD) compare rollout to a replayable NPZ and a quick GIF."""
     out_npz_path = Path(out_npz_path).expanduser()
     out_npz_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -218,13 +218,13 @@ def record_compare_rollout(
     obs_good = reset_good[0] if isinstance(reset_good, tuple) and len(reset_good) == 2 else reset_good
     obs_bad = reset_bad[0] if isinstance(reset_bad, tuple) and len(reset_bad) == 2 else reset_bad
 
-    # IMPORTANT: do NOT patch the reference for GOOD/BAD.
+    # IMPORTANT: do NOT patch the reference for PRED/BAD.
     #
     # - The user wants the ghost to always display the original (matched) reference motion.
     # - MoCapAct snippet experts (TIME_INDEX_OBSERVABLES) don't condition on reference features.
     #   Physical overrides should only affect the *walker*, not the ghost.
 
-    # Tint walkers/ghosts so REF/GOOD/BAD are visually distinct.
+    # Tint walkers/ghosts so REF/PRED/BAD are visually distinct.
     for env in (env_ref, env_good, env_bad):
         tint_geoms_by_prefix(env._env.physics, prefix="ghost/", rgba=(0.85, 0.85, 0.85, 0.25))  # noqa: SLF001
     tint_geoms_by_prefix(env_ref._env.physics, prefix="walker/", rgba=(0.35, 0.35, 0.35, 1.0))  # noqa: SLF001
@@ -239,7 +239,7 @@ def record_compare_rollout(
     phys_bad = env_bad._env.physics  # noqa: SLF001
 
     # Physical override (prosthetic knee):
-    # We force the knee flexion actuator in GOOD/BAD each step so the RL policy
+    # We force the knee flexion actuator in PRED/BAD each step so the RL policy
     # cannot directly control the knee trajectory.
     knee_act_id = int(phys_good.model.name2id(str(override.knee_actuator), "actuator"))
     knee_lo, knee_hi = _joint_range_for_actuator(phys_good, override.knee_actuator)
@@ -510,10 +510,10 @@ def record_compare_rollout(
             if done_any:
                 break
 
-    # Prosthetic knee: retune knee actuator gains for GOOD/BAD so the override is
+    # Prosthetic knee: retune knee actuator gains for PRED/BAD so the override is
     # realized in joint space (otherwise it's often too compliant to matter).
     #
-    # IMPORTANT: do this *after* warmup so REF/GOOD/BAD start the evaluation
+    # IMPORTANT: do this *after* warmup so REF/PRED/BAD start the evaluation
     # window from comparable physical states.
     _retune_general_position_actuator_pd(
         phys_good,
@@ -537,10 +537,10 @@ def record_compare_rollout(
 
     step_it = range(steps)
     if tqdm is not None:
-        step_it = tqdm(step_it, desc="Simulating (REF|GOOD|BAD)", unit="step", leave=False)
+        step_it = tqdm(step_it, desc="Simulating (REF|PRED|BAD)", unit="step", leave=False)
 
     for t in step_it:
-        # REF/GOOD/BAD each run the policy normally, but GOOD/BAD have their
+        # REF/PRED/BAD each run the policy normally, but PRED/BAD have their
         # prosthetic knee actuator physically forced each step so the RL
         # controller cannot directly command it.
         act_ref, state_ref = _predict(obs_ref, state_ref)
@@ -686,7 +686,7 @@ def record_compare_rollout(
             pad = 8
             w = int(width)
             draw.text((pad + 0 * w, pad), "REF (no override)", fill=(255, 255, 255), font=font)
-            draw.text((pad + 1 * w, pad), "GOOD (override)", fill=(255, 255, 255), font=font)
+            draw.text((pad + 1 * w, pad), "PRED (override)", fill=(255, 255, 255), font=font)
             draw.text((pad + 2 * w, pad), "BAD (override)", fill=(255, 255, 255), font=font)
             frame = np.asarray(pil, dtype=np.uint8)
 

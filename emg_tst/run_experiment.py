@@ -136,6 +136,18 @@ def _split_train_val(train_idx: np.ndarray, file_ids: np.ndarray, *, seed: int, 
     return train_idx2.astype(np.int64), val_idx.astype(np.int64)
 
 
+def _file_names_for_ids(file_ids_sel: np.ndarray, file_names: np.ndarray) -> list[str]:
+    out: list[str] = []
+    uniq = np.unique(np.asarray(file_ids_sel, dtype=np.int64).reshape(-1))
+    for fid in uniq.tolist():
+        fid = int(fid)
+        if 0 <= fid < int(len(file_names)):
+            out.append(str(file_names[fid]))
+        else:
+            out.append(f"file_{fid}")
+    return out
+
+
 def _make_pretrain_dataset(ds_train: torch.utils.data.Dataset):
     class _Pre(torch.utils.data.Dataset):
         def __init__(self, base): self.base = base
@@ -328,6 +340,26 @@ def train_one_fold(
         "best_rmse": float(test_metrics["rmse"]),
     }
 
+    file_names = np.asarray(data_meta.get("file_names", np.array([])))
+    train_file_ids = np.unique(np.asarray(file_ids[train_idx2], dtype=np.int64).reshape(-1)).astype(np.int64)
+    val_file_ids = np.unique(np.asarray(file_ids[val_idx], dtype=np.int64).reshape(-1)).astype(np.int64)
+    test_file_ids = np.unique(np.asarray(file_ids[test_idx], dtype=np.int64).reshape(-1)).astype(np.int64)
+    split_manifest = {
+        "fold": int(fold_i),
+        "split_strategy": str(data_meta.get("split_strategy", "unknown")),
+        "seed": int(data_meta.get("seed", SEED)),
+        "samples_file": str(data_meta.get("samples_file", SAMPLES_FILE)),
+        "test_indices": np.asarray(test_idx, dtype=np.int64).reshape(-1).tolist(),
+        "test_file_ids": test_file_ids.tolist(),
+        "test_file_names": _file_names_for_ids(test_file_ids, file_names),
+        "val_file_ids": val_file_ids.tolist(),
+        "val_file_names": _file_names_for_ids(val_file_ids, file_names),
+        "train_file_ids": train_file_ids.tolist(),
+        "train_file_names": _file_names_for_ids(train_file_ids, file_names),
+    }
+    out["held_out_file_ids"] = list(split_manifest["test_file_ids"])
+    out["held_out_file_names"] = list(split_manifest["test_file_names"])
+
     if run_dir is not None:
         fold_dir = run_dir / f"fold_{fold_i:02d}"
         fold_dir.mkdir(parents=True, exist_ok=True)
@@ -346,6 +378,7 @@ def train_one_fold(
                 "test_seq_rmse": float(test_metrics["seq_rmse"]),
                 "label_shift": int(data_meta.get("label_shift", 0)),
                 "feature_cols": feature_cols.tolist(),
+                "split_manifest": split_manifest,
             },
         )
 
@@ -361,8 +394,12 @@ def train_one_fold(
                 "best_val_rmse": float(best_val_rmse),
                 "label_shift": int(data_meta.get("label_shift", 0)),
                 "feature_cols": feature_cols.tolist(),
+                "split_manifest": split_manifest,
             },
         )
+
+        with open(fold_dir / "split_manifest.json", "w", encoding="utf-8") as f:
+            json.dump(split_manifest, f, indent=2)
 
         with open(fold_dir / "metrics.json", "w", encoding="utf-8") as f:
             json.dump(out, f, indent=2)
@@ -436,6 +473,14 @@ def _train_cv(X_all, y_all, y_seq_all, folds, feature_cols, device, run_dir, lab
     seq_len = X_all.shape[1]
     n_folds = len(folds)
     all_fold_metrics = []
+    cv_manifest = {
+        "label": str(label),
+        "split_strategy": str(data.get("split_strategy", "unknown")),
+        "seed": int(data.get("seed", SEED)),
+        "samples_file": str(data.get("samples_file", SAMPLES_FILE)),
+        "n_folds": int(n_folds),
+        "folds": [],
+    }
 
     for fold_i, (train_idx, test_idx) in enumerate(folds, start=1):
         if not quiet:
@@ -466,8 +511,20 @@ def _train_cv(X_all, y_all, y_seq_all, folds, feature_cols, device, run_dir, lab
             "final_rmse": float(fold_metrics["test_rmse"]),
             "final_seq_rmse": float(fold_metrics["test_seq_rmse"]),
             "final_mae": float(fold_metrics["test_mae"]),
+            "held_out_file_ids": list(fold_metrics.get("held_out_file_ids", [])),
+            "held_out_file_names": list(fold_metrics.get("held_out_file_names", [])),
+        })
+        cv_manifest["folds"].append({
+            "fold": int(fold_i),
+            "held_out_file_ids": list(fold_metrics.get("held_out_file_ids", [])),
+            "held_out_file_names": list(fold_metrics.get("held_out_file_names", [])),
+            "checkpoint": (str(run_dir / f"fold_{fold_i:02d}" / "reg_best.pt") if run_dir is not None else None),
+            "split_manifest": (str(run_dir / f"fold_{fold_i:02d}" / "split_manifest.json") if run_dir is not None else None),
         })
 
+    if run_dir is not None:
+        with open(run_dir / "cv_manifest.json", "w", encoding="utf-8") as f:
+            json.dump(cv_manifest, f, indent=2)
     return all_fold_metrics
 
 
@@ -522,6 +579,8 @@ def main():
     y_seq_all = data["y_seq"].astype(np.float32)  # (N, W)
     file_ids = data["file_id"]                # (N,) int32
     file_names = data.get("file_names", np.array([]))
+    data["samples_file"] = str(SAMPLES_FILE)
+    data["seed"] = int(SEED)
 
     n_all = int(X_all.shape[0])
     seq_len = int(X_all.shape[1])
@@ -543,6 +602,7 @@ def main():
     # LOFO when multiple files, random k-fold fallback for single file
     if n_files >= 2:
         folds = lofo_indices(file_ids)
+        data["split_strategy"] = "lofo"
         print(f"Cross-validation: Leave-One-File-Out ({n_files} folds)")
         for i, fid in enumerate(np.unique(file_ids)):
             name = file_names[fid] if fid < len(file_names) else f"file_{fid}"
@@ -550,6 +610,7 @@ def main():
             print(f"  Fold {i+1}: hold out {name} ({n_win} windows)")
     else:
         folds = kfold_indices(n_all, K_FOLDS, seed=SEED)
+        data["split_strategy"] = "kfold"
         print(f"Cross-validation: Random {K_FOLDS}-fold (single file, LOFO not possible)")
 
     # Feature column indices

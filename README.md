@@ -7,13 +7,13 @@ The evaluation pipeline:
 - motion-matches each fixed-length TST window to the best MoCapAct snippet
 - runs **real MuJoCo** simulation using the matched snippet's **expert policy**
 - forces the **right knee** (prosthetic knee) to follow either:
-  - `GOOD`: the TST model's predicted knee angle (or oracle until your model is trained)
+  - `PRED`: the TST model's predicted knee angle (or oracle until your model is trained)
   - `BAD`: a smooth ~20 deg RMSE perturbation (demo stand-in)
 - reports motion-matching error separately from model error
 
-**Example output (3-panel compare: REF | GOOD | BAD)**
+**Example output (3-panel compare: REF | PRED | BAD)**
 
-![REF vs GOOD vs BAD compare replay](docs/media/compare.gif)
+![REF vs PRED vs BAD compare replay](docs/media/compare.gif)
 
 ## Repo Structure
 
@@ -38,7 +38,7 @@ flowchart LR
   E --> F["Motion match over 2589 expert snippets\ndquat + knee derivative"]
   F --> G["Matched snippet expert policy\nSB3 PPO"]
   G --> H1["REF sim\nno override"]
-  G --> H2["GOOD sim\nright knee forced"]
+  G --> H2["PRED sim\nright knee forced"]
   G --> H3["BAD sim\nright knee forced"]
   H1 --> I["Artifacts\nNPZ + GIF + plots + summary.json"]
   H2 --> I
@@ -160,7 +160,7 @@ This writes `samples_dataset.npy` with non-overlapping 1.0s windows at 200 Hz (w
 
 Note on "window size 32" in the TST pipeline: `emg_tst/data.py` uses `RAW_WINDOW=32` as a **causal rolling raw-EMG window** (in raw samples) to compute per-timestep EMG features. Every IMU timestep gets a feature vector; at the start of a recording we left-pad the raw stream so the first few timesteps still have a full window. This does not change the TST sample length. The TST sample/window length is `WINDOW=200` timesteps (1.0s at 200 Hz).
 
-3. Train a TST model (optional for now):
+3. Train the TST:
 
 ```bash
 python -m emg_tst.run_experiment
@@ -170,7 +170,7 @@ This writes checkpoints under `checkpoints/**/reg_best.pt`.
 
 Within each outer fold, the model selects the best checkpoint using an internal **train/val split** (preferably holding out an entire recording file), and the held-out test file is evaluated once at the end. This avoids picking epochs directly on the test set.
 
-The evaluator auto-selects the latest `*_all/` training run (the "ALL FEATURES" model) and picks the fold with the lowest `metrics.json.best_rmse`.
+The latest `*_all/` training run also writes per-fold split manifests (`fold_XX/split_manifest.json` and `cv_manifest.json`) so the physical evaluator can recover the exact held-out LOFO pool used by the paper.
 
 Optional (recommended while you are still collecting data): generate a learning-curve report showing how RMSE improves as you add more recorded minutes/hours:
 
@@ -186,9 +186,21 @@ This writes a self-contained report under `artifacts/learning_curve/**/`:
 
 By default it uses a subset of outer folds for runtime (`MAX_OUTER_FOLDS=8` in [emg_tst/learning_curve.py](emg_tst/learning_curve.py)).
 
-4. Run the evaluator again:
-   - If a checkpoint exists, `GOOD` uses the model prediction.
-   - If no checkpoint exists, `GOOD` is an oracle (ground truth knee) and is still useful to validate motion matching + simulation.
+4. Run the physical evaluator:
+   - With real rigtest data + trained LOFO folds present, `python -m mocap_phys_eval` follows the paper protocol exactly.
+   - With no rigtest samples present, it falls back to a small demo BVH sanity check.
+
+5. Run the statistical analysis:
+
+```bash
+python -m analysis.correlation --run-dir artifacts/phys_eval_v2/runs/<run_id>
+```
+
+This computes the paper's partial Spearman correlation using:
+
+- predictor: `model.pred_vs_gt_knee_flex_rmse_deg`
+- outcome: `sim.pred.balance_risk_auc`
+- controls: `match.rmse_knee_deg`, `match.rms_thigh_ori_err_deg`
 
 ## Angle Conventions
 
@@ -196,13 +208,16 @@ By default it uses a subset of outer folds for runtime (`MAX_OUTER_FOLDS=8` in [
 - MoCapAct's knee joint is **flexion**: `0 = straight`.
 - Conversion used everywhere in `mocap_phys_eval`: `knee_flex_deg = 180 - knee_included_deg`.
 
-## What `python -m mocap_phys_eval` Does (Per Window)
+## What `python -m mocap_phys_eval` Does
 
-Each run evaluates `EvalConfig.eval_n_windows` independent windows (no aggregation; window length matches TST train/eval). Default is `3` so each run produces a small batch of results; set it to `1` in `mocap_phys_eval/config.py` if you want a single window per run.
+With real rigtest data and trained LOFO folds, the evaluator follows the paper protocol:
 
 1. **Query window source**
-   - Preferred: `samples_dataset.npy` produced by `split_to_samples.py`.
-   - Demo-only fallback (pipeline sanity check): if `samples_dataset.npy` does not exist, the evaluator downloads a real **non-CMU** BVH from the web to exercise motion matching + simulation. Once you have rig recordings, BVHs are not downloaded and the query always comes from your recorded windows.
+   - Loads the full held-out pool from `samples_dataset.npy`.
+   - Uses the latest `*_all/` training run and matches each held-out window to the correct outer-fold checkpoint.
+   - Samples windows uniformly without replacement using fixed seed `42`.
+   - If a sampled window fails motion matching or simulation, it is discarded and replaced by the next window in the same seeded order until `80` successful trials are retained.
+   - Demo-only fallback: if `samples_dataset.npy` does not exist, the evaluator downloads a real **non-CMU** BVH and runs a small sanity-check batch.
 
 2. **Resample**
    - Query windows are recorded at 200 Hz but MoCapAct runs at ~33.33 Hz (control timestep ~0.03s), so we resample to the simulator rate.
@@ -218,13 +233,13 @@ Each run evaluates `EvalConfig.eval_n_windows` independent windows (no aggregati
 
 4. **MuJoCo simulation (expert policy)**
    - `REF`: matched expert policy runs normally (no overrides).
-   - `GOOD`: same policy, but the **right knee actuator** is forced each step to a target knee angle.
-   - `BAD`: same, but knee is perturbed with a smooth deterministic ~20 deg RMSE error (demo-only stand-in).
+   - `PRED`: same policy, but the **right knee actuator** is forced each step to the fold-matched TST prediction.
+   - `BAD` is still recorded as an auxiliary diagnostic trace, but it is **not** part of the paper analysis.
 
 Override rule (important):
 
 - The RL policy controls **all other actuators** normally.
-- In `GOOD` and `BAD`, the RL policy **cannot directly control the right knee**, because the knee actuator command is overwritten each step.
+- In `PRED` and `BAD`, the RL policy **cannot directly control the right knee**, because the knee actuator command is overwritten each step.
 - We also overwrite the knee actuator's internal activation state (MuJoCo filter) so the forced knee command applies on the current step (not with a 1-step lag).
 - `summary.json` includes diagnostics (`ctrl_override_diag`) to confirm the applied knee control matches the forced target.
 
@@ -249,7 +264,7 @@ If/when you want to emulate a passive ankle/foot (no ankle actuation) without ch
 - `walker/rtoesrx`
 
 5. **Stability heuristic**
-   - Outputs a per-step `predicted_fall_risk_trace_*` and scalar `predicted_fall_risk_*`.
+   - Outputs a per-step `predicted_fall_risk_trace_*`, scalar `predicted_fall_risk_*`, and `balance_risk_auc`.
    - Uses uprightness + XCoM support margin (+ tilt-rate + smoothing), with no root-height heuristics.
    - `balance_loss_step_*` is the first timestep the heuristic considers the walker unstable.
    - Also records MoCapAct tracking-task signals in `compare.npz` (`termination_error_*`, `reward_*`, `termination_error_threshold`) so you can experiment with reward/critic-based “risk” proxies.
@@ -259,7 +274,7 @@ If/when you want to emulate a passive ankle/foot (no ankle actuation) without ch
 Each window records a compare replay and opens an interactive viewer with 3 panels:
 
 - `REF` (grey walker, no override)
-- `GOOD` (orange walker, right leg highlighted in magenta)
+- `PRED` (orange walker, right leg highlighted in magenta)
 - `BAD` (blue walker, right leg highlighted in magenta)
 
 Controls:
@@ -274,8 +289,15 @@ Per run:
 
 - `artifacts/phys_eval_v2/runs/<run_id>/summary.json`
 - `artifacts/phys_eval_v2/runs/<run_id>/evals/<idx>_<query_id>/summary.json`
+- `artifacts/phys_eval_v2/runs/<run_id>/failures/<attempt>_<query_id>.json` for discarded trial attempts
 - plots under each `evals/.../plots/`
 - replay under each `evals/.../replay/compare.npz` and `compare.gif`
+
+Per analysis run:
+
+- `artifacts/phys_eval_v2/runs/<run_id>/analysis/partial_spearman_summary.json`
+- `artifacts/phys_eval_v2/runs/<run_id>/analysis/partial_spearman_trials.csv`
+- `artifacts/phys_eval_v2/runs/<run_id>/analysis/partial_spearman_scatter.png`
 
 Convenience pointers:
 
