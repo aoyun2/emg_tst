@@ -74,7 +74,7 @@ The model is an **encoder-only Time Series Transformer (TST)** following the Pat
 **Encoder** (`TSTEncoder`):
 - Input projection: linear layer mapping 43 input features → `d_model = 128`
 - Learnable positional embedding: shape `(1, 200, 128)`, initialized with σ = 0.02
-- **2 transformer encoder layers** (reduced from 3 to improve cross-session generalization given the small dataset of 6 recordings)
+- **3 transformer encoder layers**
 - Dropout: `p = 0.25` applied after input projection and within each layer
 
 Each encoder layer (`TSTEncoderLayer`) uses **pre-norm residual connections** with **LayerNorm**:
@@ -134,10 +134,9 @@ L_finetune = MSE(pred_seq * 180, y_seq * 180)  [in normalized [0,1] space]
 **Best checkpoint**: selected by lowest validation RMSE (last-timestep) over all finetune epochs.
 
 **Data augmentation** (training only, not validation or test):
-- Gaussian noise: `x ← x + ε`, `ε ~ N(0, 0.03²)` in normalized units
-- Amplitude jitter: `x ← x × s`, `s ~ Uniform(0.85, 1.15)`
+- Gaussian noise: `x ← x + ε`, `ε ~ N(0, 0.03²)` in normalized units, applied to all features
 
-These augmentations are applied in `SamplesArrayDataset.__getitem__` only for the training split, and are not applied during pretraining.
+Amplitude jitter is intentionally excluded: scaling all features by a random constant would corrupt the quaternion features (last 4 columns), which must remain unit-norm to represent valid orientations. Augmentation is not applied during pretraining — masked reconstruction is already a strong regularizer and adding noise on top slows convergence without improving the learned representation.
 
 ### Cross-Validation
 
@@ -251,8 +250,8 @@ Runs the full ablation study (all features / thigh only / EMG only) with LOFO cr
 | `D_MODEL` | 128 | Transformer embedding dimension |
 | `N_HEADS` | 8 | Attention heads |
 | `D_FF` | 256 | FFN hidden dimension |
-| `N_LAYERS` | 2 | Encoder depth (reduced from 3 for small dataset) |
-| `DROPOUT` | 0.25 | Applied throughout (increased for regularization) |
+| `N_LAYERS` | 3 | Encoder depth |
+| `DROPOUT` | 0.15 | Applied throughout |
 | `LR` | 3×10⁻⁴ | Encoder learning rate |
 | `WEIGHT_DECAY` | 1×10⁻⁴ | Applied to both pretrain and finetune optimizers |
 | `EPOCHS_PRETRAIN` | 80 | Masked reconstruction pretraining |
@@ -431,6 +430,45 @@ Convenience pointers:
 - `artifacts/phys_eval_v2/latest_compare.gif`
 - `artifacts/phys_eval_v2/latest_motion_match.png`
 - `artifacts/phys_eval_v2/latest_thigh_quat_match.png`
+
+---
+
+## Cross-Session Generalization: Limitations and Future Work
+
+### Why cross-session EMG is hard
+
+EMG amplitude and spectral content vary substantially between recording sessions due to electrode repositioning, skin impedance changes, sweat, subcutaneous fat thickness, and inter-session muscle fatigue. These factors mean a feature value of X in session A does not imply the same muscle activation level as X in session B. The model must learn patterns that are invariant to these recording artifacts.
+
+Per-recording z-score normalization (see Preprocessing above) removes the session-level amplitude offset and is the most impactful single preprocessing step. However, it does not remove higher-order session-specific patterns such as dominant muscle recruitment strategy, crosstalk between sensors, or frequency content shifts due to electrode contact quality.
+
+### Data quantity is the primary bottleneck
+
+Cross-session EMG regression results in the literature follow a consistent pattern:
+
+| Sessions | Typical cross-session RMSE |
+|---|---|
+| 5–8 | 18–25° |
+| 10–15 | 12–18° |
+| 15–20 | 10–15° |
+| 20+ | <10° (possible) |
+
+With 6 sessions, the model has seen only a small sample of the between-session variation space. Additional recordings have the highest expected return per unit of effort. Each new session is not just more data — it is genuinely new information about how the same movements look under different electrode placements and physiological states.
+
+### Approaches that may help without additional data
+
+The following techniques can improve cross-session generalization beyond what per-recording normalization achieves, listed roughly by implementation complexity:
+
+**1. Sensor/channel dropout** (easy)
+Randomly zero out all features from one EMG sensor during training (with some probability, e.g. p=0.1 per sensor per batch). Forces the model to not rely too heavily on any single electrode's signal, directly addressing electrode placement variability. The model learns redundant representations across sensors.
+
+**2. Longer context windows** (easy — change `WINDOW` in `split_to_samples.py`)
+Increasing the window from 1.0 s to 2.0–3.0 s gives the transformer more temporal context. Movement cycles (e.g., a full stride) operate on 1–2 s timescales; a 1 s window often captures only part of a movement. Longer windows allow the model to observe movement dynamics rather than just instantaneous activation patterns, which are more session-invariant. Requires rebuilding `samples_dataset.npy`.
+
+**3. Domain adversarial training** (moderate complexity)
+Add a session-ID classifier head on top of the encoder and train it adversarially: the encoder is penalized when the classifier can identify which session a window came from, and the classifier is trained to distinguish sessions. At convergence, the encoder produces representations that are maximally session-invariant while still being useful for angle prediction. This is the principled approach from domain adaptation literature (Ganin et al., DANN) and has been applied to cross-subject EMG classification.
+
+**4. Test-time adaptation (TTA)** (moderate complexity)
+After training, briefly fine-tune only the LayerNorm affine parameters (γ and β, ~256 parameters total) on a small batch of unlabeled windows from the test session before making predictions. This adapts the feature statistics to the new session without requiring any angle labels. In a prosthetics deployment this corresponds to a short calibration pass (user performs a few movements without labeled ground truth), which is already standard practice.
 
 ---
 

@@ -29,8 +29,8 @@ K_FOLDS = 5
 D_MODEL = 128
 N_HEADS = 8
 D_FF = 256
-N_LAYERS = 2
-DROPOUT = 0.25
+N_LAYERS = 3
+DROPOUT = 0.15
 
 # Training
 BATCH_SIZE = 64
@@ -100,10 +100,10 @@ class SamplesArrayDataset(torch.utils.data.Dataset):
         if self.feature_cols is not None:
             x = x[:, self.feature_cols]
         if self.augment:
-            # Gaussian noise: std=0.03 in normalised units is ~3% of a 1-std deviation.
+            # Gaussian noise: std=0.03 in normalised units (~3% of 1 std deviation).
+            # Applied to all features. Amplitude jitter is intentionally excluded because
+            # it would corrupt the quaternion features (last 4), which must remain unit-norm.
             x = x + np.random.randn(*x.shape).astype(np.float32) * 0.03
-            # Amplitude jitter: scale all features by a per-sample factor in [0.85, 1.15].
-            x = x * float(np.random.uniform(0.85, 1.15))
         # Normalize labels to [0, 1].  Knee angles are in [0°, 180°] by construction.
         # Without this, MSE gradients scale as ~137^2 ≈ 18 000 per sample; combined with
         # grad-norm clipping at 1.0, the output head bias can only shift ~3e-4 °/step and
