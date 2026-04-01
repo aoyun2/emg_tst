@@ -18,42 +18,59 @@ OUT_FILE = Path("samples_dataset.npy")
 WINDOW = 200         # 1 second at 200Hz
 LABEL_SHIFT = 0      # samples of lookahead
 
+# Stride for overlapping windows.
+#   STRIDE = WINDOW  -> non-overlapping (original behaviour)
+#   STRIDE = 1       -> maximum overlap; every timestep starts a new window
+#                       (WARNING: with ~800K timesteps this produces ~26 GiB)
+#   STRIDE = 10      -> 95% overlap; ~80K windows per 800K timesteps (~2.6 GiB)
+#   STRIDE = WINDOW  -> non-overlapping (original behaviour)
+#
+# LOFO validity: all windows from the same recording file keep the same
+# file_id regardless of stride, so Leave-One-File-Out cross-validation is
+# unaffected (no leakage between files). Overlap within a file is fine because
+# the model sees windows from the same file only in train or only in test, never
+# mixed – which is what matters.
+STRIDE = 30
 
-def make_nonoverlapping_windows(X, y, w=WINDOW, label_shift=LABEL_SHIFT):
-    """Partition into consecutive, non-overlapping windows. Drops remainder.
+
+def make_windows(X, y, w=WINDOW, stride=STRIDE, label_shift=LABEL_SHIFT):
+    """
+    Sliding-window partition with configurable stride.
+
+    When stride < w the windows overlap.  All windows from the same recording
+    file receive the same file_id, preserving LOFO integrity.
 
     Returns:
-      Xs:    (N, W, F)   input windows (EMG features + thigh orientation features)
-      ys:    (N,)         scalar label (last timestep + shift)
-      y_seq: (N, W)       full angle trajectory per window (with shift)
-      starts:(N,)         start indices
+      Xs:    (N, W, F)   input windows
+      ys:    (N,)         scalar label (last timestep of window + shift)
+      y_seq: (N, W)       full angle trajectory per window
+      starts:(N,)         start index of each window in the source recording
     """
     T = int(X.shape[0])
     F = int(X.shape[1])
-    n = T // int(w)
+    stride = int(stride)
+    w      = int(w)
+
+    # Number of full windows that fit
+    n = max(0, (T - w) // stride + 1)
     if n <= 0:
         return (np.empty((0, w, F), dtype=np.float32),
                 np.empty((0,), dtype=np.float32),
                 np.empty((0, w), dtype=np.float32),
                 np.empty((0,), dtype=np.int32))
-    starts = (np.arange(n, dtype=np.int32) * int(w))
 
-    Xs_list = []
-    ys_list = []
-    y_seq_list = []
-    for t in starts:
-        Xs_list.append(X[t:t+w].astype(np.float32))
+    starts = np.arange(n, dtype=np.int32) * stride
 
-        # Labels
-        ys_list.append(y[min(int(t + w - 1 + label_shift), T - 1)])
-        seq = np.empty(w, dtype=np.float32)
-        for i in range(w):
-            seq[i] = y[min(int(t + i + label_shift), T - 1)]
-        y_seq_list.append(seq)
+    Xs    = np.empty((n, w, F), dtype=np.float32)
+    ys    = np.empty((n,),      dtype=np.float32)
+    y_seq = np.empty((n, w),    dtype=np.float32)
 
-    Xs = np.stack(Xs_list)
-    ys = np.array(ys_list, dtype=np.float32)
-    y_seq = np.stack(y_seq_list)
+    for i, t in enumerate(starts):
+        Xs[i] = X[t:t + w].astype(np.float32)
+        ys[i] = y[min(int(t + w - 1 + label_shift), T - 1)]
+        for j in range(w):
+            y_seq[i, j] = y[min(int(t + j + label_shift), T - 1)]
+
     return Xs, ys, y_seq, starts
 
 
@@ -100,13 +117,14 @@ def main():
             f"({meta['n_channels']} bins/sensor) {hz_msg}"
         )
 
-        Xs, ys, y_seq, starts = make_nonoverlapping_windows(X, y)
+        Xs, ys, y_seq, starts = make_windows(X, y)
         all_X.append(Xs)
         all_y.append(ys)
         all_y_seq.append(y_seq)
         all_file_id.append(np.full((Xs.shape[0],), file_id, dtype=np.int32))
         all_start.append(starts)
-        print(f"  -> {Xs.shape[0]} non-overlapping windows (window={WINDOW})")
+        overlap_pct = int(100 * (1 - STRIDE / WINDOW))
+        print(f"  -> {Xs.shape[0]} windows (window={WINDOW}, stride={STRIDE}, {overlap_pct}% overlap)")
 
     X_out = np.concatenate(all_X, axis=0)
     y_out = np.concatenate(all_y, axis=0)
@@ -124,7 +142,8 @@ def main():
         "file_names": np.array(file_names),
         "window": np.int32(WINDOW),
         "label_shift": np.int32(LABEL_SHIFT),
-        "mode": "nonoverlap",
+        "mode": "overlap" if STRIDE < WINDOW else "nonoverlap",
+        "stride": np.int32(STRIDE),
         "created_at": datetime.now().isoformat(timespec="seconds"),
         # Dataset sample rate after resampling (used for TST + physics eval).
         "sample_hz": np.float32(first_meta.get("effective_hz", 0.0)),

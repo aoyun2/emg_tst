@@ -111,11 +111,18 @@ def _resample_quat_slerp_wxyz_by_timestamps(q: np.ndarray, t_src: np.ndarray, t_
     return out.astype(np.float32)
 
 
-def _extract_raw_features_for_sensor(raw: np.ndarray, T_imu: int, window: int = RAW_WINDOW) -> np.ndarray:
+def _extract_raw_features_for_sensor(
+    raw: np.ndarray,
+    T_imu: int,
+    window: int = RAW_WINDOW,
+    raw_times: np.ndarray | None = None,
+    imu_times: np.ndarray | None = None,
+) -> np.ndarray:
     """
     Compute per-IMU-timestep features from native-rate raw EMG.
 
-    For each of T_imu timesteps, takes a rolling window of raw samples and computes:
+    For each of T_imu timesteps, takes a causal rolling window of raw samples
+    and computes:
       - RMS (root mean square)
       - MAV (mean absolute value)
       - WL  (waveform length = sum of abs differences)
@@ -124,9 +131,14 @@ def _extract_raw_features_for_sensor(raw: np.ndarray, T_imu: int, window: int = 
       - Spectral power in N_FFT_BANDS frequency bands
 
     Args:
-      raw:   (R,) flat raw EMG at native rate (~400Hz)
-      T_imu: number of IMU-rate timesteps to produce
-      window: rolling window size
+      raw:       (R,) flat raw EMG at native rate (~400 Hz)
+      T_imu:     number of IMU-rate timesteps to produce
+      window:    rolling window size (samples)
+      raw_times: (R,) timestamps of each raw EMG sample in seconds (optional).
+                 When provided, used for accurate time-based alignment instead
+                 of the uniform linspace approximation.
+      imu_times: (T_imu,) timestamps of IMU timesteps in seconds (optional).
+                 Required when raw_times is provided.
 
     Returns:
       features: (T_imu, 5 + N_FFT_BANDS) float32
@@ -138,8 +150,23 @@ def _extract_raw_features_for_sensor(raw: np.ndarray, T_imu: int, window: int = 
     if R < window:
         return out  # not enough raw data
 
-    # Map IMU timestep -> raw index (linear interpolation)
-    raw_idx = np.linspace(0, R - 1, T_imu).astype(np.int64)
+    # Map IMU timestep -> raw index.
+    # Prefer timestamp-based alignment (new recordings from rigtest_gui.py) over
+    # the uniform-linspace approximation (old recordings from rigtest.py).
+    # The linspace approximation assumes raw samples are uniformly distributed,
+    # but they actually arrive in bursts of 8, which misaligns features by up to
+    # ~20 ms – significant noise at 200 Hz.
+    if (raw_times is not None and imu_times is not None
+            and len(raw_times) == R and len(imu_times) == T_imu):
+        raw_ts = np.asarray(raw_times, dtype=np.float64)
+        imu_ts = np.asarray(imu_times, dtype=np.float64)
+        # For each IMU timestep, find the last raw sample that occurred at or
+        # before that time (causal).
+        raw_idx = np.searchsorted(raw_ts, imu_ts, side="right") - 1
+        raw_idx = np.clip(raw_idx, 0, R - 1).astype(np.int64)
+    else:
+        # Fallback: uniform distribution assumption
+        raw_idx = np.linspace(0, R - 1, T_imu).astype(np.int64)
 
     for t in range(T_imu):
         end = int(raw_idx[t]) + 1
@@ -169,14 +196,15 @@ def _extract_raw_features_for_sensor(raw: np.ndarray, T_imu: int, window: int = 
         # Remove DC offset for frequency features
         seg_centered = seg - seg.mean()
 
-        # RMS
-        out[t, 0] = np.sqrt(np.mean(seg_centered ** 2))
+        # RMS — log1p: EMG amplitude is right-skewed / roughly log-normal;
+        # log1p maps the heavy tail into a Gaussian-like range that StandardScaler handles well.
+        out[t, 0] = np.log1p(np.sqrt(np.mean(seg_centered ** 2)))
 
-        # MAV
-        out[t, 1] = np.mean(np.abs(seg_centered))
+        # MAV — same reasoning
+        out[t, 1] = np.log1p(np.mean(np.abs(seg_centered)))
 
-        # Waveform length
-        out[t, 2] = np.sum(np.abs(np.diff(seg)))
+        # Waveform length — same reasoning
+        out[t, 2] = np.log1p(np.sum(np.abs(np.diff(seg))))
 
         # Zero crossings (on centered signal)
         signs = np.sign(seg_centered)
@@ -197,7 +225,10 @@ def _extract_raw_features_for_sensor(raw: np.ndarray, T_imu: int, window: int = 
         for b in range(N_FFT_BANDS):
             lo, hi = band_edges[b], band_edges[b + 1]
             if hi > lo:
-                out[t, 5 + b] = np.mean(power[lo:hi])
+                # log1p: spectral power is non-negative and extremely right-skewed
+                # (std ~10^7–10^8 raw). log1p compresses the range to ~[0,20],
+                # making StandardScaler effective instead of near-zero everywhere.
+                out[t, 5 + b] = np.log1p(np.mean(power[lo:hi]))
 
     return out
 
@@ -269,9 +300,21 @@ def load_recording(path: str | Path) -> Tuple[np.ndarray, np.ndarray, dict]:
         raw2 = np.asarray(d["raw_emg_sensor2"], dtype=np.float64)
         raw3 = np.asarray(d["raw_emg_sensor3"], dtype=np.float64)
 
-        feat1 = _extract_raw_features_for_sensor(raw1, T)
-        feat2 = _extract_raw_features_for_sensor(raw2, T)
-        feat3 = _extract_raw_features_for_sensor(raw3, T)
+        # Use per-sample timestamps (from rigtest_gui.py) when available.
+        # These allow causal timestamp-based alignment instead of the uniform
+        # linspace approximation, eliminating the burst-timing misalignment.
+        imu_ts = None
+        if "timestamps" in d:
+            imu_ts = _ensure_strictly_increasing(
+                np.asarray(d["timestamps"], dtype=np.float64).reshape(-1)[:T]
+            )
+        raw_ts1 = np.asarray(d["raw_emg_times1"], dtype=np.float64) if "raw_emg_times1" in d else None
+        raw_ts2 = np.asarray(d["raw_emg_times2"], dtype=np.float64) if "raw_emg_times2" in d else None
+        raw_ts3 = np.asarray(d["raw_emg_times3"], dtype=np.float64) if "raw_emg_times3" in d else None
+
+        feat1 = _extract_raw_features_for_sensor(raw1, T, raw_times=raw_ts1, imu_times=imu_ts)
+        feat2 = _extract_raw_features_for_sensor(raw2, T, raw_times=raw_ts2, imu_times=imu_ts)
+        feat3 = _extract_raw_features_for_sensor(raw3, T, raw_times=raw_ts3, imu_times=imu_ts)
 
         raw_feats = np.concatenate([feat1, feat2, feat3], axis=1)  # (T, 3*(5+N_FFT_BANDS))
         n_raw_feat = raw_feats.shape[1]

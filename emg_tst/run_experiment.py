@@ -29,14 +29,15 @@ K_FOLDS = 5
 D_MODEL = 128
 N_HEADS = 8
 D_FF = 256
-N_LAYERS = 3
-DROPOUT = 0.1
+N_LAYERS = 2
+DROPOUT = 0.25
 
 # Training
 BATCH_SIZE = 64
 LR = 3e-4
-EPOCHS_PRETRAIN = 40
-EPOCHS_FINETUNE = 20
+WEIGHT_DECAY = 1e-4
+EPOCHS_PRETRAIN = 80
+EPOCHS_FINETUNE = 100
 
 # Masked reconstruction pretraining (stateful Markov masking)
 MASK_R = 0.15
@@ -79,7 +80,7 @@ class SamplesArrayDataset(torch.utils.data.Dataset):
     Returns (x, y_scalar, y_seq) where y_seq is the full angle trajectory."""
     def __init__(self, X_all: np.ndarray, y_all: np.ndarray, y_seq_all: np.ndarray,
                  indices: np.ndarray, mean: np.ndarray, std: np.ndarray,
-                 feature_cols: np.ndarray | None = None):
+                 feature_cols: np.ndarray | None = None, augment: bool = False):
         self.X_all = X_all
         self.y_all = y_all
         self.y_seq_all = y_seq_all
@@ -87,6 +88,7 @@ class SamplesArrayDataset(torch.utils.data.Dataset):
         self.mean = mean
         self.std = std
         self.feature_cols = feature_cols  # None = all features
+        self.augment = augment
 
     def __len__(self):
         return int(self.indices.shape[0])
@@ -97,8 +99,18 @@ class SamplesArrayDataset(torch.utils.data.Dataset):
         x = (x - self.mean[None, :]) / self.std[None, :]
         if self.feature_cols is not None:
             x = x[:, self.feature_cols]
-        y = np.float32(self.y_all[idx])
-        y_seq = self.y_seq_all[idx].astype(np.float32)  # (W,)
+        if self.augment:
+            # Gaussian noise: std=0.03 in normalised units is ~3% of a 1-std deviation.
+            x = x + np.random.randn(*x.shape).astype(np.float32) * 0.03
+            # Amplitude jitter: scale all features by a per-sample factor in [0.85, 1.15].
+            x = x * float(np.random.uniform(0.85, 1.15))
+        # Normalize labels to [0, 1].  Knee angles are in [0°, 180°] by construction.
+        # Without this, MSE gradients scale as ~137^2 ≈ 18 000 per sample; combined with
+        # grad-norm clipping at 1.0, the output head bias can only shift ~3e-4 °/step and
+        # never reaches the target mean in a reasonable number of epochs.
+        LABEL_SCALE = 180.0
+        y = np.float32(self.y_all[idx]) / LABEL_SCALE
+        y_seq = self.y_seq_all[idx].astype(np.float32) / LABEL_SCALE  # (W,) in [0,1]
         return torch.from_numpy(x).float(), torch.tensor([y], dtype=torch.float32), torch.from_numpy(y_seq).float()
 
 
@@ -189,13 +201,54 @@ def train_one_fold(
         train_idx2 = np.asarray(train_idx, dtype=np.int64).reshape(-1)
         val_idx = np.asarray(val_idx, dtype=np.int64).reshape(-1)
 
-    scaler = StandardScaler.fit([X_all[train_idx2].reshape(-1, X_all.shape[2])])
+    # Per-recording EMG normalization.
+    # Session-level amplitude offsets (electrode placement, skin impedance, fatigue)
+    # are the main source of cross-session error.  Z-score each recording's EMG features
+    # independently so the model sees comparable activation scales across sessions.
+    # Quaternion features (last 4 columns) are unit-norm by construction — skip them.
+    n_quat = 4
+    n_raw_feat = int(X_all.shape[2]) - n_quat  # number of EMG/spectral features
 
-    ds_train = SamplesArrayDataset(X_all, y_all, y_seq_all, train_idx2, scaler.mean_, scaler.std_, feature_cols)
-    ds_val   = SamplesArrayDataset(X_all, y_all, y_seq_all, val_idx,    scaler.mean_, scaler.std_, feature_cols)
-    ds_test  = SamplesArrayDataset(X_all, y_all, y_seq_all, test_idx,   scaler.mean_, scaler.std_, feature_cols)
+    # Compute per-file stats using training windows only.
+    file_mu: dict[int, np.ndarray] = {}
+    file_sd: dict[int, np.ndarray] = {}
+    for fid in np.unique(file_ids[train_idx2]).tolist():
+        fidx = train_idx2[file_ids[train_idx2] == fid]
+        x_ref = X_all[fidx, :, :n_raw_feat].reshape(-1, n_raw_feat)
+        file_mu[int(fid)] = x_ref.mean(axis=0).astype(np.float32)
+        file_sd[int(fid)] = np.maximum(x_ref.std(axis=0), 1e-6).astype(np.float32)
 
-    ds_pre = _make_pretrain_dataset(ds_train)
+    # For held-out (test/val) files: use the file's own stats.  In a prosthetics
+    # deployment you always run a short calibration pass before live use, so this
+    # is a realistic assumption, not data leakage.
+    for fid in np.unique(file_ids).tolist():
+        if int(fid) not in file_mu:
+            fidx = np.where(file_ids == fid)[0]
+            x_ref = X_all[fidx, :, :n_raw_feat].reshape(-1, n_raw_feat)
+            file_mu[int(fid)] = x_ref.mean(axis=0).astype(np.float32)
+            file_sd[int(fid)] = np.maximum(x_ref.std(axis=0), 1e-6).astype(np.float32)
+
+    # Build per-file-normalised copy of X_all (EMG channels only; quat unchanged).
+    X_norm = X_all.copy()
+    for i in range(int(X_all.shape[0])):
+        fid = int(file_ids[i])
+        X_norm[i, :, :n_raw_feat] = (
+            (X_all[i, :, :n_raw_feat] - file_mu[fid]) / file_sd[fid]
+        )
+
+    # Fit global scaler on the per-file-normalised training windows.
+    # EMG features are now ~N(0,1) per session; the global scaler handles residual
+    # cross-session variance and normalises the quaternion features.
+    scaler = StandardScaler.fit([X_norm[train_idx2].reshape(-1, X_all.shape[2])])
+
+    ds_train = SamplesArrayDataset(X_norm, y_all, y_seq_all, train_idx2, scaler.mean_, scaler.std_, feature_cols, augment=True)
+    ds_val   = SamplesArrayDataset(X_norm, y_all, y_seq_all, val_idx,    scaler.mean_, scaler.std_, feature_cols)
+    ds_test  = SamplesArrayDataset(X_norm, y_all, y_seq_all, test_idx,   scaler.mean_, scaler.std_, feature_cols)
+
+    # Pretraining uses clean (non-augmented) inputs — the masked reconstruction task
+    # is already a strong regulariser; adding noise on top makes it unnecessarily hard.
+    ds_pre_base = SamplesArrayDataset(X_norm, y_all, y_seq_all, train_idx2, scaler.mean_, scaler.std_, feature_cols, augment=False)
+    ds_pre = _make_pretrain_dataset(ds_pre_base)
 
     bs = min(BATCH_SIZE, len(ds_train))
     dl_pre = DataLoader(ds_pre, batch_size=bs, shuffle=True, drop_last=len(ds_pre) > bs)
@@ -215,10 +268,15 @@ def train_one_fold(
 
     # -------- PRETRAIN --------
     pre = TSTPretrainDenoiser(encoder).to(device)
-    opt = torch.optim.RAdam(pre.parameters(), lr=LR)
+    opt = torch.optim.RAdam(pre.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+    pre_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        opt, T_max=int(epochs_pretrain), eta_min=LR * 0.01
+    )
 
     if not quiet:
         print("[Pretrain]")
+    best_recon_mse = float("inf")
+    best_pre_state = None
     epoch_iter = tqdm(range(1, int(epochs_pretrain) + 1), desc="Pretrain", unit="epoch", disable=quiet)
     for epoch in epoch_iter:
         pre.train()
@@ -226,14 +284,16 @@ def train_one_fold(
         den_sum = 0.0
         for xb in dl_pre:
             xb = xb.to(device)
+            # Generate mask on CPU — DirectML boolean advanced indexing
+            # (state[bool_mask] = val) is unreliable and corrupts the mask.
             mask = stateful_variable_mask(
                 batch_size=xb.shape[0],
                 seq_len=xb.shape[1],
                 n_vars=xb.shape[2],
                 r=MASK_R,
                 lm=MASK_LM,
-                device=device,
-            )
+                device="cpu",
+            ).to(device)
             xb_masked = xb * mask
             pred = pre(xb_masked)
 
@@ -251,12 +311,37 @@ def train_one_fold(
             num_sum += float(num.detach().item())
             den_sum += float(den.detach().item())
 
+        pre_scheduler.step()
         recon_mse = num_sum / max(den_sum, 1e-8)
-        epoch_iter.set_postfix(recon_mse=f"{recon_mse:.6f}")
+        if recon_mse < best_recon_mse:
+            best_recon_mse = recon_mse
+            best_pre_state = {k: v.cpu().clone() for k, v in pre.state_dict().items()}
+        epoch_iter.set_postfix(recon_mse=f"{recon_mse:.6f}", best=f"{best_recon_mse:.6f}")
+
+    # Restore best pretrain weights before handing encoder to finetuning.
+    if best_pre_state is not None:
+        pre.load_state_dict(best_pre_state)
+        pre.to(device)
 
     # -------- FINETUNE --------
     reg = TSTRegressor(encoder, out_dim=1).to(device)
-    opt2 = torch.optim.RAdam(reg.parameters(), lr=LR)
+
+    # Initialize the output head bias to the training-set label mean (normalized).
+    # Default PyTorch init predicts ~0°; training labels are ~100–180°, giving
+    # RMSE ≈ 140° at epoch 1.  Starting from the mean drops this to std(y) ≈ 30–40°
+    # immediately and dramatically speeds up convergence.
+    train_label_mean_norm = float(np.mean(y_all[train_idx2]) / 180.0)
+    with torch.no_grad():
+        reg.head.bias.fill_(train_label_mean_norm)
+
+    # Separate LR groups: higher LR for the randomly-initialised head, lower for
+    # the pretrained encoder.  Gradient clipping at norm=1.0 across ~425K params
+    # means the 129-param head gets almost no update budget at the shared LR.
+    LR_HEAD = LR * 10.0
+    opt2 = torch.optim.RAdam([
+        {"params": reg.encoder.parameters(), "lr": LR},
+        {"params": reg.head.parameters(),    "lr": LR_HEAD},
+    ], weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt2, T_max=int(epochs_finetune), eta_min=LR * 0.01)
     mse = torch.nn.MSELoss()
 
@@ -293,12 +378,14 @@ def train_one_fold(
         scheduler.step()
 
         val_metrics = eval_regressor(reg, dl_val, device=device) if len(ds_val) > 0 else {"rmse": float("inf"), "seq_rmse": float("inf")}
+        # train_rmse: labels are normalized to [0,1]; multiply by 180 to report degrees
         last_val_metrics = dict(val_metrics)
-        train_rmse = math.sqrt(total / max(n, 1))
+        train_rmse_deg = math.sqrt(total / max(n, 1)) * 180.0
+        train_rmse = train_rmse_deg
         ft_iter.set_postfix(
-            train=f"{train_rmse:.3f}",
-            val=f"{val_metrics['rmse']:.3f}",
-            vseq=f"{val_metrics['seq_rmse']:.3f}",
+            train=f"{train_rmse:.1f}",
+            val=f"{val_metrics['rmse']:.1f}",
+            vseq=f"{val_metrics['seq_rmse']:.1f}",
         )
 
         improved = float(val_metrics["rmse"]) < float(best_val_rmse) - 1e-8
@@ -306,7 +393,7 @@ def train_one_fold(
             best_val_rmse = float(val_metrics["rmse"])
             best_val_seq_rmse = float(val_metrics["seq_rmse"])
             best_epoch = int(epoch)
-            best_state = copy.deepcopy(reg.state_dict())
+            best_state = {k: v.cpu().clone() for k, v in reg.state_dict().items()}
             best_patience_left = int(early_stop_patience)
         elif early_stop_patience > 0:
             best_patience_left -= 1
@@ -316,7 +403,7 @@ def train_one_fold(
                 break
 
     # Evaluate test once using the best-by-validation weights.
-    last_state = copy.deepcopy(reg.state_dict())
+    last_state = {k: v.cpu().clone() for k, v in reg.state_dict().items()}
     if best_state is not None:
         reg.load_state_dict(best_state, strict=True)
     test_metrics = eval_regressor(reg, dl_test, device=device)
@@ -422,19 +509,21 @@ def eval_regressor(model: TSTRegressor, loader: DataLoader, device: torch.device
         yb_scalar = yb_scalar.to(device)
         yb_seq = yb_seq.to(device)
         out = model(xb)            # [B,T,1]
-        # Last timestep
-        pred_last = out[:, -1, 0]
-        y_last = yb_scalar[:, 0]
+        LABEL_SCALE = 180.0
+        # Last timestep — convert from normalized [0,1] back to degrees
+        pred_last = out[:, -1, 0] * LABEL_SCALE
+        y_last = yb_scalar[:, 0] * LABEL_SCALE
         diff_last = pred_last - y_last
         se_sum_last += float((diff_last * diff_last).sum().item())
         ae_sum_last += float(diff_last.abs().sum().item())
         n_last += y_last.numel()
-        # Full sequence
-        pred_seq = out[:, :, 0]    # [B,T]
-        diff_seq = pred_seq - yb_seq
+        # Full sequence — convert from normalized [0,1] back to degrees
+        pred_seq = out[:, :, 0] * LABEL_SCALE
+        yb_seq_deg = yb_seq * LABEL_SCALE
+        diff_seq = pred_seq - yb_seq_deg
         se_sum_seq += float((diff_seq * diff_seq).sum().item())
         ae_sum_seq += float(diff_seq.abs().sum().item())
-        n_seq += yb_seq.numel()
+        n_seq += yb_seq_deg.numel()
     return {
         "rmse": math.sqrt(se_sum_last / max(n_last, 1)),
         "mae": ae_sum_last / max(n_last, 1),
@@ -444,8 +533,10 @@ def eval_regressor(model: TSTRegressor, loader: DataLoader, device: torch.device
 
 def save_checkpoint(path: Path, *, reg: TSTRegressor, encoder: TSTEncoder, scaler: StandardScaler, extra: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Move state dict to CPU before saving — DirectML tensors can't be serialized by torch.save.
+    cpu_state = {k: v.cpu() for k, v in reg.state_dict().items()}
     ckpt = {
-        "reg_state_dict": reg.state_dict(),
+        "reg_state_dict": cpu_state,
         "model_cfg": {
             "n_vars": int(encoder.n_vars),
             "seq_len": int(encoder.seq_len),
@@ -458,6 +549,8 @@ def save_checkpoint(path: Path, *, reg: TSTRegressor, encoder: TSTEncoder, scale
         "task_cfg": {
             "predict_last_only": False,
             "label_shift": int(extra.get("label_shift", 0)),
+            # Model outputs are in [0,1]; multiply by label_scale to get degrees.
+            "label_scale": 180.0,
         },
         "scaler": {
             "mean": scaler.mean_,
@@ -467,7 +560,7 @@ def save_checkpoint(path: Path, *, reg: TSTRegressor, encoder: TSTEncoder, scale
     }
     torch.save(ckpt, path)
 
-def _train_cv(X_all, y_all, y_seq_all, folds, feature_cols, device, run_dir, label, data, quiet=False):
+def _train_cv(X_all, y_all, y_seq_all, file_ids, folds, feature_cols, device, run_dir, label, data, quiet=False):
     """Train + CV with a given feature subset. Returns list of fold metrics."""
     n_vars = len(feature_cols)
     seq_len = X_all.shape[1]
@@ -568,7 +661,16 @@ def permutation_importance(reg, ds_test, feature_cols, device, n_repeats=5):
 def main():
     set_seed(SEED)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        try:
+            import torch_directml
+            device = torch_directml.device()
+            print("Using DirectML (AMD GPU)")
+        except ImportError:
+            device = torch.device("cpu")
+            print("DirectML not found, using CPU. Install with: pip install torch-directml")
 
     if not SAMPLES_FILE.exists():
         raise SystemExit(f"Missing {SAMPLES_FILE}. Run: python split_to_samples.py")
@@ -596,7 +698,7 @@ def main():
         raise SystemExit(
             "This pipeline requires thigh quaternion features (thigh_quat_wxyz, 4 dims). "
             f"Got thigh_mode={thigh_mode!r}, thigh_n_features={thigh_n}. "
-            "Rebuild samples_dataset.npy from recordings produced by the updated rigtest.py."
+            "Rebuild samples_dataset.npy from recordings produced by rigtest_gui.py."
         )
 
     # LOFO when multiple files, random k-fold fallback for single file
@@ -631,7 +733,7 @@ def main():
     print("\n>>> [1/3] ALL FEATURES (EMG + thigh)")
     run_dir_all = SAVE_DIR / (RUN_NAME + "_all")
     run_dir_all.mkdir(parents=True, exist_ok=True)
-    metrics_all = _train_cv(X_all, y_all, y_seq_all, folds, all_cols, device, run_dir_all, "ALL", data)
+    metrics_all = _train_cv(X_all, y_all, y_seq_all, file_ids, folds, all_cols, device, run_dir_all, "ALL", data)
     rmse_all = np.mean([m["best_rmse"] for m in metrics_all])
     results["all"] = rmse_all
 
@@ -639,7 +741,7 @@ def main():
     print("\n>>> [2/3] THIGH ONLY (baseline)")
     run_dir_thigh = SAVE_DIR / (RUN_NAME + "_thigh_only")
     run_dir_thigh.mkdir(parents=True, exist_ok=True)
-    metrics_thigh = _train_cv(X_all, y_all, y_seq_all, folds, thigh_col, device, run_dir_thigh, "THIGH-ONLY", data)
+    metrics_thigh = _train_cv(X_all, y_all, y_seq_all, file_ids, folds, thigh_col, device, run_dir_thigh, "THIGH-ONLY", data)
     rmse_thigh = np.mean([m["best_rmse"] for m in metrics_thigh])
     results["thigh_only"] = rmse_thigh
 
@@ -647,7 +749,7 @@ def main():
     print("\n>>> [3/3] EMG ONLY (no thigh features)")
     run_dir_emg = SAVE_DIR / (RUN_NAME + "_emg_only")
     run_dir_emg.mkdir(parents=True, exist_ok=True)
-    metrics_emg = _train_cv(X_all, y_all, y_seq_all, folds, emg_cols, device, run_dir_emg, "EMG-ONLY", data)
+    metrics_emg = _train_cv(X_all, y_all, y_seq_all, file_ids, folds, emg_cols, device, run_dir_emg, "EMG-ONLY", data)
     rmse_emg = np.mean([m["best_rmse"] for m in metrics_emg])
     results["emg_only"] = rmse_emg
 
@@ -699,7 +801,27 @@ def main():
             mean, std = scaler.mean_, scaler.std_
 
         feature_cols_pi = np.asarray(ckpt.get("extra", {}).get("feature_cols", all_cols.tolist()), dtype=np.int64)
-        ds_test = SamplesArrayDataset(X_all, y_all, y_seq_all, test_idx, mean, std, feature_cols_pi)
+        # Rebuild per-file-normalised X for fold 1 so PI uses the same preprocessing as training.
+        n_quat_pi = 4
+        n_raw_pi = int(X_all.shape[2]) - n_quat_pi
+        file_mu_pi: dict[int, np.ndarray] = {}
+        file_sd_pi: dict[int, np.ndarray] = {}
+        for fid in np.unique(file_ids[train_idx]).tolist():
+            fidx = train_idx[file_ids[train_idx] == fid]
+            x_ref = X_all[fidx, :, :n_raw_pi].reshape(-1, n_raw_pi)
+            file_mu_pi[int(fid)] = x_ref.mean(axis=0).astype(np.float32)
+            file_sd_pi[int(fid)] = np.maximum(x_ref.std(axis=0), 1e-6).astype(np.float32)
+        for fid in np.unique(file_ids).tolist():
+            if int(fid) not in file_mu_pi:
+                fidx = np.where(file_ids == fid)[0]
+                x_ref = X_all[fidx, :, :n_raw_pi].reshape(-1, n_raw_pi)
+                file_mu_pi[int(fid)] = x_ref.mean(axis=0).astype(np.float32)
+                file_sd_pi[int(fid)] = np.maximum(x_ref.std(axis=0), 1e-6).astype(np.float32)
+        X_norm_pi = X_all.copy()
+        for i in range(int(X_all.shape[0])):
+            fid = int(file_ids[i])
+            X_norm_pi[i, :, :n_raw_pi] = (X_all[i, :, :n_raw_pi] - file_mu_pi[fid]) / file_sd_pi[fid]
+        ds_test = SamplesArrayDataset(X_norm_pi, y_all, y_seq_all, test_idx, mean, std, feature_cols_pi)
         encoder = TSTEncoder(
             n_vars=int(cfg["n_vars"]), seq_len=int(cfg["seq_len"]),
             d_model=int(cfg["d_model"]), n_heads=int(cfg["n_heads"]),

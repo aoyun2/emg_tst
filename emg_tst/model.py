@@ -2,10 +2,14 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-class TSTEncoderLayerBN(nn.Module):
+class TSTEncoderLayer(nn.Module):
     """
-    Transformer encoder layer with BatchNorm (time-series variant).
-    x shape: [B,T,D]
+    Transformer encoder layer with pre-norm LayerNorm.
+    x shape: [B, T, D]
+
+    LayerNorm instead of BatchNorm: normalises per-sample so zero-filled
+    masked positions don't skew batch statistics during masked pretraining,
+    and is well-supported across all compute backends (CPU / CUDA / DirectML).
     """
     def __init__(self, d_model: int, n_heads: int, d_ff: int, dropout: float = 0.1):
         super().__init__()
@@ -16,25 +20,23 @@ class TSTEncoderLayerBN(nn.Module):
             batch_first=True,
         )
         self.drop1 = nn.Dropout(dropout)
-        self.bn1 = nn.BatchNorm1d(d_model)
+        self.ln1   = nn.LayerNorm(d_model)
 
         self.ff = nn.Sequential(
             nn.Linear(d_model, d_ff),
-            nn.ReLU(inplace=True),
+            nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(d_ff, d_model),
         )
         self.drop2 = nn.Dropout(dropout)
-        self.bn2 = nn.BatchNorm1d(d_model)
+        self.ln2   = nn.LayerNorm(d_model)
 
     def forward(self, x: torch.Tensor, key_padding_mask: torch.Tensor | None = None) -> torch.Tensor:
-        attn_out, _ = self.attn(x, x, x, key_padding_mask=key_padding_mask, need_weights=False)
-        x = x + self.drop1(attn_out)
-        x = self.bn1(x.transpose(1, 2)).transpose(1, 2)
-
-        ff_out = self.ff(x)
-        x = x + self.drop2(ff_out)
-        x = self.bn2(x.transpose(1, 2)).transpose(1, 2)
+        # Pre-norm residual connections (more stable than post-norm)
+        x = x + self.drop1(self.attn(*[self.ln1(x)]*3,
+                                     key_padding_mask=key_padding_mask,
+                                     need_weights=False)[0])
+        x = x + self.drop2(self.ff(self.ln2(x)))
         return x
 
 class TSTEncoder(nn.Module):
@@ -63,7 +65,7 @@ class TSTEncoder(nn.Module):
 
         self.drop = nn.Dropout(dropout)
         self.layers = nn.ModuleList(
-            [TSTEncoderLayerBN(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)]
+            [TSTEncoderLayer(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)]
         )
 
     def forward(self, x: torch.Tensor, key_padding_mask: torch.Tensor | None = None) -> torch.Tensor:
