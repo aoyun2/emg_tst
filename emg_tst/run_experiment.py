@@ -30,13 +30,13 @@ D_MODEL = 128
 N_HEADS = 8
 D_FF = 256
 N_LAYERS = 3
-DROPOUT = 0.15
+DROPOUT = 0.1
 
 # Training
 BATCH_SIZE = 64
 LR = 3e-4
-WEIGHT_DECAY = 1e-4
-EPOCHS_PRETRAIN = 80
+WEIGHT_DECAY = 0.0
+EPOCHS_PRETRAIN = 40
 EPOCHS_FINETUNE = 100
 
 # Masked reconstruction pretraining (stateful Markov masking)
@@ -201,54 +201,13 @@ def train_one_fold(
         train_idx2 = np.asarray(train_idx, dtype=np.int64).reshape(-1)
         val_idx = np.asarray(val_idx, dtype=np.int64).reshape(-1)
 
-    # Per-recording EMG normalization.
-    # Session-level amplitude offsets (electrode placement, skin impedance, fatigue)
-    # are the main source of cross-session error.  Z-score each recording's EMG features
-    # independently so the model sees comparable activation scales across sessions.
-    # Quaternion features (last 4 columns) are unit-norm by construction — skip them.
-    n_quat = 4
-    n_raw_feat = int(X_all.shape[2]) - n_quat  # number of EMG/spectral features
+    scaler = StandardScaler.fit([X_all[train_idx2].reshape(-1, X_all.shape[2])])
 
-    # Compute per-file stats using training windows only.
-    file_mu: dict[int, np.ndarray] = {}
-    file_sd: dict[int, np.ndarray] = {}
-    for fid in np.unique(file_ids[train_idx2]).tolist():
-        fidx = train_idx2[file_ids[train_idx2] == fid]
-        x_ref = X_all[fidx, :, :n_raw_feat].reshape(-1, n_raw_feat)
-        file_mu[int(fid)] = x_ref.mean(axis=0).astype(np.float32)
-        file_sd[int(fid)] = np.maximum(x_ref.std(axis=0), 1e-6).astype(np.float32)
+    ds_train = SamplesArrayDataset(X_all, y_all, y_seq_all, train_idx2, scaler.mean_, scaler.std_, feature_cols)
+    ds_val   = SamplesArrayDataset(X_all, y_all, y_seq_all, val_idx,    scaler.mean_, scaler.std_, feature_cols)
+    ds_test  = SamplesArrayDataset(X_all, y_all, y_seq_all, test_idx,   scaler.mean_, scaler.std_, feature_cols)
 
-    # For held-out (test/val) files: use the file's own stats.  In a prosthetics
-    # deployment you always run a short calibration pass before live use, so this
-    # is a realistic assumption, not data leakage.
-    for fid in np.unique(file_ids).tolist():
-        if int(fid) not in file_mu:
-            fidx = np.where(file_ids == fid)[0]
-            x_ref = X_all[fidx, :, :n_raw_feat].reshape(-1, n_raw_feat)
-            file_mu[int(fid)] = x_ref.mean(axis=0).astype(np.float32)
-            file_sd[int(fid)] = np.maximum(x_ref.std(axis=0), 1e-6).astype(np.float32)
-
-    # Build per-file-normalised copy of X_all (EMG channels only; quat unchanged).
-    X_norm = X_all.copy()
-    for i in range(int(X_all.shape[0])):
-        fid = int(file_ids[i])
-        X_norm[i, :, :n_raw_feat] = (
-            (X_all[i, :, :n_raw_feat] - file_mu[fid]) / file_sd[fid]
-        )
-
-    # Fit global scaler on the per-file-normalised training windows.
-    # EMG features are now ~N(0,1) per session; the global scaler handles residual
-    # cross-session variance and normalises the quaternion features.
-    scaler = StandardScaler.fit([X_norm[train_idx2].reshape(-1, X_all.shape[2])])
-
-    ds_train = SamplesArrayDataset(X_norm, y_all, y_seq_all, train_idx2, scaler.mean_, scaler.std_, feature_cols, augment=True)
-    ds_val   = SamplesArrayDataset(X_norm, y_all, y_seq_all, val_idx,    scaler.mean_, scaler.std_, feature_cols)
-    ds_test  = SamplesArrayDataset(X_norm, y_all, y_seq_all, test_idx,   scaler.mean_, scaler.std_, feature_cols)
-
-    # Pretraining uses clean (non-augmented) inputs — the masked reconstruction task
-    # is already a strong regulariser; adding noise on top makes it unnecessarily hard.
-    ds_pre_base = SamplesArrayDataset(X_norm, y_all, y_seq_all, train_idx2, scaler.mean_, scaler.std_, feature_cols, augment=False)
-    ds_pre = _make_pretrain_dataset(ds_pre_base)
+    ds_pre = _make_pretrain_dataset(ds_train)
 
     bs = min(BATCH_SIZE, len(ds_train))
     dl_pre = DataLoader(ds_pre, batch_size=bs, shuffle=True, drop_last=len(ds_pre) > bs)
@@ -269,9 +228,6 @@ def train_one_fold(
     # -------- PRETRAIN --------
     pre = TSTPretrainDenoiser(encoder).to(device)
     opt = torch.optim.RAdam(pre.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
-    pre_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        opt, T_max=int(epochs_pretrain), eta_min=LR * 0.01
-    )
 
     if not quiet:
         print("[Pretrain]")
@@ -311,7 +267,7 @@ def train_one_fold(
             num_sum += float(num.detach().item())
             den_sum += float(den.detach().item())
 
-        pre_scheduler.step()
+
         recon_mse = num_sum / max(den_sum, 1e-8)
         if recon_mse < best_recon_mse:
             best_recon_mse = recon_mse
@@ -327,22 +283,17 @@ def train_one_fold(
     reg = TSTRegressor(encoder, out_dim=1).to(device)
 
     # Initialize the output head bias to the training-set label mean (normalized).
-    # Default PyTorch init predicts ~0°; training labels are ~100–180°, giving
-    # RMSE ≈ 140° at epoch 1.  Starting from the mean drops this to std(y) ≈ 30–40°
-    # immediately and dramatically speeds up convergence.
     train_label_mean_norm = float(np.mean(y_all[train_idx2]) / 180.0)
     with torch.no_grad():
         reg.head.bias.fill_(train_label_mean_norm)
 
     # Separate LR groups: higher LR for the randomly-initialised head, lower for
-    # the pretrained encoder.  Gradient clipping at norm=1.0 across ~425K params
-    # means the 129-param head gets almost no update budget at the shared LR.
+    # the pretrained encoder.
     LR_HEAD = LR * 10.0
     opt2 = torch.optim.RAdam([
         {"params": reg.encoder.parameters(), "lr": LR},
         {"params": reg.head.parameters(),    "lr": LR_HEAD},
     ], weight_decay=WEIGHT_DECAY)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt2, T_max=int(epochs_finetune), eta_min=LR * 0.01)
     mse = torch.nn.MSELoss()
 
     if not quiet:
@@ -375,15 +326,13 @@ def train_one_fold(
             total += float(loss.detach().item()) * yb_seq.numel()
             n += yb_seq.numel()
 
-        scheduler.step()
+
 
         val_metrics = eval_regressor(reg, dl_val, device=device) if len(ds_val) > 0 else {"rmse": float("inf"), "seq_rmse": float("inf")}
-        # train_rmse: labels are normalized to [0,1]; multiply by 180 to report degrees
         last_val_metrics = dict(val_metrics)
         train_rmse_deg = math.sqrt(total / max(n, 1)) * 180.0
-        train_rmse = train_rmse_deg
         ft_iter.set_postfix(
-            train=f"{train_rmse:.1f}",
+            train=f"{train_rmse_deg:.1f}",
             val=f"{val_metrics['rmse']:.1f}",
             vseq=f"{val_metrics['seq_rmse']:.1f}",
         )
@@ -402,7 +351,7 @@ def train_one_fold(
                     print(f"Early stop at epoch {epoch} (no val RMSE improvement for {early_stop_patience} epochs)")
                 break
 
-    # Evaluate test once using the best-by-validation weights.
+    # Evaluate test once using best-by-validation weights.
     last_state = {k: v.cpu().clone() for k, v in reg.state_dict().items()}
     if best_state is not None:
         reg.load_state_dict(best_state, strict=True)
@@ -801,27 +750,7 @@ def main():
             mean, std = scaler.mean_, scaler.std_
 
         feature_cols_pi = np.asarray(ckpt.get("extra", {}).get("feature_cols", all_cols.tolist()), dtype=np.int64)
-        # Rebuild per-file-normalised X for fold 1 so PI uses the same preprocessing as training.
-        n_quat_pi = 4
-        n_raw_pi = int(X_all.shape[2]) - n_quat_pi
-        file_mu_pi: dict[int, np.ndarray] = {}
-        file_sd_pi: dict[int, np.ndarray] = {}
-        for fid in np.unique(file_ids[train_idx]).tolist():
-            fidx = train_idx[file_ids[train_idx] == fid]
-            x_ref = X_all[fidx, :, :n_raw_pi].reshape(-1, n_raw_pi)
-            file_mu_pi[int(fid)] = x_ref.mean(axis=0).astype(np.float32)
-            file_sd_pi[int(fid)] = np.maximum(x_ref.std(axis=0), 1e-6).astype(np.float32)
-        for fid in np.unique(file_ids).tolist():
-            if int(fid) not in file_mu_pi:
-                fidx = np.where(file_ids == fid)[0]
-                x_ref = X_all[fidx, :, :n_raw_pi].reshape(-1, n_raw_pi)
-                file_mu_pi[int(fid)] = x_ref.mean(axis=0).astype(np.float32)
-                file_sd_pi[int(fid)] = np.maximum(x_ref.std(axis=0), 1e-6).astype(np.float32)
-        X_norm_pi = X_all.copy()
-        for i in range(int(X_all.shape[0])):
-            fid = int(file_ids[i])
-            X_norm_pi[i, :, :n_raw_pi] = (X_all[i, :, :n_raw_pi] - file_mu_pi[fid]) / file_sd_pi[fid]
-        ds_test = SamplesArrayDataset(X_norm_pi, y_all, y_seq_all, test_idx, mean, std, feature_cols_pi)
+        ds_test = SamplesArrayDataset(X_all, y_all, y_seq_all, test_idx, mean, std, feature_cols_pi)
         encoder = TSTEncoder(
             n_vars=int(cfg["n_vars"]), seq_len=int(cfg["seq_len"]),
             d_model=int(cfg["d_model"]), n_heads=int(cfg["n_heads"]),
