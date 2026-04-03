@@ -8,10 +8,14 @@ import torch
 from torch.utils.data import Dataset
 
 
-# --- Raw EMG feature extraction ---
+# --- Raw EMG input extraction ---
 # RAW_WINDOW is in *raw EMG samples* (uMyo raw stream is ~400Hz).
-RAW_WINDOW = 32   # causal rolling window (~80ms at 400Hz)
-N_FFT_BANDS = 8   # frequency bands for spectral features
+# Each 200 Hz timestep sees the last RAW_WINDOW raw samples from each sensor.
+RAW_WINDOW = 32
+# Legacy-only: older datasets used 5 time-domain features + 8 FFT bands per sensor.
+N_FFT_BANDS = 8
+ENGINEERED_EMG_FEATURE_NAMES = ["RMS", "MAV", "WL", "ZC", "SSC"] + [f"FFT{i}" for i in range(N_FFT_BANDS)]
+RAW_SNIPPET_FEATURE_MODE = "raw_snippets"
 
 # Recordings are not perfectly uniform in time (Bluetooth + serial jitter). For
 # reproducible training/evaluation (and consistent window length in seconds),
@@ -111,126 +115,107 @@ def _resample_quat_slerp_wxyz_by_timestamps(q: np.ndarray, t_src: np.ndarray, t_
     return out.astype(np.float32)
 
 
-def _extract_raw_features_for_sensor(
+def _aligned_raw_indices(
+    raw_len: int,
+    T_imu: int,
+    *,
+    raw_times: np.ndarray | None = None,
+    imu_times: np.ndarray | None = None,
+) -> np.ndarray:
+    if raw_len <= 0 or T_imu <= 0:
+        return np.zeros((max(int(T_imu), 0),), dtype=np.int64)
+
+    if (raw_times is not None and imu_times is not None
+            and len(raw_times) == raw_len and len(imu_times) == T_imu):
+        raw_ts = _ensure_strictly_increasing(np.asarray(raw_times, dtype=np.float64).reshape(-1))
+        imu_ts = np.asarray(imu_times, dtype=np.float64).reshape(-1)
+        raw_idx = np.searchsorted(raw_ts, imu_ts, side="right") - 1
+        return np.clip(raw_idx, 0, raw_len - 1).astype(np.int64)
+
+    return np.linspace(0, raw_len - 1, int(T_imu)).astype(np.int64)
+
+
+def _extract_raw_snippets_for_sensor(
     raw: np.ndarray,
     T_imu: int,
     window: int = RAW_WINDOW,
     raw_times: np.ndarray | None = None,
     imu_times: np.ndarray | None = None,
 ) -> np.ndarray:
-    """
-    Compute per-IMU-timestep features from native-rate raw EMG.
+    raw = np.asarray(raw, dtype=np.float64).reshape(-1)
+    T_imu = int(T_imu)
+    window = int(window)
+    out = np.zeros((max(T_imu, 0), max(window, 0)), dtype=np.float32)
+    if raw.size < 1 or T_imu < 1 or window < 1:
+        return out
 
-    For each of T_imu timesteps, takes a causal rolling window of raw samples
-    and computes:
-      - RMS (root mean square)
-      - MAV (mean absolute value)
-      - WL  (waveform length = sum of abs differences)
-      - ZC  (zero crossing count, normalized)
-      - SSC (slope sign changes, normalized)
-      - Spectral power in N_FFT_BANDS frequency bands
+    raw_idx = _aligned_raw_indices(
+        int(raw.size),
+        T_imu,
+        raw_times=raw_times,
+        imu_times=imu_times,
+    )
+    padded = np.concatenate(
+        [
+            np.full((window - 1,), float(raw[0]), dtype=np.float64),
+            raw,
+        ],
+        axis=0,
+    )
+    starts = raw_idx.astype(np.int64)
+    offsets = np.arange(window, dtype=np.int64)
+    return padded[starts[:, None] + offsets[None, :]].astype(np.float32)
 
-    Args:
-      raw:       (R,) flat raw EMG at native rate (~400 Hz)
-      T_imu:     number of IMU-rate timesteps to produce
-      window:    rolling window size (samples)
-      raw_times: (R,) timestamps of each raw EMG sample in seconds (optional).
-                 When provided, used for accurate time-based alignment instead
-                 of the uniform linspace approximation.
-      imu_times: (T_imu,) timestamps of IMU timesteps in seconds (optional).
-                 Required when raw_times is provided.
 
-    Returns:
-      features: (T_imu, 5 + N_FFT_BANDS) float32
-    """
-    R = len(raw)
-    n_feat = 5 + N_FFT_BANDS
-    out = np.zeros((T_imu, n_feat), dtype=np.float32)
+def emg_feature_layout_from_meta(meta: dict) -> dict:
+    mode = str(meta.get("emg_feature_mode", "")).strip().lower()
+    has_raw = bool(meta.get("has_raw_emg", False))
+    n_raw_total = int(meta.get("n_raw_features", 0))
+    n_ch = int(meta.get("n_channels", 16))
+    per_sensor = int(meta.get("n_emg_features_per_sensor", 0))
 
-    if R < window:
-        return out  # not enough raw data
+    if mode == RAW_SNIPPET_FEATURE_MODE:
+        per_sensor = max(per_sensor, RAW_WINDOW)
+        return {
+            "mode": mode,
+            "per_sensor": per_sensor,
+            "names": [f"lag{per_sensor - 1 - i}" for i in range(per_sensor)],
+        }
 
-    # Map IMU timestep -> raw index.
-    # Prefer timestamp-based alignment (new recordings from rigtest_gui.py) over
-    # the uniform-linspace approximation (old recordings from rigtest.py).
-    # The linspace approximation assumes raw samples are uniformly distributed,
-    # but they actually arrive in bursts of 8, which misaligns features by up to
-    # ~20 ms – significant noise at 200 Hz.
-    if (raw_times is not None and imu_times is not None
-            and len(raw_times) == R and len(imu_times) == T_imu):
-        raw_ts = np.asarray(raw_times, dtype=np.float64)
-        imu_ts = np.asarray(imu_times, dtype=np.float64)
-        # For each IMU timestep, find the last raw sample that occurred at or
-        # before that time (causal).
-        raw_idx = np.searchsorted(raw_ts, imu_ts, side="right") - 1
-        raw_idx = np.clip(raw_idx, 0, R - 1).astype(np.int64)
-    else:
-        # Fallback: uniform distribution assumption
-        raw_idx = np.linspace(0, R - 1, T_imu).astype(np.int64)
+    if mode == "legacy_spectr":
+        per_sensor = max(per_sensor, n_ch)
+        return {
+            "mode": mode,
+            "per_sensor": per_sensor,
+            "names": [f"spectr{i}" for i in range(per_sensor)],
+        }
 
-    for t in range(T_imu):
-        end = int(raw_idx[t]) + 1
-        start = int(end - window)
+    if has_raw and n_raw_total > 0:
+        per_sensor = max(1, n_raw_total // 3)
+        if per_sensor == RAW_WINDOW:
+            return {
+                "mode": RAW_SNIPPET_FEATURE_MODE,
+                "per_sensor": per_sensor,
+                "names": [f"lag{per_sensor - 1 - i}" for i in range(per_sensor)],
+            }
+        if per_sensor == len(ENGINEERED_EMG_FEATURE_NAMES):
+            return {
+                "mode": "engineered_features",
+                "per_sensor": per_sensor,
+                "names": list(ENGINEERED_EMG_FEATURE_NAMES),
+            }
+        return {
+            "mode": "emg_features",
+            "per_sensor": per_sensor,
+            "names": [f"emg{i}" for i in range(per_sensor)],
+        }
 
-        # Causal fixed-length window: pad on the left for the first few timesteps.
-        if start < 0:
-            pad_n = int(-start)
-            pad_val = float(raw[0])
-            seg = np.concatenate(
-                [
-                    np.full((pad_n,), pad_val, dtype=np.float64),
-                    raw[0:end].astype(np.float64),
-                ],
-                axis=0,
-            )
-        else:
-            seg = raw[start:end].astype(np.float64)
-
-        # Defensive: ensure we always compute on a fixed window length.
-        if int(seg.size) != int(window):
-            if int(seg.size) < 2:
-                continue
-            seg = seg[-int(window) :].astype(np.float64, copy=False)
-        n = int(seg.size)
-
-        # Remove DC offset for frequency features
-        seg_centered = seg - seg.mean()
-
-        # RMS — log1p: EMG amplitude is right-skewed / roughly log-normal;
-        # log1p maps the heavy tail into a Gaussian-like range that StandardScaler handles well.
-        out[t, 0] = np.log1p(np.sqrt(np.mean(seg_centered ** 2)))
-
-        # MAV — same reasoning
-        out[t, 1] = np.log1p(np.mean(np.abs(seg_centered)))
-
-        # Waveform length — same reasoning
-        out[t, 2] = np.log1p(np.sum(np.abs(np.diff(seg))))
-
-        # Zero crossings (on centered signal)
-        signs = np.sign(seg_centered)
-        sign_changes = np.diff(signs)
-        out[t, 3] = np.count_nonzero(sign_changes) / n
-
-        # Slope sign changes
-        d = np.diff(seg)
-        if len(d) >= 2:
-            out[t, 4] = np.count_nonzero(np.diff(np.sign(d))) / n
-
-        # Spectral power in N_FFT_BANDS bands
-        fft_vals = np.fft.rfft(seg_centered)
-        power = np.abs(fft_vals) ** 2
-        n_bins = len(power)
-        # Split into N_FFT_BANDS equal bands
-        band_edges = np.linspace(0, n_bins, N_FFT_BANDS + 1, dtype=int)
-        for b in range(N_FFT_BANDS):
-            lo, hi = band_edges[b], band_edges[b + 1]
-            if hi > lo:
-                # log1p: spectral power is non-negative and extremely right-skewed
-                # (std ~10^7–10^8 raw). log1p compresses the range to ~[0,20],
-                # making StandardScaler effective instead of near-zero everywhere.
-                out[t, 5 + b] = np.log1p(np.mean(power[lo:hi]))
-
-    return out
+    per_sensor = max(per_sensor, n_ch)
+    return {
+        "mode": "legacy_spectr",
+        "per_sensor": per_sensor,
+        "names": [f"spectr{i}" for i in range(per_sensor)],
+    }
 
 
 def load_recording(path: str | Path) -> Tuple[np.ndarray, np.ndarray, dict]:
@@ -239,7 +224,7 @@ def load_recording(path: str | Path) -> Tuple[np.ndarray, np.ndarray, dict]:
 
     Features per timestep:
       - N device_spectr channels x 3 sensors (legacy)
-      - (5 + N_FFT_BANDS) raw EMG features x 3 sensors (if raw data available)
+      - RAW_WINDOW raw EMG samples x 3 sensors (if raw data available)
       - right thigh orientation from uMyo sensor 2:
           - required: `thigh_quat_wxyz` (wxyz quaternion, 4 dims)
     Label: knee included angle (degrees): 0=bent, 180=straight.
@@ -256,16 +241,16 @@ def load_recording(path: str | Path) -> Tuple[np.ndarray, np.ndarray, dict]:
     d = np.load(Path(path), allow_pickle=True).item()
     # Prefer explicit key; fall back to legacy 'imu'.
     if "knee_included_deg" in d:
-        y = np.asarray(d["knee_included_deg"], dtype=np.float32)
+        y0 = np.asarray(d["knee_included_deg"], dtype=np.float32)
     else:
-        y = np.asarray(d["imu"], dtype=np.float32)
+        y0 = np.asarray(d["imu"], dtype=np.float32)
 
     s1 = np.asarray(d["emg_sensor1"], dtype=np.float32)  # (N, T)
     s2 = np.asarray(d["emg_sensor2"], dtype=np.float32)
     s3 = np.asarray(d["emg_sensor3"], dtype=np.float32)
 
     n_ch = s1.shape[0]
-    T = min(y.shape[0], s1.shape[1], s2.shape[1], s3.shape[1])
+    T0 = min(y0.shape[0], s1.shape[1], s2.shape[1], s3.shape[1])
 
     # Thigh feature: require quaternion (no fallback to scalar thigh_angle).
     if "thigh_quat_wxyz" not in d:
@@ -274,8 +259,8 @@ def load_recording(path: str | Path) -> Tuple[np.ndarray, np.ndarray, dict]:
             "Re-record with the updated uMyo_python_tools/rigtest.py."
         )
     q = np.asarray(d["thigh_quat_wxyz"], dtype=np.float32).reshape(-1, 4)
-    T = min(T, q.shape[0])
-    q = q[:T].astype(np.float32)
+    T0 = min(T0, q.shape[0])
+    q = q[:T0].astype(np.float32)
     # Normalize and enforce sign continuity (q and -q are equivalent).
     n = np.linalg.norm(q, axis=1, keepdims=True)
     bad = n.reshape(-1) < 1e-6
@@ -289,77 +274,86 @@ def load_recording(path: str | Path) -> Tuple[np.ndarray, np.ndarray, dict]:
     thigh = q.astype(np.float32)
     thigh_mode = "quat"
 
-    y = y[:T]
-    # device_spectr is legacy; prefer raw EMG features when available.
-    # spectr = np.concatenate([s1[:, :T].T, s2[:, :T].T, s3[:, :T].T], axis=1).astype(np.float32)
+    y = y0[:T0]
 
-    # Raw EMG features (if available)
+    # Resample labels + thigh orientation first so the raw EMG snippets can be
+    # aligned directly to the final 200 Hz grid instead of interpolating an
+    # already-engineered feature vector.
+    did_resample = False
+    t_src = None
+    t_dst = None
+    if "timestamps" in d:
+        t_src = np.asarray(d["timestamps"], dtype=np.float64).reshape(-1)
+    orig_hz = float(d.get("effective_hz", 0.0))
+    t_offset = 0.0  # absolute time offset removed from all timestamps
+    if t_src is not None and t_src.size >= 2 and int(T0) >= 2:
+        t_src = t_src[: int(T0)]
+        t_src = _ensure_strictly_increasing(t_src)
+        t_offset = float(t_src[0])
+        t_src = t_src - t_offset
+        dur = float(t_src[-1])
+        if np.isfinite(dur) and dur > 1e-6:
+            orig_hz = float((T0 - 1) / dur)
+            n_dst = int(round(dur * float(TARGET_HZ))) + 1
+            n_dst = max(2, n_dst)
+            t_dst = (np.arange(n_dst, dtype=np.float64) / float(TARGET_HZ)).astype(np.float64)
+            y = _resample_linear_by_timestamps(y, t_src, t_dst)
+            thigh = _resample_quat_slerp_wxyz_by_timestamps(thigh, t_src, t_dst)
+            did_resample = True
+
+    T = int(y.shape[0])
+    effective_hz = float(TARGET_HZ) if bool(did_resample) else float(orig_hz)
+    imu_times = t_dst if t_dst is not None else t_src
+
+    # Raw EMG snippets (preferred) or legacy device_spectr fallback.
     has_raw = "raw_emg_sensor1" in d
     if has_raw:
         raw1 = np.asarray(d["raw_emg_sensor1"], dtype=np.float64)
         raw2 = np.asarray(d["raw_emg_sensor2"], dtype=np.float64)
         raw3 = np.asarray(d["raw_emg_sensor3"], dtype=np.float64)
+        # Raw EMG timestamps must use the same zero-reference as imu_times.
+        # imu_times starts at 0 (t_offset subtracted above); apply the same
+        # offset to raw timestamps so searchsorted alignment is correct.
+        def _zero_raw_ts(key: str) -> "np.ndarray | None":
+            if key not in d:
+                return None
+            ts = np.asarray(d[key], dtype=np.float64)
+            return ts - t_offset
+        raw_ts1 = _zero_raw_ts("raw_emg_times1")
+        raw_ts2 = _zero_raw_ts("raw_emg_times2")
+        raw_ts3 = _zero_raw_ts("raw_emg_times3")
 
-        # Use per-sample timestamps (from rigtest_gui.py) when available.
-        # These allow causal timestamp-based alignment instead of the uniform
-        # linspace approximation, eliminating the burst-timing misalignment.
-        imu_ts = None
-        if "timestamps" in d:
-            imu_ts = _ensure_strictly_increasing(
-                np.asarray(d["timestamps"], dtype=np.float64).reshape(-1)[:T]
-            )
-        raw_ts1 = np.asarray(d["raw_emg_times1"], dtype=np.float64) if "raw_emg_times1" in d else None
-        raw_ts2 = np.asarray(d["raw_emg_times2"], dtype=np.float64) if "raw_emg_times2" in d else None
-        raw_ts3 = np.asarray(d["raw_emg_times3"], dtype=np.float64) if "raw_emg_times3" in d else None
-
-        feat1 = _extract_raw_features_for_sensor(raw1, T, raw_times=raw_ts1, imu_times=imu_ts)
-        feat2 = _extract_raw_features_for_sensor(raw2, T, raw_times=raw_ts2, imu_times=imu_ts)
-        feat3 = _extract_raw_features_for_sensor(raw3, T, raw_times=raw_ts3, imu_times=imu_ts)
-
-        raw_feats = np.concatenate([feat1, feat2, feat3], axis=1)  # (T, 3*(5+N_FFT_BANDS))
-        n_raw_feat = raw_feats.shape[1]
-        X = np.concatenate([raw_feats, thigh], axis=1)
+        feat1 = _extract_raw_snippets_for_sensor(raw1, T, RAW_WINDOW, raw_times=raw_ts1, imu_times=imu_times)
+        feat2 = _extract_raw_snippets_for_sensor(raw2, T, RAW_WINDOW, raw_times=raw_ts2, imu_times=imu_times)
+        feat3 = _extract_raw_snippets_for_sensor(raw3, T, RAW_WINDOW, raw_times=raw_ts3, imu_times=imu_times)
+        emg = np.concatenate([feat1, feat2, feat3], axis=1).astype(np.float32)
+        n_raw_feat = int(emg.shape[1])
+        emg_feature_mode = RAW_SNIPPET_FEATURE_MODE
+        n_emg_features_per_sensor = int(RAW_WINDOW)
     else:
-        # Fallback for legacy files without raw EMG: use device_spectr
+        spectr = np.concatenate([s1[:, :T0].T, s2[:, :T0].T, s3[:, :T0].T], axis=1).astype(np.float32)
+        if did_resample and t_src is not None and t_dst is not None and spectr.shape[0] == int(t_src.size):
+            spectr = _resample_linear_by_timestamps(spectr, t_src, t_dst)
+        else:
+            spectr = spectr[:T].astype(np.float32)
+        emg = spectr.astype(np.float32)
         n_raw_feat = 0
-        spectr = np.concatenate([s1[:, :T].T, s2[:, :T].T, s3[:, :T].T], axis=1).astype(np.float32)
-        X = np.concatenate([spectr, thigh], axis=1)
+        emg_feature_mode = "legacy_spectr"
+        n_emg_features_per_sensor = int(n_ch)
 
-    # Resample to a uniform rate for reproducible training/evaluation.
-    did_resample = False
-    t = None
-    if "timestamps" in d:
-        t = np.asarray(d["timestamps"], dtype=np.float64).reshape(-1)
-    orig_hz = float(d.get("effective_hz", 0.0))
-    if t is not None and t.size >= 2 and int(X.shape[0]) >= 2:
-        t = t[: int(X.shape[0])]
-        t = _ensure_strictly_increasing(t)
-        t = t - float(t[0])
-        dur = float(t[-1])
-        if np.isfinite(dur) and dur > 1e-6:
-            T0 = int(X.shape[0])
-            orig_hz = float((T0 - 1) / dur)
-            n_dst = int(round(dur * float(TARGET_HZ))) + 1
-            n_dst = max(2, n_dst)
-            t_dst = (np.arange(n_dst, dtype=np.float64) / float(TARGET_HZ)).astype(np.float64)
+    X = np.concatenate([emg, thigh], axis=1).astype(np.float32)
 
-            if int(X.shape[1]) < 4:
-                raise RuntimeError(f"Expected last 4 features to be thigh quaternion, got F={int(X.shape[1])}")
-            X_scalar = X[:, : int(X.shape[1]) - 4]
-            X_quat = X[:, int(X.shape[1]) - 4 :]
-            if X_scalar.size > 0:
-                Xs = _resample_linear_by_timestamps(X_scalar, t, t_dst)
-            else:
-                Xs = np.zeros((int(t_dst.size), 0), dtype=np.float32)
-            Xq = _resample_quat_slerp_wxyz_by_timestamps(X_quat, t, t_dst)
-            yr = _resample_linear_by_timestamps(y, t, t_dst)
+    # Thigh angular velocity (session-invariant gait-phase signal).
+    # omega ≈ 2 * dq_xyz * fs  (small-angle finite-difference approximation)
+    # dq[0] is set equal to dq[1] so the first sample is not artificially zero.
+    _quat = X[:, -4:].astype(np.float64)          # (T, 4)  w x y z
+    _dq   = np.diff(_quat[:, 1:], axis=0)          # (T-1, 3)  xyz only
+    _dq   = np.concatenate([_dq[:1], _dq], axis=0) # (T, 3) replicate first
+    _omega = (2.0 * effective_hz * _dq).astype(np.float32)  # rad/s
+    # Insert omega between EMG and quat: [emg | omega | quat]
+    X = np.concatenate([X[:, :-4], _omega, X[:, -4:]], axis=1).astype(np.float32)
+    N_OMEGA = 3
 
-            X = np.concatenate([Xs, Xq], axis=1).astype(np.float32)
-            y = np.asarray(yr, dtype=np.float32).reshape(-1)
-            T = int(X.shape[0])
-            did_resample = True
-
-    effective_hz = float(TARGET_HZ) if bool(did_resample) else float(orig_hz)
     meta = {
         "n_channels": int(n_ch),
         "n_raw_features": int(n_raw_feat),
@@ -373,6 +367,10 @@ def load_recording(path: str | Path) -> Tuple[np.ndarray, np.ndarray, dict]:
         "thigh_n_features": int(thigh.shape[1]),
         "has_thigh_quat": "thigh_quat_wxyz" in d,
         "has_raw_emg": has_raw,
+        "emg_feature_mode": str(emg_feature_mode),
+        "n_emg_features_per_sensor": int(n_emg_features_per_sensor),
+        "raw_window_samples": int(RAW_WINDOW),
+        "n_angular_velocity_features": N_OMEGA,
     }
     return X, y, meta
 

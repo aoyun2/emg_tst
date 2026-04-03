@@ -3,7 +3,7 @@
 This document is the full runbook for reproducing the paper methodology in this repo:
 
 1. Record wearable data
-2. Build non-overlapping 1.0 s windows
+2. Build the 1.0 s windowed dataset (stride 30 / 85% overlap)
 3. Train the TST with leave-one-file-out (LOFO) cross-validation
 4. Run the MoCapAct physical evaluation on held-out LOFO windows only
 5. Compute the final partial Spearman correlation using balance-risk AUC
@@ -18,7 +18,7 @@ The implemented methodology is:
 
 1. Signal preprocessing
    - Resample recordings to 200 Hz
-   - Extract 43 features per timestep
+   - Extract causal raw EMG snippets per timestep
 2. Transformer training
    - Encoder-only TST
    - Masked reconstruction pretraining
@@ -47,13 +47,14 @@ Each recording session captures:
 
 | Stream | Hardware | Placement | Rate | Used For |
 |---|---|---|---|---|
-| 3 x sEMG | uMyo sensors via USB base | Upper right thigh: VM, SM, BF | about 400 Hz raw | TST input features |
-| 1 x IMU quaternion | BWT901CL | Right shin/calf | 200 Hz | Thigh orientation input and knee label derivation |
+| 3 x sEMG | uMyo sensors via USB base | Upper right thigh: VM, SM, BF | about 400 Hz raw | TST EMG input |
+| 1 x IMU quaternion | uMyo sensor 2 | Right thigh | about 200 Hz | TST thigh quaternion input + knee label derivation |
+| 1 x IMU quaternion | BWT901CL | Right shin/calf | 200 Hz | Knee label derivation |
 
-The knee label is computed online in `rigtest.py`:
+The knee label is computed online in `rigtest_gui.py`:
 
 ```text
-knee_included_deg = 180 - (shin_roll - thigh_yaw)
+knee_included_deg = 180 - atan2(sin(theta_thigh - theta_calf), cos(theta_thigh - theta_calf)) + offset
 ```
 
 Angle convention:
@@ -66,12 +67,13 @@ Angle convention:
 
 ## 3. Features and Windowing
 
-Each 200 Hz timestep contains 43 model input features:
+Each 200 Hz timestep contains 103 model input features:
 
-- EMG features: 39 total
-  - 13 per sensor x 3 sensors
-  - 5 time-domain features: RMS, MAV, WL, ZC, SSC
-  - 8 FFT band-power features
+- Raw EMG snippets: 96 total
+  - 32 raw samples per sensor x 3 sensors
+  - ordered oldest â†’ newest within each snippet
+- Thigh angular velocity: 3 total
+  - `omega_x`, `omega_y`, `omega_z`
 - Thigh quaternion: 4 total
   - `wxyz`
 
@@ -79,7 +81,8 @@ Windowing rules:
 
 - Window length: 200 timesteps
 - Effective duration: 1.0 second at 200 Hz
-- Windows are consecutive and non-overlapping
+- Windows are overlapping with stride 30 samples (0.15 s, 85% overlap)
+- Labels are the same-timestep knee angle trajectory
 - All windows from the same recording file stay together during LOFO
 
 This is implemented by:
@@ -139,7 +142,7 @@ python -m mocap_phys_eval.prefetch
 | Quantity | Target | Why |
 |---|---|---|
 | Separate files | 10-12 `data*.npy` recordings | Needed for valid LOFO and enough held-out windows |
-| Duration per file | 3-5 minutes | Produces roughly 180-300 windows per file |
+| Duration per file | 3-5 minutes | Produces roughly 1200-2000 windows per file at stride 30 |
 | Total usable recording time | 40-60 minutes | Enough held-out windows to support 80 successful physical trials |
 | Motion variety | At least 5 activity types | Avoids a narrow motion distribution |
 
@@ -211,7 +214,7 @@ Expected output:
 
 What this file contains:
 
-- `X`: `(N, 200, 43)`
+- `X`: `(N, 200, 103)`
 - `y`: scalar label per window
 - `y_seq`: full knee trajectory per window
 - `file_id`: recording-file identity
@@ -287,7 +290,7 @@ python -m mocap_phys_eval
 When `samples_dataset.npy` and a trained `_all` LOFO run are present, the evaluator follows the paper protocol:
 
 1. Loads the held-out LOFO test pool only
-2. Uses the latest `_all` training run
+2. Uses the latest compatible `_all` training run
 3. Maps each held-out window to its matching outer-fold checkpoint
 4. Samples windows uniformly without replacement with fixed seed `42`
 5. Motion-matches each window to the MoCapAct bank
@@ -398,7 +401,7 @@ If you redirected artifacts with `MOCAP_PHYS_EVAL_ARTIFACTS_DIR`, use that path 
 You are done when all of the following exist and are valid:
 
 - [ ] `samples_dataset.npy`
-- [ ] latest `_all` training run with `reg_best.pt` for every fold
+- [ ] latest compatible `_all` training run with `reg_best.pt` for every fold
 - [ ] `split_manifest.json` in every fold directory
 - [ ] `cv_manifest.json` in the `_all` run root
 - [ ] one physical-eval run with `mode == "rigtest_paper_lofo"`

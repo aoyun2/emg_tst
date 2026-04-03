@@ -306,6 +306,7 @@ def motion_match_one_window(
     query_thigh_quat_wxyz: np.ndarray | None,
     query_knee_deg: np.ndarray,
     top_k: int = 12,
+    local_refine_radius: int = 0,
     feature_mode: str = "thigh_knee_d",
 ) -> list[MatchCandidate]:
     """Motion-match a single query window to the CMU2020 bank.
@@ -397,97 +398,93 @@ def motion_match_one_window(
         )
 
     refined: list[MatchCandidate] = []
+    refine_radius = int(max(0, local_refine_radius))
     for coarse_score, clip_i, start in coarse:
         th_full = np.asarray(bank.thigh_pitch_deg[int(clip_i)], dtype=np.float64).reshape(-1)
         kn_full = np.asarray(bank.knee_deg[int(clip_i)], dtype=np.float64).reshape(-1)
-        if start < 0 or (start + L) > th_full.size or (start + L) > kn_full.size:
-            continue
-
-        ref_th = th_full[start : start + L]
-        ref_kn = kn_full[start : start + L]
-
-        # Knee offset (degrees). Allow sign flip for robustness (some sensors use opposite sign).
-        best_knee = None
-        for knee_sign in (+1.0, -1.0):
-            knee_off = float(np.mean(ref_kn - knee_sign * q_kn))
-            q_kn_al = knee_sign * q_kn + knee_off
-            rmse_kn = float(np.sqrt(float(np.mean((q_kn_al - ref_kn) ** 2))))
-            cand = (rmse_kn, knee_sign, knee_off)
-            if best_knee is None or cand[0] < best_knee[0]:
-                best_knee = cand
-        if best_knee is None:
-            continue
-        rmse_kn, knee_sign, knee_off = best_knee
-
-        # Thigh pitch alignment is still computed for plotting/debugging, but the
-        # *score* uses 3D thigh orientation error when quaternions are available.
-        thigh_sign = 1.0
-        thigh_off = 0.0
-        if q_th is not None:
-            best_pitch = None
-            for ts in (+1.0, -1.0):
-                toff = float(np.mean(ref_th - ts * q_th))
-                q_th_al = ts * q_th + toff
-                rmse_th_pitch = float(np.sqrt(float(np.mean((q_th_al - ref_th) ** 2))))
-                cand = (rmse_th_pitch, ts, toff)
-                if best_pitch is None or cand[0] < best_pitch[0]:
-                    best_pitch = cand
-            if best_pitch is not None:
-                _, thigh_sign, thigh_off = best_pitch
-
-        qoff = np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
-        rmse_th = float("nan")
-        quat_conjugated = False
-        if q_thq is not None:
-            ref_bank_quat = None
-            if hasattr(bank, "thigh_anat_quat_world_wxyz"):
-                ref_bank_quat = getattr(bank, "thigh_anat_quat_world_wxyz")
-            elif hasattr(bank, "thigh_anat_quat_wxyz"):
-                ref_bank_quat = getattr(bank, "thigh_anat_quat_wxyz")
-            elif hasattr(bank, "thigh_quat_wxyz"):
-                ref_bank_quat = getattr(bank, "thigh_quat_wxyz")
-            ref_thq_full = np.zeros((0, 4), dtype=np.float64)
-            if ref_bank_quat is not None:
-                ref_thq_full = np.asarray(ref_bank_quat[int(clip_i)], dtype=np.float64)
-            if ref_thq_full.ndim == 2 and ref_thq_full.shape[1] == 4 and (start + L) <= int(ref_thq_full.shape[0]):
-                ref_thq = quat_normalize_wxyz(ref_thq_full[start : start + L])
-
-                # Query quats can be either "segment->world" or "world->segment".
-                # Try both and take the smaller RMS geodesic error.
-                best_q = None
-                for conj_query in (False, True):
-                    qq = quat_conj_wxyz(q_thq) if conj_query else q_thq
-                    qoff_i, q_thq_al = quat_align_constant_offset_wxyz(ref_thq, qq)
-                    err_deg = quat_geodesic_deg_wxyz(ref_thq, q_thq_al)
-                    rmse_i = float(np.sqrt(float(np.mean(err_deg**2))))
-                    cand = (rmse_i, conj_query, qoff_i)
-                    if best_q is None or cand[0] < best_q[0]:
-                        best_q = cand
-                if best_q is not None:
-                    rmse_th, quat_conjugated, qoff = best_q
-
-        # Fallback: if quaternion path unavailable, use pitch RMSE.
-        if not np.isfinite(rmse_th):
-            if q_th is None:
+        start_lo = max(0, int(start) - refine_radius)
+        start_hi = min(int(start) + refine_radius, int(min(th_full.size, kn_full.size)) - L)
+        best_local: MatchCandidate | None = None
+        for start_i in range(start_lo, start_hi + 1):
+            if start_i < 0 or (start_i + L) > th_full.size or (start_i + L) > kn_full.size:
                 continue
-            q_th_al = float(thigh_sign) * q_th + float(thigh_off)
-            rmse_th = float(np.sqrt(float(np.mean((q_th_al - ref_th) ** 2))))
 
-        score = rmse_th + rmse_kn
+            ref_th = th_full[start_i : start_i + L]
+            ref_kn = kn_full[start_i : start_i + L]
 
-        clip_id = str(bank.clip_id[int(clip_i)])
-        start_step = int(start)
-        end_step = int(start_step + L - 1)
-        try:
-            snippet_id = str(bank.snippet_id[int(clip_i)])
-        except Exception:
-            snippet_id = f"{clip_id}-0-{int(th_full.size) - 1}"
+            best_knee = None
+            for knee_sign in (+1.0, -1.0):
+                knee_off = float(np.mean(ref_kn - knee_sign * q_kn))
+                q_kn_al = knee_sign * q_kn + knee_off
+                rmse_kn = float(np.sqrt(float(np.mean((q_kn_al - ref_kn) ** 2))))
+                cand = (rmse_kn, knee_sign, knee_off)
+                if best_knee is None or cand[0] < best_knee[0]:
+                    best_knee = cand
+            if best_knee is None:
+                continue
+            rmse_kn, knee_sign, knee_off = best_knee
 
-        refined.append(
-            MatchCandidate(
+            thigh_sign = 1.0
+            thigh_off = 0.0
+            if q_th is not None:
+                best_pitch = None
+                for ts in (+1.0, -1.0):
+                    toff = float(np.mean(ref_th - ts * q_th))
+                    q_th_al = ts * q_th + toff
+                    rmse_th_pitch = float(np.sqrt(float(np.mean((q_th_al - ref_th) ** 2))))
+                    cand = (rmse_th_pitch, ts, toff)
+                    if best_pitch is None or cand[0] < best_pitch[0]:
+                        best_pitch = cand
+                if best_pitch is not None:
+                    _, thigh_sign, thigh_off = best_pitch
+
+            qoff = np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+            rmse_th = float("nan")
+            quat_conjugated = False
+            if q_thq is not None:
+                ref_bank_quat = None
+                if hasattr(bank, "thigh_anat_quat_world_wxyz"):
+                    ref_bank_quat = getattr(bank, "thigh_anat_quat_world_wxyz")
+                elif hasattr(bank, "thigh_anat_quat_wxyz"):
+                    ref_bank_quat = getattr(bank, "thigh_anat_quat_wxyz")
+                elif hasattr(bank, "thigh_quat_wxyz"):
+                    ref_bank_quat = getattr(bank, "thigh_quat_wxyz")
+                ref_thq_full = np.zeros((0, 4), dtype=np.float64)
+                if ref_bank_quat is not None:
+                    ref_thq_full = np.asarray(ref_bank_quat[int(clip_i)], dtype=np.float64)
+                if ref_thq_full.ndim == 2 and ref_thq_full.shape[1] == 4 and (start_i + L) <= int(ref_thq_full.shape[0]):
+                    ref_thq = quat_normalize_wxyz(ref_thq_full[start_i : start_i + L])
+
+                    best_q = None
+                    for conj_query in (False, True):
+                        qq = quat_conj_wxyz(q_thq) if conj_query else q_thq
+                        qoff_i, q_thq_al = quat_align_constant_offset_wxyz(ref_thq, qq)
+                        err_deg = quat_geodesic_deg_wxyz(ref_thq, q_thq_al)
+                        rmse_i = float(np.sqrt(float(np.mean(err_deg**2))))
+                        cand = (rmse_i, conj_query, qoff_i)
+                        if best_q is None or cand[0] < best_q[0]:
+                            best_q = cand
+                    if best_q is not None:
+                        rmse_th, quat_conjugated, qoff = best_q
+
+            if not np.isfinite(rmse_th):
+                if q_th is None:
+                    continue
+                q_th_al = float(thigh_sign) * q_th + float(thigh_off)
+                rmse_th = float(np.sqrt(float(np.mean((q_th_al - ref_th) ** 2))))
+
+            score = rmse_th + rmse_kn
+            clip_id = str(bank.clip_id[int(clip_i)])
+            end_step = int(start_i + L - 1)
+            try:
+                snippet_id = str(bank.snippet_id[int(clip_i)])
+            except Exception:
+                snippet_id = f"{clip_id}-0-{int(th_full.size) - 1}"
+
+            candidate = MatchCandidate(
                 snippet_id=snippet_id,
                 clip_id=clip_id,
-                start_step=int(start_step),
+                start_step=int(start_i),
                 end_step=int(end_step),
                 coarse_score=float(coarse_score),
                 score=float(score),
@@ -500,7 +497,10 @@ def motion_match_one_window(
                 thigh_offset_deg=float(thigh_off),
                 knee_offset_deg=float(knee_off),
             )
-        )
+            if best_local is None or candidate.score < best_local.score:
+                best_local = candidate
+        if best_local is not None:
+            refined.append(best_local)
 
     refined.sort(key=lambda c: c.score)
     return refined[: int(max(1, top_k))]

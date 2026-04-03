@@ -1,0 +1,22 @@
+{
+  "fold": 5,
+  "n_train": 8235,
+  "n_val": 2049,
+  "n_test": 2053,
+  "epochs_pretrain": 40,
+  "epochs_finetune": 100,
+  "best_val_rmse": 19.323348749402808,
+  "best_val_seq_rmse": 19.476637135722484,
+  "best_epoch": 92,
+  "final_val_rmse": 20.742612885195946,
+  "test_rmse": 28.22320966303022,
+  "test_seq_rmse": 29.188869479970233,
+  "test_mae": 21.82787969991514,
+  "best_rmse": 28.22320966303022,
+  "held_out_file_ids": [
+    4
+  ],
+  "held_out_file_names": [
+    "data4.npy"
+  ]
+}

@@ -141,8 +141,15 @@ def record_compare_rollout(
     camera_id: int,
     deterministic_policy: bool = True,
     seed: int = 0,
+    run_bad: bool = True,
 ) -> CompareRecordingPaths:
-    """Record a (REF | PRED | BAD) compare rollout to a replayable NPZ and a quick GIF."""
+    """Record a (REF | PRED | BAD) compare rollout to a replayable NPZ and a quick GIF.
+
+    When ``run_bad=False`` only the REF and PRED (good) environments are simulated.
+    The BAD environment is skipped and the viewer will show only 2 panels.  This is
+    the intended mode when evaluating a real TST model (as opposed to the synthetic
+    "bad model" demo comparison).
+    """
     out_npz_path = Path(out_npz_path).expanduser()
     out_npz_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -203,20 +210,27 @@ def record_compare_rollout(
         ref_steps=ref_steps_tuple,
         seed=int(seed),
     )
-    env_bad = make_tracking_env(
-        clip_id=str(clip_id),
-        start_step=int(env_start_step),
-        end_step=use_end_step,
-        ref_steps=ref_steps_tuple,
-        seed=int(seed),
+    env_bad = (
+        make_tracking_env(
+            clip_id=str(clip_id),
+            start_step=int(env_start_step),
+            end_step=use_end_step,
+            ref_steps=ref_steps_tuple,
+            seed=int(seed),
+        )
+        if run_bad
+        else None
     )
 
     reset_ref = env_ref.reset()
     reset_good = env_good.reset()
-    reset_bad = env_bad.reset()
     obs_ref = reset_ref[0] if isinstance(reset_ref, tuple) and len(reset_ref) == 2 else reset_ref
     obs_good = reset_good[0] if isinstance(reset_good, tuple) and len(reset_good) == 2 else reset_good
-    obs_bad = reset_bad[0] if isinstance(reset_bad, tuple) and len(reset_bad) == 2 else reset_bad
+    if env_bad is not None:
+        reset_bad = env_bad.reset()
+        obs_bad = reset_bad[0] if isinstance(reset_bad, tuple) and len(reset_bad) == 2 else reset_bad
+    else:
+        obs_bad = None
 
     # IMPORTANT: do NOT patch the reference for PRED/BAD.
     #
@@ -225,18 +239,21 @@ def record_compare_rollout(
     #   Physical overrides should only affect the *walker*, not the ghost.
 
     # Tint walkers/ghosts so REF/PRED/BAD are visually distinct.
-    for env in (env_ref, env_good, env_bad):
+    active_envs = [env_ref, env_good] + ([env_bad] if env_bad is not None else [])
+    for env in active_envs:
         tint_geoms_by_prefix(env._env.physics, prefix="ghost/", rgba=(0.85, 0.85, 0.85, 0.25))  # noqa: SLF001
     tint_geoms_by_prefix(env_ref._env.physics, prefix="walker/", rgba=(0.35, 0.35, 0.35, 1.0))  # noqa: SLF001
     tint_geoms_by_prefix(env_good._env.physics, prefix="walker/", rgba=(1.00, 0.55, 0.15, 1.0))  # noqa: SLF001
-    tint_geoms_by_prefix(env_bad._env.physics, prefix="walker/", rgba=(0.15, 0.65, 1.00, 1.0))  # noqa: SLF001
+    if env_bad is not None:
+        tint_geoms_by_prefix(env_bad._env.physics, prefix="walker/", rgba=(0.15, 0.65, 1.00, 1.0))  # noqa: SLF001
 
     highlight_overridden_leg(env_good._env.physics, override=override)  # noqa: SLF001
-    highlight_overridden_leg(env_bad._env.physics, override=override)  # noqa: SLF001
+    if env_bad is not None:
+        highlight_overridden_leg(env_bad._env.physics, override=override)  # noqa: SLF001
 
     phys_ref = env_ref._env.physics  # noqa: SLF001
     phys_good = env_good._env.physics  # noqa: SLF001
-    phys_bad = env_bad._env.physics  # noqa: SLF001
+    phys_bad = env_bad._env.physics if env_bad is not None else None  # noqa: SLF001
 
     # Physical override (prosthetic knee):
     # We force the knee flexion actuator in PRED/BAD each step so the RL policy
@@ -244,7 +261,11 @@ def record_compare_rollout(
     knee_act_id = int(phys_good.model.name2id(str(override.knee_actuator), "actuator"))
     knee_lo, knee_hi = _joint_range_for_actuator(phys_good, override.knee_actuator)
     knee_good_qpos = _targets_qpos_rad(knee_good_query_deg, sign=override.knee_sign, offset_deg=override.knee_offset_deg)
-    knee_bad_qpos = _targets_qpos_rad(knee_bad_query_deg, sign=override.knee_sign, offset_deg=override.knee_offset_deg)
+    knee_bad_qpos = (
+        _targets_qpos_rad(knee_bad_query_deg, sign=override.knee_sign, offset_deg=override.knee_offset_deg)
+        if run_bad
+        else None
+    )
 
     # Many CMU humanoid actuators use an internal first-order filter (actuator_dyntype=filter)
     # with tau ~ control_timestep. Overriding ctrl alone can introduce a full-step lag, which
@@ -258,17 +279,21 @@ def record_compare_rollout(
     except Exception:
         knee_actadr_good = -1
         knee_actnum_good = 0
-    try:
-        knee_actadr_bad = int(phys_bad.model.actuator_actadr[knee_act_id])
-        knee_actnum_bad = int(phys_bad.model.actuator_actnum[knee_act_id])
-    except Exception:
+    if phys_bad is not None:
+        try:
+            knee_actadr_bad = int(phys_bad.model.actuator_actadr[knee_act_id])
+            knee_actnum_bad = int(phys_bad.model.actuator_actnum[knee_act_id])
+        except Exception:
+            knee_actadr_bad = -1
+            knee_actnum_bad = 0
+    else:
         knee_actadr_bad = -1
         knee_actnum_bad = 0
 
     # Renderers (one per panel so they can have independent cameras in interactive replay).
     rend_ref = mujoco.Renderer(phys_ref.model.ptr, int(height), int(width))
     rend_good = mujoco.Renderer(phys_good.model.ptr, int(height), int(width))
-    rend_bad = mujoco.Renderer(phys_bad.model.ptr, int(height), int(width))
+    rend_bad = mujoco.Renderer(phys_bad.model.ptr, int(height), int(width)) if phys_bad is not None else None
 
     # Use MuJoCo's fixed camera if it exists; else default.
     def _cam_for(physics: Any) -> Any:
@@ -284,7 +309,7 @@ def record_compare_rollout(
 
     cam_ref = _cam_for(phys_ref)
     cam_good = _cam_for(phys_good)
-    cam_bad = _cam_for(phys_bad)
+    cam_bad = _cam_for(phys_bad) if phys_bad is not None else None
 
     try:
         dt = float(getattr(env_ref._env.task, "_control_timestep", 0.03))  # noqa: SLF001
@@ -302,26 +327,26 @@ def record_compare_rollout(
     except Exception:
         root_id_good = None
     try:
-        root_id_bad = int(phys_bad.model.name2id("walker/root", "body"))
+        root_id_bad = int(phys_bad.model.name2id("walker/root", "body")) if phys_bad is not None else None
     except Exception:
         root_id_bad = None
 
     # Balance metrics (COM vs support).
     ground_ref = _ground_geom_ids(phys_ref)
     ground_good = _ground_geom_ids(phys_good)
-    ground_bad = _ground_geom_ids(phys_bad)
+    ground_bad = _ground_geom_ids(phys_bad) if phys_bad is not None else set()
     l_geoms_ref = _geom_ids(phys_ref, ("lfoot", "lfoot_ch", "ltoes0", "ltoes1", "ltoes2"))
     r_geoms_ref = _geom_ids(phys_ref, ("rfoot", "rfoot_ch", "rtoes0", "rtoes1", "rtoes2"))
     l_geoms_good = _geom_ids(phys_good, ("lfoot", "lfoot_ch", "ltoes0", "ltoes1", "ltoes2"))
     r_geoms_good = _geom_ids(phys_good, ("rfoot", "rfoot_ch", "rtoes0", "rtoes1", "rtoes2"))
-    l_geoms_bad = _geom_ids(phys_bad, ("lfoot", "lfoot_ch", "ltoes0", "ltoes1", "ltoes2"))
-    r_geoms_bad = _geom_ids(phys_bad, ("rfoot", "rfoot_ch", "rtoes0", "rtoes1", "rtoes2"))
+    l_geoms_bad = _geom_ids(phys_bad, ("lfoot", "lfoot_ch", "ltoes0", "ltoes1", "ltoes2")) if phys_bad is not None else set()
+    r_geoms_bad = _geom_ids(phys_bad, ("rfoot", "rfoot_ch", "rtoes0", "rtoes1", "rtoes2")) if phys_bad is not None else set()
     l_bodies_ref = _body_ids(phys_ref, ("walker/lfoot", "walker/ltoes"))
     r_bodies_ref = _body_ids(phys_ref, ("walker/rfoot", "walker/rtoes"))
     l_bodies_good = _body_ids(phys_good, ("walker/lfoot", "walker/ltoes"))
     r_bodies_good = _body_ids(phys_good, ("walker/rfoot", "walker/rtoes"))
-    l_bodies_bad = _body_ids(phys_bad, ("walker/lfoot", "walker/ltoes"))
-    r_bodies_bad = _body_ids(phys_bad, ("walker/rfoot", "walker/rtoes"))
+    l_bodies_bad = _body_ids(phys_bad, ("walker/lfoot", "walker/ltoes")) if phys_bad is not None else []
+    r_bodies_bad = _body_ids(phys_bad, ("walker/rfoot", "walker/rtoes")) if phys_bad is not None else []
 
     def _bal_state() -> dict[str, Any]:
         return {
@@ -345,7 +370,7 @@ def record_compare_rollout(
     # Joint qpos addr for actual angles.
     knee_adr_ref = _qpos_addr_for_actuator(phys_ref, override.knee_actuator)
     knee_adr_good = _qpos_addr_for_actuator(phys_good, override.knee_actuator)
-    knee_adr_bad = _qpos_addr_for_actuator(phys_bad, override.knee_actuator)
+    knee_adr_bad = _qpos_addr_for_actuator(phys_bad, override.knee_actuator) if phys_bad is not None else 0
 
     # Torch no-grad helps performance.
     try:
@@ -501,12 +526,14 @@ def record_compare_rollout(
         for _t in range(int(warmup)):
             act_ref, state_ref = _predict(obs_ref, state_ref)
             act_good_pol, state_good = _predict(obs_good, state_good)
-            act_bad_pol, state_bad = _predict(obs_bad, state_bad)
 
             obs_ref, done_ref, _ = _step(env_ref, np.asarray(act_ref, dtype=np.float32).reshape(-1))
             obs_good, done_good, _ = _step(env_good, np.asarray(act_good_pol, dtype=np.float32).reshape(-1))
-            obs_bad, done_bad, _ = _step(env_bad, np.asarray(act_bad_pol, dtype=np.float32).reshape(-1))
-            done_any = bool(done_any or done_ref or done_good or done_bad)
+            done_any = bool(done_any or done_ref or done_good)
+            if env_bad is not None:
+                act_bad_pol, state_bad = _predict(obs_bad, state_bad)
+                obs_bad, done_bad, _ = _step(env_bad, np.asarray(act_bad_pol, dtype=np.float32).reshape(-1))
+                done_any = bool(done_any or done_bad)
             if done_any:
                 break
 
@@ -522,30 +549,30 @@ def record_compare_rollout(
         kd=float(_PROSTHETIC_KNEE_KD),
         force=float(_PROSTHETIC_KNEE_FORCE),
     )
-    _retune_general_position_actuator_pd(
-        phys_bad,
-        actuator_name=str(override.knee_actuator),
-        kp=float(_PROSTHETIC_KNEE_KP),
-        kd=float(_PROSTHETIC_KNEE_KD),
-        force=float(_PROSTHETIC_KNEE_FORCE),
-    )
+    if phys_bad is not None:
+        _retune_general_position_actuator_pd(
+            phys_bad,
+            actuator_name=str(override.knee_actuator),
+            kp=float(_PROSTHETIC_KNEE_KP),
+            kd=float(_PROSTHETIC_KNEE_KD),
+            force=float(_PROSTHETIC_KNEE_FORCE),
+        )
 
     try:
         from tqdm import tqdm  # type: ignore
     except Exception:  # pragma: no cover
         tqdm = None  # type: ignore[assignment]
 
+    _sim_label = "REF|PRED|BAD" if run_bad else "REF|PRED"
     step_it = range(steps)
     if tqdm is not None:
-        step_it = tqdm(step_it, desc="Simulating (REF|PRED|BAD)", unit="step", leave=False)
+        step_it = tqdm(step_it, desc=f"Simulating ({_sim_label})", unit="step", leave=False)
 
     for t in step_it:
-        # REF/PRED/BAD each run the policy normally, but PRED/BAD have their
-        # prosthetic knee actuator physically forced each step so the RL
-        # controller cannot directly command it.
+        # REF/PRED (and optionally BAD) each run the policy normally, but PRED/BAD have
+        # their prosthetic knee actuator physically forced each step.
         act_ref, state_ref = _predict(obs_ref, state_ref)
         act_good_pol, state_good = _predict(obs_good, state_good)
-        act_bad_pol, state_bad = _predict(obs_bad, state_bad)
 
         try:
             ar = np.asarray(act_ref, dtype=np.float32).reshape(-1)
@@ -555,10 +582,6 @@ def record_compare_rollout(
             ag = np.asarray(act_good_pol, dtype=np.float32).reshape(-1)
         except Exception:
             ag = np.zeros((0,), dtype=np.float32)
-        try:
-            ab = np.asarray(act_bad_pol, dtype=np.float32).reshape(-1)
-        except Exception:
-            ab = np.zeros((0,), dtype=np.float32)
 
         # Record "policy outputs" (pre-override).
         try:
@@ -569,28 +592,17 @@ def record_compare_rollout(
             knee_ctrl_good_policy.append(float(ag[knee_act_id]))
         except Exception:
             knee_ctrl_good_policy.append(float("nan"))
-        try:
-            knee_ctrl_bad_policy.append(float(ab[knee_act_id]))
-        except Exception:
-            knee_ctrl_bad_policy.append(float("nan"))
 
         # Start from each env's policy action, then force the overridden knee actuator.
         act_good = np.asarray(ag, dtype=np.float32).reshape(-1).copy()
-        act_bad = np.asarray(ab, dtype=np.float32).reshape(-1).copy()
 
         kn_good_des = float(knee_good_qpos[min(t, int(knee_good_qpos.size) - 1)])
-        kn_bad_des = float(knee_bad_qpos[min(t, int(knee_bad_qpos.size) - 1)])
-
         kn_good_ctrl = float(np.clip(_ctrl_from_qpos(kn_good_des, lower=knee_lo, upper=knee_hi), -1.0, 1.0))
-        kn_bad_ctrl = float(np.clip(_ctrl_from_qpos(kn_bad_des, lower=knee_lo, upper=knee_hi), -1.0, 1.0))
         act_good[knee_act_id] = kn_good_ctrl
-        act_bad[knee_act_id] = kn_bad_ctrl
 
         # Record applied controls (after overriding) + targets.
         knee_ctrl_good_applied.append(float(act_good[knee_act_id]))
-        knee_ctrl_bad_applied.append(float(act_bad[knee_act_id]))
         knee_ctrl_good_target.append(float(kn_good_ctrl))
-        knee_ctrl_bad_target.append(float(kn_bad_ctrl))
 
         # Also overwrite the actuator's activation state to avoid a 1-step lag from
         # internal filtering dynamics (common in the CMU humanoid position actuators).
@@ -601,22 +613,13 @@ def record_compare_rollout(
                 )
             except Exception:
                 pass
-        if int(knee_actnum_bad) > 0 and int(knee_actadr_bad) >= 0:
-            try:
-                phys_bad.data.act[int(knee_actadr_bad) : int(knee_actadr_bad) + int(knee_actnum_bad)] = float(
-                    act_bad[knee_act_id]
-                )
-            except Exception:
-                pass
 
         obs_ref, done_ref, r_ref = _step(env_ref, np.asarray(ar, dtype=np.float32).reshape(-1))
         obs_good, done_good, r_good = _step(env_good, act_good)
-        obs_bad, done_bad, r_bad = _step(env_bad, act_bad)
-        done_any = bool(done_any or done_ref or done_good or done_bad)
+        done_any = bool(done_any or done_ref or done_good)
 
         reward_ref.append(float(r_ref))
         reward_good.append(float(r_good))
-        reward_bad.append(float(r_bad))
         try:
             termination_error_ref.append(float(getattr(env_ref._env.task, "_termination_error", float("nan"))))  # noqa: SLF001
         except Exception:
@@ -625,60 +628,95 @@ def record_compare_rollout(
             termination_error_good.append(float(getattr(env_good._env.task, "_termination_error", float("nan"))))  # noqa: SLF001
         except Exception:
             termination_error_good.append(float("nan"))
-        try:
-            termination_error_bad.append(float(getattr(env_bad._env.task, "_termination_error", float("nan"))))  # noqa: SLF001
-        except Exception:
-            termination_error_bad.append(float("nan"))
 
         # Record states for interactive replay.
         try:
             states_ref.append(np.asarray(phys_ref.get_state(), dtype=np.float32))
             states_good.append(np.asarray(phys_good.get_state(), dtype=np.float32))
-            states_bad.append(np.asarray(phys_bad.get_state(), dtype=np.float32))
         except Exception:
-            # States are optional; the NPZ still contains frames.
             pass
 
         # Root + upright.
         zr = _root_z(phys_ref, body_id=root_id_ref)
         zg = _root_z(phys_good, body_id=root_id_good)
-        zb = _root_z(phys_bad, body_id=root_id_bad)
         ur = _uprightness_cos_tilt(phys_ref, body_id=root_id_ref)
         ug = _uprightness_cos_tilt(phys_good, body_id=root_id_good)
-        ub = _uprightness_cos_tilt(phys_bad, body_id=root_id_bad)
         root_z_ref.append(float(zr))
         root_z_good.append(float(zg))
-        root_z_bad.append(float(zb))
         upright_ref.append(float(ur))
         upright_good.append(float(ug))
-        upright_bad.append(float(ub))
 
-        # Hard-fall detection (separate from env termination). This avoids
-        # misclassifying "end of clip" termination as a fall.
+        # Hard-fall detection.
         try:
             fell_ref_hard = bool(fell_ref_hard or _is_fall(float(zr), float(ur)))
             fell_good_hard = bool(fell_good_hard or _is_fall(float(zg), float(ug)))
-            fell_bad_hard = bool(fell_bad_hard or _is_fall(float(zb), float(ub)))
         except Exception:
             pass
 
         # Actual overridden joints.
         knee_ref_actual.append(float(np.rad2deg(float(np.asarray(phys_ref.data.qpos[knee_adr_ref]).reshape(())))))
         knee_good_actual.append(float(np.rad2deg(float(np.asarray(phys_good.data.qpos[knee_adr_good]).reshape(())))))
-        knee_bad_actual.append(float(np.rad2deg(float(np.asarray(phys_bad.data.qpos[knee_adr_bad]).reshape(())))))
 
         _update_balance(physics=phys_ref, root_id=root_id_ref, ground=ground_ref, l_geoms=l_geoms_ref, r_geoms=r_geoms_ref, l_bodies=l_bodies_ref, r_bodies=r_bodies_ref, state=bal_ref)
         _update_balance(physics=phys_good, root_id=root_id_good, ground=ground_good, l_geoms=l_geoms_good, r_geoms=r_geoms_good, l_bodies=l_bodies_good, r_bodies=r_bodies_good, state=bal_good)
-        _update_balance(physics=phys_bad, root_id=root_id_bad, ground=ground_bad, l_geoms=l_geoms_bad, r_geoms=r_geoms_bad, l_bodies=l_bodies_bad, r_bodies=r_bodies_bad, state=bal_bad)
+
+        # --- BAD env (demo/oracle mode only) ---
+        if env_bad is not None and knee_bad_qpos is not None:
+            act_bad_pol, state_bad = _predict(obs_bad, state_bad)
+            try:
+                ab = np.asarray(act_bad_pol, dtype=np.float32).reshape(-1)
+            except Exception:
+                ab = np.zeros((0,), dtype=np.float32)
+            try:
+                knee_ctrl_bad_policy.append(float(ab[knee_act_id]))
+            except Exception:
+                knee_ctrl_bad_policy.append(float("nan"))
+            act_bad = np.asarray(ab, dtype=np.float32).reshape(-1).copy()
+            kn_bad_des = float(knee_bad_qpos[min(t, int(knee_bad_qpos.size) - 1)])
+            kn_bad_ctrl = float(np.clip(_ctrl_from_qpos(kn_bad_des, lower=knee_lo, upper=knee_hi), -1.0, 1.0))
+            act_bad[knee_act_id] = kn_bad_ctrl
+            knee_ctrl_bad_applied.append(float(act_bad[knee_act_id]))
+            knee_ctrl_bad_target.append(float(kn_bad_ctrl))
+            if int(knee_actnum_bad) > 0 and int(knee_actadr_bad) >= 0:
+                try:
+                    phys_bad.data.act[int(knee_actadr_bad) : int(knee_actadr_bad) + int(knee_actnum_bad)] = float(
+                        act_bad[knee_act_id]
+                    )
+                except Exception:
+                    pass
+            obs_bad, done_bad, r_bad = _step(env_bad, act_bad)
+            done_any = bool(done_any or done_bad)
+            reward_bad.append(float(r_bad))
+            try:
+                termination_error_bad.append(float(getattr(env_bad._env.task, "_termination_error", float("nan"))))  # noqa: SLF001
+            except Exception:
+                termination_error_bad.append(float("nan"))
+            try:
+                states_bad.append(np.asarray(phys_bad.get_state(), dtype=np.float32))
+            except Exception:
+                pass
+            zb = _root_z(phys_bad, body_id=root_id_bad)
+            ub = _uprightness_cos_tilt(phys_bad, body_id=root_id_bad)
+            root_z_bad.append(float(zb))
+            upright_bad.append(float(ub))
+            try:
+                fell_bad_hard = bool(fell_bad_hard or _is_fall(float(zb), float(ub)))
+            except Exception:
+                pass
+            knee_bad_actual.append(float(np.rad2deg(float(np.asarray(phys_bad.data.qpos[knee_adr_bad]).reshape(())))))
+            _update_balance(physics=phys_bad, root_id=root_id_bad, ground=ground_bad, l_geoms=l_geoms_bad, r_geoms=r_geoms_bad, l_bodies=l_bodies_bad, r_bodies=r_bodies_bad, state=bal_bad)
 
         # Render panels.
         rend_ref.update_scene(phys_ref.data.ptr, camera=cam_ref)
         rend_good.update_scene(phys_good.data.ptr, camera=cam_good)
-        rend_bad.update_scene(phys_bad.data.ptr, camera=cam_bad)
         img_ref = np.asarray(rend_ref.render(), dtype=np.uint8)
         img_good = np.asarray(rend_good.render(), dtype=np.uint8)
-        img_bad = np.asarray(rend_bad.render(), dtype=np.uint8)
-        frame = np.concatenate([img_ref, img_good, img_bad], axis=1)
+        if rend_bad is not None and phys_bad is not None and cam_bad is not None:
+            rend_bad.update_scene(phys_bad.data.ptr, camera=cam_bad)
+            img_bad = np.asarray(rend_bad.render(), dtype=np.uint8)
+            frame = np.concatenate([img_ref, img_good, img_bad], axis=1)
+        else:
+            frame = np.concatenate([img_ref, img_good], axis=1)
 
         if Image is not None and ImageDraw is not None:
             pil = Image.fromarray(frame)
@@ -687,7 +725,8 @@ def record_compare_rollout(
             w = int(width)
             draw.text((pad + 0 * w, pad), "REF (no override)", fill=(255, 255, 255), font=font)
             draw.text((pad + 1 * w, pad), "PRED (override)", fill=(255, 255, 255), font=font)
-            draw.text((pad + 2 * w, pad), "BAD (override)", fill=(255, 255, 255), font=font)
+            if run_bad:
+                draw.text((pad + 2 * w, pad), "BAD (override)", fill=(255, 255, 255), font=font)
             frame = np.asarray(pil, dtype=np.uint8)
 
         frames.append(frame)
@@ -755,6 +794,7 @@ def record_compare_rollout(
     np.savez_compressed(
         out_npz_path,
         frames=arr,
+        has_bad=np.bool_(run_bad),
         dt=np.asarray(float(dt), dtype=np.float32),
         width=np.asarray(int(width), dtype=np.int32),
         height=np.asarray(int(height), dtype=np.int32),

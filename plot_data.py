@@ -24,6 +24,7 @@ import matplotlib.ticker as ticker
 import numpy as np
 from scipy.ndimage import uniform_filter1d
 from scipy.stats import gaussian_kde
+from emg_tst.data import emg_feature_layout_from_meta
 
 # ---------------------------------------------------------------------------
 # Style
@@ -55,11 +56,6 @@ C_FILL   = "#AED6F1"
 C_QUAT   = ["#009E73", "#56B4E9", "#CC79A7", "#F0E442"]
 EMG_CMAP = "inferno"
 FILE_COLORS = ["#0072B2", "#E69F00", "#009E73", "#D55E00", "#CC79A7", "#56B4E9"]
-
-# Per-sensor training feature names (must match _extract_raw_features_for_sensor)
-_FEAT_NAMES = ["RMS", "MAV", "WL", "ZC", "SSC",
-               "FFT0", "FFT1", "FFT2", "FFT3", "FFT4", "FFT5", "FFT6", "FFT7"]
-_N_FEAT = len(_FEAT_NAMES)
 
 FIGURES_DIR = Path("figures")
 
@@ -403,16 +399,19 @@ def fig_correlation(samples_path="samples_dataset.npy"):
              else [f"file_{fid}" for fid in unique_fids]
 
     X_win = X.mean(axis=1)  # (N, F) — time-averaged feature per window
+    emg_layout = emg_feature_layout_from_meta(ds)
+    feat_names = list(emg_layout["names"])
+    n_feat = int(len(feat_names))
 
-    corr = np.full((3, n_files, _N_FEAT), np.nan)
+    corr = np.full((3, n_files, n_feat), np.nan)
     for fi, fid in enumerate(unique_fids):
         mask = fids == fid
         Xf, yf = X_win[mask], y[mask].astype(np.float64)
         if yf.std() < 1e-6:
             continue
         for s in range(3):
-            c0 = s * _N_FEAT
-            for c in range(_N_FEAT):
+            c0 = s * n_feat
+            for c in range(n_feat):
                 f = Xf[:, c0 + c].astype(np.float64)
                 fs = f.std()
                 if fs < 1e-12:
@@ -430,46 +429,49 @@ def fig_correlation(samples_path="samples_dataset.npy"):
     fig, axes = plt.subplots(1, 3, figsize=(13, fig_h))
     fig.subplots_adjust(left=0.10, right=0.97, top=0.80, bottom=0.25,
                         wspace=0.35)
-    fig.suptitle(
-        "Pearson r: EMG Training Features vs Knee Angle (per recording, window mean)",
-        fontweight="bold", fontsize=10, y=0.96,
-    )
-    fig.text(0.5, 0.88,
-             "Near-zero r is expected: EMG-to-angle is nonlinear; "
-             "the model exploits sequence context that linear correlation cannot capture.",
-             ha="center", fontsize=8, color="gray")
+    mode = str(emg_layout["mode"])
+    if mode == "raw_snippets":
+        title = "Pearson r: Raw EMG Snippet Inputs vs Knee Angle (per recording, window mean)"
+        subtitle = "Each column is one causal raw-sample lag within the 32-sample snippet."
+    else:
+        title = "Pearson r: EMG Training Features vs Knee Angle (per recording, window mean)"
+        subtitle = "Near-zero r is expected: EMG-to-angle is nonlinear; the model exploits sequence context that linear correlation cannot capture."
+    fig.suptitle(title, fontweight="bold", fontsize=10, y=0.96)
+    fig.text(0.5, 0.88, subtitle, ha="center", fontsize=8, color="gray")
 
     for s, ax in enumerate(axes):
         mat = corr[s]
         im  = ax.imshow(mat, aspect="auto", cmap="RdBu_r",
                         vmin=-vmax, vmax=vmax, origin="upper")
 
-        # x-axis: feature names rotated, grouped
-        ax.set_xticks(np.arange(_N_FEAT))
-        ax.set_xticklabels(_FEAT_NAMES, fontsize=7.5, rotation=45, ha="right")
-
-        # vertical divider between time-domain and spectral
-        ax.axvline(4.5, color="white", lw=2, zorder=5)
+        tick_step = max(1, n_feat // 8)
+        tick_idx = np.arange(0, n_feat, tick_step)
+        ax.set_xticks(tick_idx)
+        ax.set_xticklabels([feat_names[int(i)] for i in tick_idx], fontsize=7.0, rotation=45, ha="right")
 
         ax.set_yticks(np.arange(n_files))
         ax.set_yticklabels(fnames if s == 0 else [""] * n_files, fontsize=8)
         ax.set_title(s_titles[s], pad=6)
 
-        # group labels below the x-axis (outside the plot)
-        ax.annotate("Time-domain", xy=(2, -0.5), xycoords=("data", "axes fraction"),
-                    xytext=(2, -0.38), textcoords=("data", "axes fraction"),
-                    ha="center", fontsize=7, color="gray")
-        ax.annotate("Spectral", xy=(9, -0.5), xycoords=("data", "axes fraction"),
-                    xytext=(9, -0.38), textcoords=("data", "axes fraction"),
-                    ha="center", fontsize=7, color="gray")
+        if mode == "raw_snippets":
+            ax.set_xlabel("Raw snippet lag (oldest → newest)", fontsize=8)
+        elif mode == "engineered_features":
+            ax.axvline(4.5, color="white", lw=2, zorder=5)
+            ax.annotate("Time-domain", xy=(2, -0.5), xycoords=("data", "axes fraction"),
+                        xytext=(2, -0.38), textcoords=("data", "axes fraction"),
+                        ha="center", fontsize=7, color="gray")
+            ax.annotate("Spectral", xy=(9, -0.5), xycoords=("data", "axes fraction"),
+                        xytext=(9, -0.38), textcoords=("data", "axes fraction"),
+                        ha="center", fontsize=7, color="gray")
 
-        for fi in range(n_files):
-            for c in range(_N_FEAT):
-                r = corr[s, fi, c]
-                if not np.isnan(r):
-                    tc = "white" if abs(r) > vmax * 0.55 else "black"
-                    ax.text(c, fi, f"{r:.2f}", ha="center", va="center",
-                            fontsize=5.5, color=tc)
+        if n_feat <= 16:
+            for fi in range(n_files):
+                for c in range(n_feat):
+                    r = corr[s, fi, c]
+                    if not np.isnan(r):
+                        tc = "white" if abs(r) > vmax * 0.55 else "black"
+                        ax.text(c, fi, f"{r:.2f}", ha="center", va="center",
+                                fontsize=5.5, color=tc)
 
         cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.03,
                             shrink=0.85)

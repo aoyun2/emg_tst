@@ -1,0 +1,75 @@
+{
+  "label": "ALL",
+  "split_strategy": "lofo",
+  "seed": 7,
+  "samples_file": "samples_dataset.npy",
+  "n_folds": 6,
+  "folds": [
+    {
+      "fold": 1,
+      "held_out_file_ids": [
+        0
+      ],
+      "held_out_file_names": [
+        "data0.npy"
+      ],
+      "checkpoint": "checkpoints\\tst_20260401_072807_all\\fold_01\\reg_best.pt",
+      "split_manifest": "checkpoints\\tst_20260401_072807_all\\fold_01\\split_manifest.json"
+    },
+    {
+      "fold": 2,
+      "held_out_file_ids": [
+        1
+      ],
+      "held_out_file_names": [
+        "data1.npy"
+      ],
+      "checkpoint": "checkpoints\\tst_20260401_072807_all\\fold_02\\reg_best.pt",
+      "split_manifest": "checkpoints\\tst_20260401_072807_all\\fold_02\\split_manifest.json"
+    },
+    {
+      "fold": 3,
+      "held_out_file_ids": [
+        2
+      ],
+      "held_out_file_names": [
+        "data2.npy"
+      ],
+      "checkpoint": "checkpoints\\tst_20260401_072807_all\\fold_03\\reg_best.pt",
+      "split_manifest": "checkpoints\\tst_20260401_072807_all\\fold_03\\split_manifest.json"
+    },
+    {
+      "fold": 4,
+      "held_out_file_ids": [
+        3
+      ],
+      "held_out_file_names": [
+        "data3.npy"
+      ],
+      "checkpoint": "checkpoints\\tst_20260401_072807_all\\fold_04\\reg_best.pt",
+      "split_manifest": "checkpoints\\tst_20260401_072807_all\\fold_04\\split_manifest.json"
+    },
+    {
+      "fold": 5,
+      "held_out_file_ids": [
+        4
+      ],
+      "held_out_file_names": [
+        "data4.npy"
+      ],
+      "checkpoint": "checkpoints\\tst_20260401_072807_all\\fold_05\\reg_best.pt",
+      "split_manifest": "checkpoints\\tst_20260401_072807_all\\fold_05\\split_manifest.json"
+    },
+    {
+      "fold": 6,
+      "held_out_file_ids": [
+        5
+      ],
+      "held_out_file_names": [
+        "data5.npy"
+      ],
+      "checkpoint": "checkpoints\\tst_20260401_072807_all\\fold_06\\reg_best.pt",
+      "split_manifest": "checkpoints\\tst_20260401_072807_all\\fold_06\\split_manifest.json"
+    }
+  ]
+}

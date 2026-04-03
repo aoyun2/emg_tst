@@ -10,7 +10,7 @@ from .sim import OverrideSpec, highlight_overridden_leg, make_tracking_env, tint
 
 
 def view_compare_npz(path: str | Path) -> None:
-    """Interactive compare replay (REF | PRED | BAD) with per-panel camera controls."""
+    """Interactive compare replay (REF | PRED [| BAD]) with per-panel camera controls."""
     npz_path = Path(path).expanduser()
     if not npz_path.exists():
         raise FileNotFoundError(npz_path)
@@ -36,13 +36,16 @@ def view_compare_npz(path: str | Path) -> None:
     width = int(np.asarray(raw.get("width", 480)).reshape(()))
     height = int(np.asarray(raw.get("height", 360)).reshape(()))
 
+    # Whether this recording includes the BAD synthetic-perturbation panel.
+    has_bad = bool(np.asarray(raw.get("has_bad", True)).reshape(()))
+
     clip_id = str(np.asarray(raw.get("clip_id", "")).reshape(()))
     start_step = int(np.asarray(raw.get("start_step", 0)).reshape(()))
     end_step = int(np.asarray(raw.get("end_step", start_step + 100)).reshape(()))
 
     states_ref = np.asarray(raw.get("states_ref", np.zeros((0, 0), dtype=np.float32)), dtype=np.float32)
     states_good = np.asarray(raw.get("states_good", np.zeros((0, 0), dtype=np.float32)), dtype=np.float32)
-    states_bad = np.asarray(raw.get("states_bad", np.zeros((0, 0), dtype=np.float32)), dtype=np.float32)
+    states_bad = np.asarray(raw.get("states_bad", np.zeros((0, 0), dtype=np.float32)), dtype=np.float32) if has_bad else np.zeros((0, 0), dtype=np.float32)
 
     has_states = bool(states_ref.ndim == 2 and states_ref.shape[0] >= 2 and states_ref.shape[1] >= 1)
     if not has_states:
@@ -77,43 +80,56 @@ def view_compare_npz(path: str | Path) -> None:
     # Policy ref_steps are irrelevant here; use a minimal default.
     env_ref = make_tracking_env(clip_id=clip_id, start_step=start_step, end_step=end_step, ref_steps=(0,), seed=0)
     env_good = make_tracking_env(clip_id=clip_id, start_step=start_step, end_step=end_step, ref_steps=(0,), seed=0)
-    env_bad = make_tracking_env(clip_id=clip_id, start_step=start_step, end_step=end_step, ref_steps=(0,), seed=0)
     env_ref.reset()
     env_good.reset()
-    env_bad.reset()
+
+    if has_bad:
+        env_bad = make_tracking_env(clip_id=clip_id, start_step=start_step, end_step=end_step, ref_steps=(0,), seed=0)
+        env_bad.reset()
+    else:
+        env_bad = None
 
     # Tint + highlight.
-    for env in (env_ref, env_good, env_bad):
+    for env in ([env_ref, env_good] + ([env_bad] if env_bad is not None else [])):
         tint_geoms_by_prefix(env._env.physics, prefix="ghost/", rgba=(0.85, 0.85, 0.85, 0.25))  # noqa: SLF001
     tint_geoms_by_prefix(env_ref._env.physics, prefix="walker/", rgba=(0.35, 0.35, 0.35, 1.0))  # noqa: SLF001
     tint_geoms_by_prefix(env_good._env.physics, prefix="walker/", rgba=(1.00, 0.55, 0.15, 1.0))  # noqa: SLF001
-    tint_geoms_by_prefix(env_bad._env.physics, prefix="walker/", rgba=(0.15, 0.65, 1.00, 1.0))  # noqa: SLF001
     highlight_overridden_leg(env_good._env.physics, override=override)  # noqa: SLF001
-    highlight_overridden_leg(env_bad._env.physics, override=override)  # noqa: SLF001
+    if env_bad is not None:
+        tint_geoms_by_prefix(env_bad._env.physics, prefix="walker/", rgba=(0.15, 0.65, 1.00, 1.0))  # noqa: SLF001
+        highlight_overridden_leg(env_bad._env.physics, override=override)  # noqa: SLF001
 
     phys_ref = env_ref._env.physics  # noqa: SLF001
     phys_good = env_good._env.physics  # noqa: SLF001
-    phys_bad = env_bad._env.physics  # noqa: SLF001
+    phys_bad = env_bad._env.physics if env_bad is not None else None  # noqa: SLF001
 
     rend_ref = mujoco.Renderer(phys_ref.model.ptr, int(height), int(width))
     rend_good = mujoco.Renderer(phys_good.model.ptr, int(height), int(width))
-    rend_bad = mujoco.Renderer(phys_bad.model.ptr, int(height), int(width))
+    rend_bad = mujoco.Renderer(phys_bad.model.ptr, int(height), int(width)) if phys_bad is not None else None
 
     cam_ref = mujoco.MjvCamera()
     cam_good = mujoco.MjvCamera()
-    cam_bad = mujoco.MjvCamera()
     mujoco.mjv_defaultCamera(cam_ref)
     mujoco.mjv_defaultCamera(cam_good)
-    mujoco.mjv_defaultCamera(cam_bad)
+
+    if rend_bad is not None:
+        cam_bad = mujoco.MjvCamera()
+        mujoco.mjv_defaultCamera(cam_bad)
+    else:
+        cam_bad = None
 
     panels = [
         {"name": "REF", "phys": phys_ref, "rend": rend_ref, "cam": cam_ref},
         {"name": "PRED", "phys": phys_good, "rend": rend_good, "cam": cam_good},
-        {"name": "BAD", "phys": phys_bad, "rend": rend_bad, "cam": cam_bad},
     ]
+    if phys_bad is not None and rend_bad is not None and cam_bad is not None:
+        panels.append({"name": "BAD", "phys": phys_bad, "rend": rend_bad, "cam": cam_bad})
+
+    n_panels = len(panels)
+    panel_label = "REF | PRED | BAD" if has_bad else "REF | PRED"
 
     root = tk.Tk()
-    root.title(f"MoCapAct Compare Replay (REF | PRED | BAD)  clip={clip_id}  start={start_step}  [{npz_path.name}]")
+    root.title(f"MoCapAct Compare Replay ({panel_label})  clip={clip_id}  start={start_step}  [{npz_path.name}]")
 
     img_lbl = tk.Label(root)
     img_lbl.pack()
@@ -122,10 +138,13 @@ def view_compare_npz(path: str | Path) -> None:
     info.pack(fill="x", padx=8, pady=(4, 0))
     ref_info = tk.Label(info, text="", anchor="w", justify="left", fg="#444444")
     good_info = tk.Label(info, text="", anchor="w", justify="left", fg="#d55e00")
-    bad_info = tk.Label(info, text="", anchor="w", justify="left", fg="#0072b2")
     ref_info.pack(side="top", fill="x")
     good_info.pack(side="top", fill="x")
-    bad_info.pack(side="top", fill="x")
+    if has_bad:
+        bad_info = tk.Label(info, text="", anchor="w", justify="left", fg="#0072b2")
+        bad_info.pack(side="top", fill="x")
+    else:
+        bad_info = None
 
     controls = tk.Frame(root)
     controls.pack(fill="x", padx=8, pady=(6, 8))
@@ -137,7 +156,7 @@ def view_compare_npz(path: str | Path) -> None:
         orient="horizontal",
         variable=cur_idx,
         showvalue=True,
-        length=int(width) * 3,
+        length=int(width) * n_panels,
     )
     scale.pack(side="top", fill="x")
 
@@ -164,7 +183,8 @@ def view_compare_npz(path: str | Path) -> None:
         w = int(width)
         draw.text((pad + 0 * w, pad), "REF (no override)", fill=(255, 255, 255), font=font)
         draw.text((pad + 1 * w, pad), "PRED (override)", fill=(255, 255, 255), font=font)
-        draw.text((pad + 2 * w, pad), "BAD (override)", fill=(255, 255, 255), font=font)
+        if has_bad:
+            draw.text((pad + 2 * w, pad), "BAD (override)", fill=(255, 255, 255), font=font)
         draw.text(
             (pad, int(height) - 18),
             "Mouse: RMB-drag rotate, LMB-drag pan, wheel zoom. Keys: WASD/Arrows move, Q/E (PgUp/PgDn) up/down, Shift=fast, 1/2/3 select panel, r reset.",
@@ -182,7 +202,7 @@ def view_compare_npz(path: str | Path) -> None:
         w = int(width)
         if w <= 0:
             return 0
-        return int(max(0, min(2, int(x) // w)))
+        return int(max(0, min(n_panels - 1, int(x) // w)))
 
     active_panel = {"idx": 0}
     drag = {"active": False, "btn": 0, "x": 0, "y": 0}
@@ -240,8 +260,10 @@ def view_compare_npz(path: str | Path) -> None:
         ch = str(getattr(ev, "char", "")).strip().lower()
 
         if ch in {"1", "2", "3"}:
-            active_panel["idx"] = int(ch) - 1
-            _render_at(int(cur_idx.get()))
+            idx = int(ch) - 1
+            if idx < n_panels:
+                active_panel["idx"] = idx
+                _render_at(int(cur_idx.get()))
             return
 
         cam = panels[int(active_panel["idx"])]["cam"]
@@ -345,10 +367,11 @@ def view_compare_npz(path: str | Path) -> None:
         i = int(max(0, min(int(i), int(states_ref.shape[0]) - 1)))
         phys_ref.set_state(np.asarray(states_ref[i], dtype=np.float64))
         phys_good.set_state(np.asarray(states_good[i], dtype=np.float64))
-        phys_bad.set_state(np.asarray(states_bad[i], dtype=np.float64))
         mujoco.mj_forward(phys_ref.model.ptr, phys_ref.data.ptr)
         mujoco.mj_forward(phys_good.model.ptr, phys_good.data.ptr)
-        mujoco.mj_forward(phys_bad.model.ptr, phys_bad.data.ptr)
+        if phys_bad is not None and has_bad and states_bad.shape[0] > 0:
+            phys_bad.set_state(np.asarray(states_bad[min(i, states_bad.shape[0] - 1)], dtype=np.float64))
+            mujoco.mj_forward(phys_bad.model.ptr, phys_bad.data.ptr)
         _show_pil(_render_pil())
 
         ref_info.configure(
@@ -373,17 +396,18 @@ def view_compare_npz(path: str | Path) -> None:
                 z_trace=root_z_good,
             )
         )
-        bad_info.configure(
-            text=_fmt_line(
-                "BAD",
-                i=i,
-                fall_step=fall_step_bad,
-                risk=risk_bad,
-                risk_trace=risk_trace_bad,
-                likely=likely_bad,
-                z_trace=root_z_bad,
+        if bad_info is not None:
+            bad_info.configure(
+                text=_fmt_line(
+                    "BAD",
+                    i=i,
+                    fall_step=fall_step_bad,
+                    risk=risk_bad,
+                    risk_trace=risk_trace_bad,
+                    likely=likely_bad,
+                    z_trace=root_z_bad,
+                )
             )
-        )
 
     def _seek(i: int) -> None:
         scrub_guard["v"] = True

@@ -7,6 +7,9 @@ from emg_tst.data import load_recording
 
 # ==========================================
 # Hard-coded sample builder (NO CLI FLAGS)
+# Note: the main transformer trainer now reads raw `data*.npy` recordings
+# directly. This script remains important for physical-eval query pools,
+# held-out window bookkeeping, and visualization.
 # ==========================================
 DATA_GLOB = "data*.npy"
 OUT_FILE = Path("samples_dataset.npy")
@@ -105,6 +108,13 @@ def main():
                     f"thigh_n_features={int(meta.get('thigh_n_features', 0))}, but earlier files had "
                     f"thigh_mode={first_meta.get('thigh_mode')!r}, thigh_n_features={int(first_meta.get('thigh_n_features', 0))}."
                 )
+            if str(meta.get("emg_feature_mode", "")) != str(first_meta.get("emg_feature_mode", "")) or int(meta.get("n_emg_features_per_sensor", 0)) != int(first_meta.get("n_emg_features_per_sensor", 0)):
+                raise RuntimeError(
+                    f"EMG feature mismatch: {Path(p).name} has emg_feature_mode={meta.get('emg_feature_mode')!r}, "
+                    f"n_emg_features_per_sensor={int(meta.get('n_emg_features_per_sensor', 0))}, but earlier files had "
+                    f"emg_feature_mode={first_meta.get('emg_feature_mode')!r}, "
+                    f"n_emg_features_per_sensor={int(first_meta.get('n_emg_features_per_sensor', 0))}."
+                )
 
         eff = float(meta.get("effective_hz", 0.0))
         orig = float(meta.get("orig_hz", eff))
@@ -112,9 +122,11 @@ def main():
             hz_msg = f"{orig:.1f} -> {eff:.1f} Hz"
         else:
             hz_msg = f"~{eff:.1f} Hz"
+        emg_mode = str(meta.get("emg_feature_mode", "unknown"))
+        emg_per_sensor = int(meta.get("n_emg_features_per_sensor", 0))
         tqdm.write(
             f"{Path(p).name}: T={X.shape[0]} features={X.shape[1]} "
-            f"({meta['n_channels']} bins/sensor) {hz_msg}"
+            f"(emg_mode={emg_mode} per_sensor={emg_per_sensor}) {hz_msg}"
         )
 
         Xs, ys, y_seq, starts = make_windows(X, y)
@@ -134,7 +146,7 @@ def main():
 
     assert first_meta is not None
     dataset = {
-        "X": X_out,                       # (N, WINDOW, F): spectr + raw_features + thigh
+        "X": X_out,                       # (N, WINDOW, F): emg + omega + thigh quat
         "y": y_out,                       # (N,)
         "y_seq": y_seq_out,               # (N, WINDOW)
         "file_id": file_id_out,           # (N,)
@@ -152,8 +164,12 @@ def main():
         "n_channels": np.int32(first_meta["n_channels"]),
         "n_raw_features": np.int32(first_meta.get("n_raw_features", 0)),
         "has_raw_emg": bool(first_meta.get("has_raw_emg", False)),
+        "emg_feature_mode": str(first_meta.get("emg_feature_mode", "unknown")),
+        "n_emg_features_per_sensor": np.int32(first_meta.get("n_emg_features_per_sensor", 0)),
+        "raw_window_samples": np.int32(first_meta.get("raw_window_samples", 0)),
         "thigh_mode": str(first_meta.get("thigh_mode", "unknown")),
         "thigh_n_features": np.int32(first_meta.get("thigh_n_features", 1)),
+        "n_angular_velocity_features": np.int32(first_meta.get("n_angular_velocity_features", 0)),
     }
 
     np.save(OUT_FILE, dataset, allow_pickle=True)

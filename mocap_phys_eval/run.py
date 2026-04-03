@@ -61,6 +61,10 @@ class LoadedTstModel:
     feature_cols: np.ndarray  # (n_vars,)
     device: str
     ckpt_path: str
+    # Number of leading features that received per-recording z-score at training time.
+    # 0 means no per-recording normalization (older checkpoints).
+    n_emg_norm: int = 0
+    label_shift: int = 0
 
 
 @dataclass(frozen=True)
@@ -160,7 +164,7 @@ def _load_tst_checkpoint(ckpt_path: Path, *, device: str) -> LoadedTstModel:
     try:
         import torch
 
-        from emg_tst.model import TSTEncoder, TSTRegressor
+        from emg_tst.model import SensorFusionTransformer
     except Exception as e:  # pragma: no cover
         raise RuntimeError("PyTorch is required to load the TST checkpoint.") from e
 
@@ -169,17 +173,26 @@ def _load_tst_checkpoint(ckpt_path: Path, *, device: str) -> LoadedTstModel:
 
     ckpt = torch.load(ckpt_path, map_location=torch_dev, weights_only=False)
     cfg = ckpt["model_cfg"]
-    encoder = TSTEncoder(
-        n_vars=int(cfg["n_vars"]),
+    model_type = str(cfg.get("model_type", ""))
+    if model_type != "sensor_fusion_last_step_transformer":
+        raise RuntimeError(
+            f"Unsupported checkpoint model_type={model_type!r}. "
+            "Re-run `python -m emg_tst.run_experiment` to produce integrated transformer checkpoints."
+        )
+
+    reg = SensorFusionTransformer(
+        n_emg_vars=int(cfg["n_emg_vars"]),
+        n_imu_vars=int(cfg["n_imu_vars"]),
         seq_len=int(cfg["seq_len"]),
         d_model=int(cfg["d_model"]),
         n_heads=int(cfg["n_heads"]),
         d_ff=int(cfg["d_ff"]),
         n_layers=int(cfg["n_layers"]),
         dropout=float(cfg["dropout"]),
+        causal=bool(cfg.get("causal", False)),
     ).to(torch_dev)
-    reg = TSTRegressor(encoder, out_dim=1).to(torch_dev)
-    reg.load_state_dict(ckpt["reg_state_dict"], strict=True)
+    state = ckpt.get("model_state_dict", ckpt.get("reg_state_dict"))
+    reg.load_state_dict(state, strict=True)
     reg.eval()
     for p in reg.parameters():
         p.requires_grad_(False)
@@ -197,6 +210,10 @@ def _load_tst_checkpoint(ckpt_path: Path, *, device: str) -> LoadedTstModel:
             f"Checkpoint is missing feature_cols (needed to reproduce training-time feature selection): {str(ckpt_path)!r}"
         )
 
+    n_emg_norm = int(extra.get("n_emg_norm", 0))
+    task_cfg = ckpt.get("task_cfg", {})
+    label_shift = int(task_cfg.get("label_shift", extra.get("label_shift", 0)))
+
     return LoadedTstModel(
         model=reg,
         mean=mean.astype(np.float32),
@@ -204,13 +221,15 @@ def _load_tst_checkpoint(ckpt_path: Path, *, device: str) -> LoadedTstModel:
         feature_cols=cols.astype(np.int64),
         device=str(torch_dev),
         ckpt_path=str(ckpt_path),
+        n_emg_norm=int(n_emg_norm),
+        label_shift=int(label_shift),
     )
 
 
-def _discover_latest_all_training_run() -> Path | None:
+def _all_training_run_dirs() -> list[Path]:
     ckpts_root = Path("checkpoints")
     if not ckpts_root.exists():
-        return None
+        return []
     run_dirs = sorted(
         {
             p.parent.parent
@@ -219,7 +238,46 @@ def _discover_latest_all_training_run() -> Path | None:
         },
         key=lambda p: p.name,
     )
-    return run_dirs[-1] if run_dirs else None
+    return run_dirs
+
+
+def _checkpoint_expected_feature_count(ckpt_path: Path) -> int | None:
+    try:
+        import torch
+    except Exception:
+        return None
+
+    try:
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    except Exception:
+        return None
+
+    scaler = ckpt.get("scaler", {})
+    mean = np.asarray(scaler.get("mean", None), dtype=np.float32)
+    if mean.ndim != 1 or mean.size < 1:
+        return None
+    return int(mean.size)
+
+
+def _run_expected_feature_count(run_dir: Path) -> int | None:
+    for ckpt_path in sorted(run_dir.glob("fold_*/reg_best.pt")):
+        feat_count = _checkpoint_expected_feature_count(ckpt_path)
+        if feat_count is not None:
+            return int(feat_count)
+    return None
+
+
+def _discover_latest_all_training_run(*, expected_n_features: int | None = None) -> Path | None:
+    run_dirs = _all_training_run_dirs()
+    if expected_n_features is None:
+        return run_dirs[-1] if run_dirs else None
+
+    compatible = [
+        run_dir
+        for run_dir in run_dirs
+        if _run_expected_feature_count(run_dir) == int(expected_n_features)
+    ]
+    return compatible[-1] if compatible else None
 
 
 def _training_seed_for_run(run_dir: Path) -> int:
@@ -269,12 +327,112 @@ def _load_samples_dataset(cfg: EvalConfig) -> dict[str, Any] | None:
 
 
 def _load_cv_manifest_for_run(run_dir: Path, *, samples_data: dict[str, Any]) -> dict[str, Any]:
+    def _file_names_array() -> np.ndarray:
+        return np.asarray(samples_data.get("file_names", np.array([])))
+
+    def _file_ids_array() -> np.ndarray:
+        return np.asarray(samples_data.get("file_id", np.zeros((0,), dtype=np.int32)), dtype=np.int64).reshape(-1)
+
+    def _resolve_split_manifest_path(fold_entry: dict[str, Any], fold: int) -> Path | None:
+        candidates: list[Path] = []
+        ref = fold_entry.get("split_manifest", None)
+        if isinstance(ref, str) and ref.strip():
+            p = Path(ref)
+            candidates.append(p)
+            if not p.is_absolute():
+                candidates.append(run_dir / p)
+                candidates.append(run_dir / p.name)
+        candidates.append(run_dir / f"fold_{int(fold):02d}" / "split_manifest.json")
+        seen: set[str] = set()
+        for p in candidates:
+            key = str(p)
+            if key in seen:
+                continue
+            seen.add(key)
+            if p.exists():
+                return p
+        return None
+
+    def _normalize_manifest(manifest_obj: dict[str, Any]) -> dict[str, Any]:
+        file_ids = _file_ids_array()
+        file_names = _file_names_array()
+        seed0 = int(manifest_obj.get("seed", _training_seed_for_run(run_dir)))
+        folds_in = list(manifest_obj.get("folds", []))
+        total_folds = int(manifest_obj.get("n_folds", len(folds_in) or 1))
+        split_strategy0 = str(manifest_obj.get("split_strategy", "unknown"))
+        folds_out: list[dict[str, Any]] = []
+
+        for i, raw_fold in enumerate(folds_in, start=1):
+            fold_entry = dict(raw_fold)
+            fold = int(fold_entry.get("fold", i))
+            fold_entry.setdefault("fold", int(fold))
+            fold_entry.setdefault("seed", int(seed0))
+            fold_entry.setdefault("split_strategy", split_strategy0)
+
+            test_idx = np.asarray(fold_entry.get("test_indices", []), dtype=np.int64).reshape(-1)
+            if test_idx.size < 1:
+                split_path = _resolve_split_manifest_path(fold_entry, int(fold))
+                if split_path is not None:
+                    try:
+                        split_obj = json.loads(split_path.read_text(encoding="utf-8"))
+                    except Exception:
+                        split_obj = {}
+                    if split_obj:
+                        if test_idx.size < 1:
+                            test_idx = np.asarray(split_obj.get("test_indices", []), dtype=np.int64).reshape(-1)
+                        if not fold_entry.get("test_file_ids"):
+                            fold_entry["test_file_ids"] = list(split_obj.get("test_file_ids", []))
+                        if not fold_entry.get("test_file_names"):
+                            fold_entry["test_file_names"] = list(split_obj.get("test_file_names", []))
+
+            if test_idx.size < 1:
+                test_file_ids = np.asarray(fold_entry.get("test_file_ids", []), dtype=np.int64).reshape(-1)
+                if test_file_ids.size < 1:
+                    test_file_names = [str(x) for x in fold_entry.get("test_file_names", [])]
+                    if test_file_names and int(file_names.size) > 0:
+                        matched: list[int] = []
+                        for name in test_file_names:
+                            hits = np.where(file_names.astype(str) == str(name))[0].astype(np.int64)
+                            matched.extend(int(x) for x in hits.tolist())
+                        test_file_ids = np.asarray(sorted(set(matched)), dtype=np.int64)
+                if test_file_ids.size > 0 and file_ids.size > 0:
+                    test_idx = np.where(np.isin(file_ids, test_file_ids))[0].astype(np.int64)
+
+            if test_idx.size < 1 and split_strategy0 == "kfold" and int(file_ids.size) > 0:
+                rng = np.random.default_rng(int(fold_entry.get("seed", seed0)))
+                perm = rng.permutation(int(file_ids.size))
+                split = np.array_split(perm, int(max(1, total_folds)))
+                pos = int(fold) - 1
+                if 0 <= pos < len(split):
+                    test_idx = np.asarray(split[pos], dtype=np.int64).reshape(-1)
+
+            if test_idx.size > 0:
+                fold_entry["test_indices"] = test_idx.astype(np.int64).tolist()
+                if not fold_entry.get("test_file_ids") and file_ids.size > 0:
+                    fold_entry["test_file_ids"] = np.unique(file_ids[test_idx]).astype(np.int64).tolist()
+                if not fold_entry.get("test_file_names") and int(file_names.size) > 0:
+                    names: list[str] = []
+                    for fid in fold_entry.get("test_file_ids", []):
+                        fid_i = int(fid)
+                        if 0 <= fid_i < int(file_names.size):
+                            names.append(str(file_names[fid_i]))
+                    fold_entry["test_file_names"] = names
+
+            folds_out.append(fold_entry)
+
+        out = dict(manifest_obj)
+        out["seed"] = int(seed0)
+        out["split_strategy"] = split_strategy0
+        out["n_folds"] = int(len(folds_out))
+        out["folds"] = folds_out
+        return out
+
     manifest_path = run_dir / "cv_manifest.json"
     if manifest_path.exists():
         try:
             obj = json.loads(manifest_path.read_text(encoding="utf-8"))
             if isinstance(obj.get("folds", None), list) and obj["folds"]:
-                return obj
+                return _normalize_manifest(obj)
         except Exception:
             pass
 
@@ -283,14 +441,14 @@ def _load_cv_manifest_for_run(run_dir: Path, *, samples_data: dict[str, Any]) ->
         folds = []
         for p in split_paths:
             folds.append(json.loads(p.read_text(encoding="utf-8")))
-        return {
+        return _normalize_manifest({
             "label": "ALL",
             "split_strategy": str(folds[0].get("split_strategy", "unknown")),
             "seed": int(folds[0].get("seed", _training_seed_for_run(run_dir))),
             "samples_file": str(folds[0].get("samples_file", samples_data.get("_samples_path", ""))),
             "n_folds": int(len(folds)),
             "folds": folds,
-        }
+        })
 
     file_ids = np.asarray(samples_data.get("file_id", np.zeros((0,), dtype=np.int32)), dtype=np.int64).reshape(-1)
     file_names = np.asarray(samples_data.get("file_names", np.array([])))
@@ -345,14 +503,14 @@ def _load_cv_manifest_for_run(run_dir: Path, *, samples_data: dict[str, Any]) ->
                 }
             )
 
-    return {
+    return _normalize_manifest({
         "label": "ALL",
         "split_strategy": str(folds[0].get("split_strategy", "unknown")) if folds else "unknown",
         "seed": int(seed),
         "samples_file": str(samples_data.get("_samples_path", "")),
         "n_folds": int(len(folds)),
         "folds": folds,
-    }
+    })
 
 
 def _load_tst_fold_models_if_available(
@@ -360,9 +518,23 @@ def _load_tst_fold_models_if_available(
     device: str,
     samples_data: dict[str, Any],
 ) -> tuple[Path, dict[int, FoldAssignedTstModel]] | None:
-    run_dir = _discover_latest_all_training_run()
+    expected_n_features = int(np.asarray(samples_data["X"], dtype=np.float32).shape[2])
+    run_dir = _discover_latest_all_training_run(expected_n_features=expected_n_features)
     if run_dir is None:
-        return None
+        run_dirs = _all_training_run_dirs()
+        if not run_dirs:
+            return None
+        details = []
+        for cand in run_dirs:
+            feat_count = _run_expected_feature_count(cand)
+            suffix = "unknown" if feat_count is None else f"F={int(feat_count)}"
+            details.append(f"{cand.name} ({suffix})")
+        raise RuntimeError(
+            "Found training runs, but none are compatible with the current samples_dataset feature layout. "
+            f"Current samples_dataset has F={expected_n_features} features. "
+            "Re-run `python -m emg_tst.run_experiment` after rebuilding samples_dataset.npy. "
+            f"Available `_all` runs: {', '.join(details)}"
+        )
 
     manifest = _load_cv_manifest_for_run(run_dir, samples_data=samples_data)
     sample_to_fold: dict[int, FoldAssignedTstModel] = {}
@@ -459,7 +631,7 @@ def _load_rigtest_query_pool(
     return out
 
 
-def _load_tst_model_if_available(*, device: str) -> LoadedTstModel | None:
+def _load_tst_model_if_available(*, device: str, expected_n_features: int | None = None) -> LoadedTstModel | None:
     """Auto-discover and load a TST checkpoint if present.
 
     Selection policy (no CLI flags):
@@ -468,7 +640,7 @@ def _load_tst_model_if_available(*, device: str) -> LoadedTstModel | None:
     - Within that run, pick the fold with the lowest `metrics.json.best_rmse`.
     - If no metrics are available, fall back to the most recently modified checkpoint.
     """
-    run_dir = _discover_latest_all_training_run()
+    run_dir = _discover_latest_all_training_run(expected_n_features=expected_n_features)
     if run_dir is None:
         return None
     run_candidates = sorted(run_dir.glob("fold_*/reg_best.pt"))
@@ -508,17 +680,66 @@ def _predict_knee_included_deg_for_window(model: LoadedTstModel, X_raw: np.ndarr
     if model.mean.size != F or model.std.size != F:
         raise ValueError(f"Checkpoint scaler expects F={model.mean.size}, but window has F={F}")
 
-    # Match training pipeline: normalize all raw features, then select feature_cols.
-    xn = (x - model.mean[None, :]) / model.std[None, :]
+    # Match training pipeline:
+    # 1. Per-recording EMG z-score (applied to first n_emg_norm features during training).
+    #    At inference we use per-window stats as a proxy (equivalent when the window
+    #    is representative of its recording, which holds for 1-second walking windows).
+    xn = x.copy()
+    n_emg = int(model.n_emg_norm)
+    if n_emg > 0 and n_emg <= F:
+        emg_block = xn[:, :n_emg].astype(np.float64)
+        mu = emg_block.mean(axis=0)
+        sd = np.maximum(emg_block.std(axis=0), 1e-6)
+        xn[:, :n_emg] = ((emg_block - mu) / sd).astype(np.float32)
+
+    # 2. Global scaler (fitted on per-recording-normalized data during training).
+    xn = (xn - model.mean[None, :]) / model.std[None, :]
     xn = xn[:, model.feature_cols]
 
-    xb = torch.from_numpy(xn[None, :, :]).to(model.device)
+    xb = torch.from_numpy(xn).to(model.device)
     with torch.no_grad():
-        out = model.model(xb)  # [1,W,1]
-        pred = out[0, :, 0].detach().cpu().numpy().astype(np.float32)
+        from emg_tst.model import rolling_last_step_predict
+
+        pred = rolling_last_step_predict(model.model, xb).numpy().astype(np.float32)
     if pred.shape != (W,):
         pred = pred.reshape(-1)[:W].astype(np.float32)
     return pred
+
+
+def _align_future_forecast_to_control(
+    pred_future: np.ndarray,
+    current_observed: np.ndarray,
+    *,
+    label_shift: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Align a future-angle forecast to a causal control target.
+
+    `pred_future[j]` predicts the angle at time `j + label_shift`. For control,
+    we keep the observed current angle for the prefix where no forecast has
+    matured yet, then inject the model forecast once its target time arrives.
+
+    Returns:
+      aligned:    (W,) absolute angle sequence suitable for immediate control
+      valid_mask: (W,) True where aligned values come from the model forecast
+    """
+    pred = np.asarray(pred_future, dtype=np.float32).reshape(-1)
+    obs = np.asarray(current_observed, dtype=np.float32).reshape(-1)
+    W = int(min(pred.size, obs.size))
+    if W < 1:
+        return np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=bool)
+
+    shift = int(max(0, label_shift))
+    aligned = obs[:W].copy()
+    valid = np.zeros((W,), dtype=bool)
+    if shift <= 0:
+        aligned = pred[:W].copy()
+        valid[:] = True
+        return aligned.astype(np.float32), valid
+
+    if shift < W:
+        aligned[shift:] = pred[: W - shift]
+        valid[shift:] = True
+    return aligned.astype(np.float32), valid
 
 
 def _normalize_quat_series_wxyz(q: np.ndarray) -> np.ndarray:
@@ -806,6 +1027,7 @@ def _evaluate_query_window(
         query_thigh_quat_wxyz=thq,
         query_knee_deg=kn_flex,
         top_k=int(cfg.match_top_k),
+        local_refine_radius=int(cfg.match_local_refine_radius),
         feature_mode=str(cfg.match_feature_mode),
     )
     if not candidates:
@@ -851,11 +1073,18 @@ def _evaluate_query_window(
     good_kn_flex = kn_flex.copy()
     pred_included_200 = None
     pred_flex_200 = None
+    control_valid_200 = None
     tst = q.tst_model
     if tst is not None and q.X_raw is not None:
         pred_included_200 = _predict_knee_included_deg_for_window(tst, q.X_raw)
         pred_flex_200 = (180.0 - np.asarray(pred_included_200, dtype=np.float32)).astype(np.float32)
-        good_kn_flex = resample_linear(pred_flex_200, src_hz=float(q.sample_hz), dst_hz=float(match_hz))[:L].astype(
+        gt_flex_200 = (180.0 - np.asarray(q.knee_included_deg, dtype=np.float32)).astype(np.float32)
+        pred_control_200, control_valid_200 = _align_future_forecast_to_control(
+            pred_flex_200,
+            gt_flex_200,
+            label_shift=int(tst.label_shift),
+        )
+        good_kn_flex = resample_linear(pred_control_200, src_hz=float(q.sample_hz), dst_hz=float(match_hz))[:L].astype(
             np.float32
         )
 
@@ -872,9 +1101,12 @@ def _evaluate_query_window(
     pred_vs_gt_rmse = None
     if pred_flex_200 is not None:
         gt_flex_200 = (180.0 - np.asarray(q.knee_included_deg, dtype=np.float32)).astype(np.float32)
-        pred_flex_200 = pred_flex_200[: int(min(pred_flex_200.size, gt_flex_200.size))]
-        gt_flex_200 = gt_flex_200[: int(min(pred_flex_200.size, gt_flex_200.size))]
-        pred_vs_gt_rmse = float(_rmse(pred_flex_200, gt_flex_200))
+        W200 = int(min(pred_flex_200.size, gt_flex_200.size))
+        shift200 = int(max(0, int(tst.label_shift) if tst is not None else 0))
+        if shift200 <= 0:
+            pred_vs_gt_rmse = float(_rmse(pred_flex_200[:W200], gt_flex_200[:W200]))
+        elif shift200 < W200:
+            pred_vs_gt_rmse = float(_rmse(pred_flex_200[: W200 - shift200], gt_flex_200[shift200:W200]))
 
     good_target_kn = (float(cand.knee_sign) * good_kn_flex + float(cand.knee_offset_deg)).astype(np.float32)
     bad_target_kn = (float(cand.knee_sign) * bad_kn_flex + float(cand.knee_offset_deg)).astype(np.float32)
@@ -893,8 +1125,13 @@ def _evaluate_query_window(
     policy = load_expert_policy(expert_model_path, device=str(cfg.device))
     override = OverrideSpec(knee_actuator=str(cfg.knee_actuator), knee_sign=1.0, knee_offset_deg=0.0)
 
+    # BAD panel is only meaningful for demo/oracle mode (no real model).
+    # When a TST model is available, show only REF | PRED (the model's override).
+    run_bad = bool(tst is None or q.X_raw is None)
+
+    sim_label = "REF|PRED|BAD" if run_bad else "REF|PRED"
     print(
-        f"[mocap_phys_eval] status: sim (REF|PRED|BAD)  clip={clip_id}  "
+        f"[mocap_phys_eval] status: sim ({sim_label})  clip={clip_id}  "
         f"start_abs={eval_start_abs} warmup={warmup_steps} L={L}"
     )
     rec_paths = record_compare_rollout(
@@ -913,6 +1150,7 @@ def _evaluate_query_window(
         camera_id=int(cfg.render_camera_id),
         deterministic_policy=True,
         seed=0,
+        run_bad=bool(run_bad),
     )
 
     rr = np.load(rec_paths.npz_path, allow_pickle=True)
@@ -1040,6 +1278,8 @@ def _evaluate_query_window(
             "tst_ckpt": (None if tst is None else str(tst.ckpt_path)),
             "pred_is_oracle": bool(tst is None or q.X_raw is None),
             "good_is_oracle": bool(tst is None or q.X_raw is None),
+            "label_shift_samples": (0 if tst is None else int(tst.label_shift)),
+            "label_shift_ms": (0.0 if tst is None else float(1000.0 * float(tst.label_shift) / float(q.sample_hz))),
             "pred_vs_gt_knee_flex_rmse_deg": pred_vs_gt_rmse,
             "bad_target_rmse_deg": float(cfg.bad_knee_rmse_deg),
             "bad_actual_rmse_deg": float(pred_bad_rmse),
@@ -1128,7 +1368,7 @@ def main() -> None:
                 f"contains {len(queries)} windows. Record/train on more files before running mocap_phys_eval."
             )
         print(
-            f"[mocap_phys_eval] status: loaded latest `_all` training run: {training_run_dir}  "
+            f"[mocap_phys_eval] status: loaded latest compatible `_all` training run: {training_run_dir}  "
             f"(candidate held-out windows={len(queries)} seed={int(getattr(cfg, 'paper_eval_seed', 42))})"
         )
     else:

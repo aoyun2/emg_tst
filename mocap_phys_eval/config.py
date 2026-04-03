@@ -41,6 +41,7 @@ class EvalConfig:
 
     # Motion matching.
     match_top_k: int = 12
+    match_local_refine_radius: int = 15
     # Use thigh quaternion *relative rotation* (log) + knee derivatives for offset-invariant coarse search.
     match_feature_mode: str = "dquat_knee_d"
 
