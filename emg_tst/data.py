@@ -16,11 +16,13 @@ RAW_WINDOW = 32
 N_FFT_BANDS = 8
 ENGINEERED_EMG_FEATURE_NAMES = ["RMS", "MAV", "WL", "ZC", "SSC"] + [f"FFT{i}" for i in range(N_FFT_BANDS)]
 RAW_SNIPPET_FEATURE_MODE = "raw_snippets"
+EMG_ENVELOPE_FEATURE_MODE = "causal_envelope"
 
 # Recordings are not perfectly uniform in time (Bluetooth + serial jitter). For
 # reproducible training/evaluation (and consistent window length in seconds),
 # we resample each recording to a fixed uniform rate using its timestamps.
 TARGET_HZ = 200.0
+GT_PAPER_HZ = 100.0
 
 
 def _ensure_strictly_increasing(t: np.ndarray, *, eps: float = 1e-6) -> np.ndarray:
@@ -70,6 +72,38 @@ def _quat_fix_sign_continuity_wxyz(q: np.ndarray) -> np.ndarray:
         if float(np.dot(q[i - 1], q[i])) < 0.0:
             q[i] *= -1.0
     return q
+
+
+def _quat_conj_wxyz(q: np.ndarray) -> np.ndarray:
+    qq = np.asarray(q, dtype=np.float64).reshape(-1, 4).copy()
+    qq[:, 1:] *= -1.0
+    return qq
+
+
+def _quat_mul_wxyz(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    aa = np.asarray(a, dtype=np.float64).reshape(-1, 4)
+    bb = np.asarray(b, dtype=np.float64).reshape(-1, 4)
+    if aa.shape[0] != bb.shape[0]:
+        raise ValueError(f"Quaternion length mismatch: {aa.shape} vs {bb.shape}")
+    aw, ax, ay, az = aa[:, 0], aa[:, 1], aa[:, 2], aa[:, 3]
+    bw, bx, by, bz = bb[:, 0], bb[:, 1], bb[:, 2], bb[:, 3]
+    out = np.stack(
+        [
+            aw * bw - ax * bx - ay * by - az * bz,
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+        ],
+        axis=1,
+    )
+    return _quat_fix_sign_continuity_wxyz(out)
+
+
+def _quat_relative_to_first_wxyz(q: np.ndarray) -> np.ndarray:
+    qq = _quat_fix_sign_continuity_wxyz(q)
+    q0 = qq[:1]
+    ref = np.repeat(_quat_conj_wxyz(q0), int(qq.shape[0]), axis=0)
+    return _quat_fix_sign_continuity_wxyz(_quat_mul_wxyz(ref, qq)).astype(np.float32)
 
 
 def _resample_quat_slerp_wxyz_by_timestamps(q: np.ndarray, t_src: np.ndarray, t_dst: np.ndarray) -> np.ndarray:
@@ -167,6 +201,23 @@ def _extract_raw_snippets_for_sensor(
     return padded[starts[:, None] + offsets[None, :]].astype(np.float32)
 
 
+def _extract_causal_envelope_for_sensor(
+    raw: np.ndarray,
+    T_imu: int,
+    window: int = RAW_WINDOW,
+    raw_times: np.ndarray | None = None,
+    imu_times: np.ndarray | None = None,
+) -> np.ndarray:
+    snippets = _extract_raw_snippets_for_sensor(
+        raw,
+        T_imu,
+        window=window,
+        raw_times=raw_times,
+        imu_times=imu_times,
+    )
+    return np.mean(np.abs(snippets), axis=1, keepdims=True).astype(np.float32)
+
+
 def emg_feature_layout_from_meta(meta: dict) -> dict:
     mode = str(meta.get("emg_feature_mode", "")).strip().lower()
     has_raw = bool(meta.get("has_raw_emg", False))
@@ -180,6 +231,13 @@ def emg_feature_layout_from_meta(meta: dict) -> dict:
             "mode": mode,
             "per_sensor": per_sensor,
             "names": [f"lag{per_sensor - 1 - i}" for i in range(per_sensor)],
+        }
+
+    if mode == EMG_ENVELOPE_FEATURE_MODE:
+        return {
+            "mode": mode,
+            "per_sensor": 1,
+            "names": ["env"],
         }
 
     if mode == "legacy_spectr":
@@ -224,7 +282,7 @@ def load_recording(path: str | Path) -> Tuple[np.ndarray, np.ndarray, dict]:
 
     Features per timestep:
       - N device_spectr channels x 3 sensors (legacy)
-      - RAW_WINDOW raw EMG samples x 3 sensors (if raw data available)
+      - 1 causal EMG envelope value x 3 sensors (if raw data available)
       - right thigh orientation from uMyo sensor 2:
           - required: `thigh_quat_wxyz` (wxyz quaternion, 4 dims)
     Label: knee included angle (degrees): 0=bent, 180=straight.
@@ -239,6 +297,151 @@ def load_recording(path: str | Path) -> Tuple[np.ndarray, np.ndarray, dict]:
       meta: dict
     """
     d = np.load(Path(path), allow_pickle=True).item()
+
+    if "raw_emg_channels" in d and "thigh_imu" in d:
+        def _load_gt_angle_signals_from_source() -> dict[str, np.ndarray] | None:
+            src = str(d.get("source_angle_csv", "")).strip()
+            if not src:
+                return None
+            p = Path(src)
+            if not p.exists():
+                return None
+            try:
+                from emg_tst.gt_dataset import (
+                    load_marker_based_thigh_orientation,
+                    load_processed_angle_signals,
+                )
+            except Exception:
+                return None
+            try:
+                out = load_processed_angle_signals(p)
+                try:
+                    marker_orient = load_marker_based_thigh_orientation(p)
+                except Exception:
+                    marker_orient = None
+                if marker_orient is not None and "thigh_quat_wxyz" in marker_orient:
+                    out["thigh_quat_wxyz"] = np.asarray(marker_orient["thigh_quat_wxyz"], dtype=np.float32)
+                return out
+            except Exception:
+                return None
+
+        try:
+            from scipy.signal import butter, filtfilt  # type: ignore
+        except Exception:
+            butter = None
+            filtfilt = None
+
+        def _paper_preprocess_emg(raw: np.ndarray, raw_t: np.ndarray | None, t_out: np.ndarray) -> np.ndarray:
+            x = np.asarray(raw, dtype=np.float64).reshape(-1)
+            if x.size < 4:
+                return np.zeros((int(t_out.size),), dtype=np.float32)
+            if raw_t is not None and raw_t.size >= 2:
+                dt = np.diff(np.asarray(raw_t, dtype=np.float64).reshape(-1))
+                fs = float(1.0 / max(np.median(dt), 1e-6))
+            else:
+                fs = 2000.0
+            if butter is not None and filtfilt is not None and fs > 50.0:
+                try:
+                    b_hp, a_hp = butter(2, 20.0 / (0.5 * fs), btype="highpass")
+                    x = filtfilt(b_hp, a_hp, x)
+                    x = np.abs(x)
+                    b_lp, a_lp = butter(2, 5.0 / (0.5 * fs), btype="lowpass")
+                    x = filtfilt(b_lp, a_lp, x)
+                except Exception:
+                    x = np.abs(x)
+            else:
+                x = np.abs(x)
+            if raw_t is None:
+                raw_t = np.arange(int(x.size), dtype=np.float64) / float(fs)
+            return np.interp(np.asarray(t_out, dtype=np.float64), np.asarray(raw_t, dtype=np.float64), x).astype(np.float32)
+
+        y0 = np.asarray(d["knee_included_deg"], dtype=np.float32).reshape(-1)
+        thigh_imu0 = np.asarray(d["thigh_imu"], dtype=np.float32)
+        if thigh_imu0.ndim != 2:
+            raise ValueError(f"GT recording {str(path)!r} has invalid thigh_imu shape {thigh_imu0.shape}")
+        T0 = min(int(y0.shape[0]), int(thigh_imu0.shape[0]))
+        y = y0[:T0].astype(np.float32)
+        thigh_imu = thigh_imu0[:T0].astype(np.float32)
+
+        gt_angles = _load_gt_angle_signals_from_source()
+        thigh_pitch = None
+        thigh_quat = None
+        if gt_angles is not None:
+            thigh_pitch = np.asarray(gt_angles["thigh_pitch_deg"], dtype=np.float32).reshape(-1)
+            thigh_quat = np.asarray(gt_angles["thigh_quat_wxyz"], dtype=np.float32).reshape(-1, 4)
+        if thigh_pitch is None:
+            thigh_pitch = np.asarray(d.get("thigh_pitch_deg", np.zeros((T0,), dtype=np.float32)), dtype=np.float32).reshape(-1)
+        thigh_pitch = thigh_pitch[:T0].astype(np.float32)
+
+        if thigh_quat is None and "thigh_quat_wxyz" in d:
+            qq = np.asarray(d["thigh_quat_wxyz"], dtype=np.float32).reshape(-1, 4)
+            if qq.shape[0] >= T0:
+                thigh_quat = qq[:T0].astype(np.float32)
+        elif thigh_quat is not None and int(thigh_quat.shape[0]) >= T0:
+            thigh_quat = thigh_quat[:T0].astype(np.float32)
+        else:
+            thigh_quat = None
+
+        did_resample = False
+        t_src = None
+        t_dst = None
+        orig_hz = float(d.get("effective_hz", 200.0))
+        t_offset = 0.0
+        if "timestamps" in d:
+            t_src = np.asarray(d["timestamps"], dtype=np.float64).reshape(-1)[:T0]
+        if t_src is not None and t_src.size >= 2 and T0 >= 2:
+            t_src = _ensure_strictly_increasing(t_src)
+            t_offset = float(t_src[0])
+            t_src = t_src - t_offset
+            dur = float(t_src[-1])
+            if np.isfinite(dur) and dur > 1e-6:
+                orig_hz = float((T0 - 1) / dur)
+                n_dst = int(round(dur * float(GT_PAPER_HZ))) + 1
+                n_dst = max(2, n_dst)
+                t_dst = (np.arange(n_dst, dtype=np.float64) / float(GT_PAPER_HZ)).astype(np.float64)
+                y = _resample_linear_by_timestamps(y, t_src, t_dst)
+                thigh_imu = _resample_linear_by_timestamps(thigh_imu, t_src, t_dst)
+                thigh_pitch = _resample_linear_by_timestamps(thigh_pitch, t_src, t_dst)
+                if thigh_quat is not None:
+                    thigh_quat = _resample_quat_slerp_wxyz_by_timestamps(thigh_quat, t_src, t_dst)
+                did_resample = True
+
+        T = int(y.shape[0])
+        effective_hz = float(GT_PAPER_HZ) if bool(did_resample) else float(orig_hz)
+        imu_times = t_dst if t_dst is not None else t_src
+
+        raw_emg = np.asarray(d["raw_emg_channels"], dtype=np.float64)
+        if raw_emg.ndim != 2:
+            raise ValueError(f"GT recording {str(path)!r} has invalid raw_emg_channels shape {raw_emg.shape}")
+        raw_ts = None
+        if "raw_emg_times" in d:
+            raw_ts = np.asarray(d["raw_emg_times"], dtype=np.float64).reshape(-1) - float(t_offset)
+        emg_parts = [_paper_preprocess_emg(raw_emg[ch], raw_ts, np.asarray(imu_times, dtype=np.float64))[:, None] for ch in range(int(raw_emg.shape[0]))]
+        emg = np.concatenate(emg_parts, axis=1).astype(np.float32)
+        X = np.concatenate([emg, thigh_imu], axis=1).astype(np.float32)
+        meta = {
+            "n_channels": int(raw_emg.shape[0]),
+            "n_raw_features": int(emg.shape[1]),
+            "n_features": int(X.shape[1]),
+            "n_samples": int(T),
+            "effective_hz": float(effective_hz),
+            "orig_hz": float(orig_hz),
+            "target_hz": float(GT_PAPER_HZ),
+            "resampled": bool(did_resample),
+            "thigh_mode": "imu6",
+            "thigh_n_features": int(thigh_imu.shape[1]),
+            "has_thigh_quat": bool(thigh_quat is not None),
+            "has_raw_emg": True,
+            "emg_feature_mode": "gt_paper_preprocessed",
+            "n_emg_features_per_sensor": 1,
+            "raw_window_samples": 0,
+            "n_angular_velocity_features": 0,
+            "thigh_pitch_deg_series": thigh_pitch.astype(np.float32),
+            "thigh_quat_series": None if thigh_quat is None else thigh_quat.astype(np.float32),
+            "source_dataset": str(d.get("source_dataset", "")),
+        }
+        return X, y, meta
+
     # Prefer explicit key; fall back to legacy 'imu'.
     if "knee_included_deg" in d:
         y0 = np.asarray(d["knee_included_deg"], dtype=np.float32)
@@ -305,7 +508,7 @@ def load_recording(path: str | Path) -> Tuple[np.ndarray, np.ndarray, dict]:
     effective_hz = float(TARGET_HZ) if bool(did_resample) else float(orig_hz)
     imu_times = t_dst if t_dst is not None else t_src
 
-    # Raw EMG snippets (preferred) or legacy device_spectr fallback.
+    # Causal EMG envelope (preferred) or legacy device_spectr fallback.
     has_raw = "raw_emg_sensor1" in d
     if has_raw:
         raw1 = np.asarray(d["raw_emg_sensor1"], dtype=np.float64)
@@ -323,13 +526,13 @@ def load_recording(path: str | Path) -> Tuple[np.ndarray, np.ndarray, dict]:
         raw_ts2 = _zero_raw_ts("raw_emg_times2")
         raw_ts3 = _zero_raw_ts("raw_emg_times3")
 
-        feat1 = _extract_raw_snippets_for_sensor(raw1, T, RAW_WINDOW, raw_times=raw_ts1, imu_times=imu_times)
-        feat2 = _extract_raw_snippets_for_sensor(raw2, T, RAW_WINDOW, raw_times=raw_ts2, imu_times=imu_times)
-        feat3 = _extract_raw_snippets_for_sensor(raw3, T, RAW_WINDOW, raw_times=raw_ts3, imu_times=imu_times)
+        feat1 = _extract_causal_envelope_for_sensor(raw1, T, RAW_WINDOW, raw_times=raw_ts1, imu_times=imu_times)
+        feat2 = _extract_causal_envelope_for_sensor(raw2, T, RAW_WINDOW, raw_times=raw_ts2, imu_times=imu_times)
+        feat3 = _extract_causal_envelope_for_sensor(raw3, T, RAW_WINDOW, raw_times=raw_ts3, imu_times=imu_times)
         emg = np.concatenate([feat1, feat2, feat3], axis=1).astype(np.float32)
         n_raw_feat = int(emg.shape[1])
-        emg_feature_mode = RAW_SNIPPET_FEATURE_MODE
-        n_emg_features_per_sensor = int(RAW_WINDOW)
+        emg_feature_mode = EMG_ENVELOPE_FEATURE_MODE
+        n_emg_features_per_sensor = 1
     else:
         spectr = np.concatenate([s1[:, :T0].T, s2[:, :T0].T, s3[:, :T0].T], axis=1).astype(np.float32)
         if did_resample and t_src is not None and t_dst is not None and spectr.shape[0] == int(t_src.size):
@@ -342,17 +545,6 @@ def load_recording(path: str | Path) -> Tuple[np.ndarray, np.ndarray, dict]:
         n_emg_features_per_sensor = int(n_ch)
 
     X = np.concatenate([emg, thigh], axis=1).astype(np.float32)
-
-    # Thigh angular velocity (session-invariant gait-phase signal).
-    # omega ≈ 2 * dq_xyz * fs  (small-angle finite-difference approximation)
-    # dq[0] is set equal to dq[1] so the first sample is not artificially zero.
-    _quat = X[:, -4:].astype(np.float64)          # (T, 4)  w x y z
-    _dq   = np.diff(_quat[:, 1:], axis=0)          # (T-1, 3)  xyz only
-    _dq   = np.concatenate([_dq[:1], _dq], axis=0) # (T, 3) replicate first
-    _omega = (2.0 * effective_hz * _dq).astype(np.float32)  # rad/s
-    # Insert omega between EMG and quat: [emg | omega | quat]
-    X = np.concatenate([X[:, :-4], _omega, X[:, -4:]], axis=1).astype(np.float32)
-    N_OMEGA = 3
 
     meta = {
         "n_channels": int(n_ch),
@@ -370,7 +562,7 @@ def load_recording(path: str | Path) -> Tuple[np.ndarray, np.ndarray, dict]:
         "emg_feature_mode": str(emg_feature_mode),
         "n_emg_features_per_sensor": int(n_emg_features_per_sensor),
         "raw_window_samples": int(RAW_WINDOW),
-        "n_angular_velocity_features": N_OMEGA,
+        "n_angular_velocity_features": 0,
     }
     return X, y, meta
 

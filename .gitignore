@@ -6,3 +6,7 @@ mocap_data/
 .cache_mocapact*.npz
 mocapact_models/
 artifacts/
+checkpoints/
+samples_dataset.npy
+gt_dataset/
+gt_data*.npy

@@ -308,6 +308,8 @@ def motion_match_one_window(
     top_k: int = 12,
     local_refine_radius: int = 0,
     feature_mode: str = "thigh_knee_d",
+    knee_weight: float = 1.0,
+    thigh_weight: float = 1.0,
 ) -> list[MatchCandidate]:
     """Motion-match a single query window to the CMU2020 bank.
 
@@ -324,6 +326,8 @@ def motion_match_one_window(
         not an RMSE of a single scalar thigh angle.
     """
     feature_mode = str(feature_mode).strip().lower()
+    knee_weight = float(knee_weight)
+    thigh_weight = float(thigh_weight)
     if feature_mode not in {"thigh_knee_d", "quat_knee_d", "dquat_knee_d"}:
         raise ValueError("feature_mode must be 'thigh_knee_d', 'quat_knee_d', or 'dquat_knee_d'.")
 
@@ -473,7 +477,7 @@ def motion_match_one_window(
                 q_th_al = float(thigh_sign) * q_th + float(thigh_off)
                 rmse_th = float(np.sqrt(float(np.mean((q_th_al - ref_th) ** 2))))
 
-            score = rmse_th + rmse_kn
+            score = float(thigh_weight) * rmse_th + float(knee_weight) * rmse_kn
             clip_id = str(bank.clip_id[int(clip_i)])
             end_step = int(start_i + L - 1)
             try:

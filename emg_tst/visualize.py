@@ -7,7 +7,7 @@ import numpy as np
 import torch
 
 from emg_tst.data import emg_feature_layout_from_meta
-from emg_tst.model import SensorFusionTransformer, rolling_last_step_predict
+from emg_tst.model import build_last_step_model, rolling_last_step_predict
 
 SAMPLES_FILE = Path("samples_dataset.npy")
 CKPT_PATH = Path("checkpoints")
@@ -50,20 +50,7 @@ def _resolve_checkpoint_file(path: Path, *, expected_n_features: int) -> Path:
 def load_ckpt(path: Path, device: torch.device):
     ckpt = torch.load(path, map_location=device, weights_only=False)
     cfg = ckpt["model_cfg"]
-    model_type = str(cfg.get("model_type", ""))
-    if model_type != "sensor_fusion_last_step_transformer":
-        raise SystemExit(f"Unsupported checkpoint model_type={model_type!r}; retrain with the integrated transformer.")
-    model = SensorFusionTransformer(
-        n_emg_vars=int(cfg["n_emg_vars"]),
-        n_imu_vars=int(cfg["n_imu_vars"]),
-        seq_len=int(cfg["seq_len"]),
-        d_model=int(cfg["d_model"]),
-        n_heads=int(cfg["n_heads"]),
-        d_ff=int(cfg["d_ff"]),
-        n_layers=int(cfg["n_layers"]),
-        dropout=float(cfg["dropout"]),
-        causal=bool(cfg.get("causal", False)),
-    ).to(device)
+    model = build_last_step_model(**cfg).to(device)
     state = ckpt.get("model_state_dict", ckpt.get("reg_state_dict"))
     model.load_state_dict(state, strict=True)
     model.eval()

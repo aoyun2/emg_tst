@@ -43,7 +43,7 @@ class QueryWindow:
     thigh_quat_wxyz: np.ndarray  # (W,4) at sample_hz
     knee_included_deg: np.ndarray  # (W,) at sample_hz, included angle (0 bent, 180 straight)
     thigh_pitch_deg: np.ndarray | None = None  # optional demo-only visualization
-    X_raw: np.ndarray | None = None  # (W,F) raw features (rigtest only), for TST inference
+    X_raw: np.ndarray | None = None  # (W,F) raw features (rigtest only), for model inference
     dataset_index: int | None = None
     file_id: int | None = None
     file_name: str | None = None
@@ -65,6 +65,7 @@ class LoadedTstModel:
     # 0 means no per-recording normalization (older checkpoints).
     n_emg_norm: int = 0
     label_shift: int = 0
+    label_scale: float = 180.0
 
 
 @dataclass(frozen=True)
@@ -164,33 +165,16 @@ def _load_tst_checkpoint(ckpt_path: Path, *, device: str) -> LoadedTstModel:
     try:
         import torch
 
-        from emg_tst.model import SensorFusionTransformer
+        from emg_tst.model import build_last_step_model
     except Exception as e:  # pragma: no cover
-        raise RuntimeError("PyTorch is required to load the TST checkpoint.") from e
+        raise RuntimeError("PyTorch is required to load the sensor-fusion checkpoint.") from e
 
     dev = str(device).strip().lower()
     torch_dev = torch.device("cpu" if dev in ("", "cpu") else dev)
 
     ckpt = torch.load(ckpt_path, map_location=torch_dev, weights_only=False)
     cfg = ckpt["model_cfg"]
-    model_type = str(cfg.get("model_type", ""))
-    if model_type != "sensor_fusion_last_step_transformer":
-        raise RuntimeError(
-            f"Unsupported checkpoint model_type={model_type!r}. "
-            "Re-run `python -m emg_tst.run_experiment` to produce integrated transformer checkpoints."
-        )
-
-    reg = SensorFusionTransformer(
-        n_emg_vars=int(cfg["n_emg_vars"]),
-        n_imu_vars=int(cfg["n_imu_vars"]),
-        seq_len=int(cfg["seq_len"]),
-        d_model=int(cfg["d_model"]),
-        n_heads=int(cfg["n_heads"]),
-        d_ff=int(cfg["d_ff"]),
-        n_layers=int(cfg["n_layers"]),
-        dropout=float(cfg["dropout"]),
-        causal=bool(cfg.get("causal", False)),
-    ).to(torch_dev)
+    reg = build_last_step_model(**cfg).to(torch_dev)
     state = ckpt.get("model_state_dict", ckpt.get("reg_state_dict"))
     reg.load_state_dict(state, strict=True)
     reg.eval()
@@ -213,6 +197,7 @@ def _load_tst_checkpoint(ckpt_path: Path, *, device: str) -> LoadedTstModel:
     n_emg_norm = int(extra.get("n_emg_norm", 0))
     task_cfg = ckpt.get("task_cfg", {})
     label_shift = int(task_cfg.get("label_shift", extra.get("label_shift", 0)))
+    label_scale = float(task_cfg.get("label_scale", extra.get("label_scale", 180.0)))
 
     return LoadedTstModel(
         model=reg,
@@ -223,6 +208,7 @@ def _load_tst_checkpoint(ckpt_path: Path, *, device: str) -> LoadedTstModel:
         ckpt_path=str(ckpt_path),
         n_emg_norm=int(n_emg_norm),
         label_shift=int(label_shift),
+        label_scale=float(label_scale),
     )
 
 
@@ -267,7 +253,17 @@ def _run_expected_feature_count(run_dir: Path) -> int | None:
     return None
 
 
-def _discover_latest_all_training_run(*, expected_n_features: int | None = None) -> Path | None:
+def _discover_latest_all_training_run(
+    *,
+    expected_n_features: int | None = None,
+    run_dir_override: Path | None = None,
+) -> Path | None:
+    if run_dir_override is not None:
+        cand = Path(run_dir_override).expanduser()
+        if cand.exists() and cand.is_dir():
+            if expected_n_features is None or _run_expected_feature_count(cand) == int(expected_n_features):
+                return cand
+        return None
     run_dirs = _all_training_run_dirs()
     if expected_n_features is None:
         return run_dirs[-1] if run_dirs else None
@@ -314,10 +310,20 @@ def _load_samples_dataset(cfg: EvalConfig) -> dict[str, Any] | None:
 
     thigh_n = int(data.get("thigh_n_features", 0))
     thigh_mode = str(data.get("thigh_mode", "")).strip().lower()
-    if thigh_n != 4 or thigh_mode != "quat":
+    thigh_pitch_seq = np.asarray(data.get("thigh_pitch_seq", np.zeros((0, 0), dtype=np.float32)), dtype=np.float32)
+    thigh_quat_seq = np.asarray(data.get("thigh_quat_seq", np.zeros((0, 0, 0), dtype=np.float32)), dtype=np.float32)
+    has_pitch_seq = bool(thigh_pitch_seq.ndim == 2 and int(thigh_pitch_seq.shape[0]) == N and int(thigh_pitch_seq.shape[1]) == W)
+    has_quat_seq = bool(
+        thigh_quat_seq.ndim == 3
+        and int(thigh_quat_seq.shape[0]) == N
+        and int(thigh_quat_seq.shape[1]) == W
+        and int(thigh_quat_seq.shape[2]) == 4
+    )
+    if not has_quat_seq and not has_pitch_seq and (thigh_n != 4 or thigh_mode != "quat"):
         raise RuntimeError(
             f"samples_dataset has thigh_mode={thigh_mode!r} thigh_n_features={thigh_n}; "
-            "this evaluation pipeline requires thigh_quat_wxyz (4D quaternion)."
+            "this evaluation pipeline requires either thigh_quat_wxyz (4D quaternion) "
+            "or stored thigh_quat_seq / thigh_pitch_seq for motion matching."
         )
 
     data["_samples_path"] = str(samples_path)
@@ -517,9 +523,14 @@ def _load_tst_fold_models_if_available(
     *,
     device: str,
     samples_data: dict[str, Any],
+    run_dir_override: Path | None = None,
+    allow_partial_coverage: bool = False,
 ) -> tuple[Path, dict[int, FoldAssignedTstModel]] | None:
     expected_n_features = int(np.asarray(samples_data["X"], dtype=np.float32).shape[2])
-    run_dir = _discover_latest_all_training_run(expected_n_features=expected_n_features)
+    run_dir = _discover_latest_all_training_run(
+        expected_n_features=expected_n_features,
+        run_dir_override=run_dir_override,
+    )
     if run_dir is None:
         run_dirs = _all_training_run_dirs()
         if not run_dirs:
@@ -564,6 +575,8 @@ def _load_tst_fold_models_if_available(
 
     expected_n = int(np.asarray(samples_data["X"]).shape[0])
     if len(sample_to_fold) != expected_n:
+        if bool(allow_partial_coverage) and len(sample_to_fold) > 0:
+            return run_dir, sample_to_fold
         raise RuntimeError(
             f"Held-out pool coverage mismatch: mapped {len(sample_to_fold)} sample windows, expected {expected_n}. "
             "Re-run training so each outer fold writes a split manifest."
@@ -585,6 +598,8 @@ def _load_rigtest_query_pool(
     file_id = np.asarray(samples_data.get("file_id", np.zeros((N,), dtype=np.int32)), dtype=np.int32).reshape(-1)
     starts = np.asarray(samples_data.get("start", np.zeros((N,), dtype=np.int32)), dtype=np.int32).reshape(-1)
     sample_hz = float(samples_data.get("sample_hz", cfg.window_hz))
+    thigh_pitch_seq = np.asarray(samples_data.get("thigh_pitch_seq", np.zeros((0, 0), dtype=np.float32)), dtype=np.float32)
+    has_pitch_seq = bool(thigh_pitch_seq.ndim == 2 and int(thigh_pitch_seq.shape[0]) == N and int(thigh_pitch_seq.shape[1]) == W)
 
     idxs = np.asarray(sorted(sample_to_fold.keys()), dtype=np.int64)
     rng = np.random.default_rng(int(seed))
@@ -594,7 +609,12 @@ def _load_rigtest_query_pool(
     for idx in idxs.tolist():
         idx = int(idx)
         xw = X[idx]
-        q = _normalize_quat_series_wxyz(xw[:, F - 4 : F])
+        if has_pitch_seq:
+            q_pitch = np.asarray(thigh_pitch_seq[idx], dtype=np.float32).reshape(-1)
+            q = _pitch_deg_to_quat_series_wxyz(q_pitch)
+        else:
+            q_pitch = None
+            q = _normalize_quat_series_wxyz(xw[:, F - 4 : F])
         knee_inc = np.asarray(y_seq[idx], dtype=np.float32).reshape(-1)
         if knee_inc.size != W:
             knee_inc = knee_inc[:W]
@@ -617,7 +637,7 @@ def _load_rigtest_query_pool(
                 sample_hz=float(sample_hz),
                 thigh_quat_wxyz=q.astype(np.float32),
                 knee_included_deg=knee_inc.astype(np.float32),
-                thigh_pitch_deg=None,
+                thigh_pitch_deg=None if q_pitch is None else q_pitch.astype(np.float32),
                 X_raw=xw.astype(np.float32),
                 dataset_index=int(idx),
                 file_id=fid,
@@ -632,7 +652,7 @@ def _load_rigtest_query_pool(
 
 
 def _load_tst_model_if_available(*, device: str, expected_n_features: int | None = None) -> LoadedTstModel | None:
-    """Auto-discover and load a TST checkpoint if present.
+    """Auto-discover and load a sensor-fusion checkpoint if present.
 
     Selection policy (no CLI flags):
     - Prefer the latest training run directory that ends with `_all` (the default
@@ -671,7 +691,7 @@ def _predict_knee_included_deg_for_window(model: LoadedTstModel, X_raw: np.ndarr
     try:
         import torch
     except Exception as e:  # pragma: no cover
-        raise RuntimeError("PyTorch is required to run the TST model.") from e
+        raise RuntimeError("PyTorch is required to run the sensor-fusion model.") from e
 
     x = np.asarray(X_raw, dtype=np.float32)
     if x.ndim != 2:
@@ -703,7 +723,7 @@ def _predict_knee_included_deg_for_window(model: LoadedTstModel, X_raw: np.ndarr
         pred = rolling_last_step_predict(model.model, xb).numpy().astype(np.float32)
     if pred.shape != (W,):
         pred = pred.reshape(-1)[:W].astype(np.float32)
-    return pred
+    return (pred * float(model.label_scale)).astype(np.float32)
 
 
 def _align_future_forecast_to_control(
@@ -755,6 +775,23 @@ def _normalize_quat_series_wxyz(q: np.ndarray) -> np.ndarray:
     return out.astype(np.float32)
 
 
+def _pitch_deg_to_quat_series_wxyz(pitch_deg: np.ndarray) -> np.ndarray:
+    pitch = np.asarray(pitch_deg, dtype=np.float64).reshape(-1)
+    if pitch.size < 1:
+        return np.zeros((0, 4), dtype=np.float32)
+    half = 0.5 * np.deg2rad(pitch)
+    q = np.stack(
+        [
+            np.cos(half),
+            np.zeros_like(half),
+            np.sin(half),
+            np.zeros_like(half),
+        ],
+        axis=1,
+    )
+    return _normalize_quat_series_wxyz(q)
+
+
 def _load_rigtest_query_windows(cfg: EvalConfig, *, max_n: int, seed: int) -> list[QueryWindow]:
     samples_path = Path(cfg.rig_samples_path).expanduser()
     if not samples_path.exists():
@@ -777,10 +814,20 @@ def _load_rigtest_query_windows(cfg: EvalConfig, *, max_n: int, seed: int) -> li
 
     thigh_n = int(data.get("thigh_n_features", 0))
     thigh_mode = str(data.get("thigh_mode", "")).strip().lower()
-    if thigh_n != 4 or thigh_mode != "quat":
+    thigh_pitch_seq = np.asarray(data.get("thigh_pitch_seq", np.zeros((0, 0), dtype=np.float32)), dtype=np.float32)
+    thigh_quat_seq = np.asarray(data.get("thigh_quat_seq", np.zeros((0, 0, 0), dtype=np.float32)), dtype=np.float32)
+    has_pitch_seq = bool(thigh_pitch_seq.ndim == 2 and int(thigh_pitch_seq.shape[0]) == N and int(thigh_pitch_seq.shape[1]) == W)
+    has_quat_seq = bool(
+        thigh_quat_seq.ndim == 3
+        and int(thigh_quat_seq.shape[0]) == N
+        and int(thigh_quat_seq.shape[1]) == W
+        and int(thigh_quat_seq.shape[2]) == 4
+    )
+    if not has_quat_seq and not has_pitch_seq and (thigh_n != 4 or thigh_mode != "quat"):
         raise RuntimeError(
             f"samples_dataset has thigh_mode={thigh_mode!r} thigh_n_features={thigh_n}; "
-            "this evaluation pipeline requires thigh_quat_wxyz (4D quaternion)."
+            "this evaluation pipeline requires either thigh_quat_wxyz (4D quaternion) "
+            "or stored thigh_quat_seq / thigh_pitch_seq for motion matching."
         )
 
     file_names = data.get("file_names", None)
@@ -795,7 +842,17 @@ def _load_rigtest_query_windows(cfg: EvalConfig, *, max_n: int, seed: int) -> li
     for idx in idxs.tolist():
         idx = int(idx)
         xw = X[idx]
-        q = _normalize_quat_series_wxyz(xw[:, F - 4 : F])
+        if has_quat_seq:
+            q = _normalize_quat_series_wxyz(np.asarray(thigh_quat_seq[idx], dtype=np.float32).reshape(-1, 4))
+            q_pitch = None
+            if has_pitch_seq:
+                q_pitch = np.asarray(thigh_pitch_seq[idx], dtype=np.float32).reshape(-1)
+        elif has_pitch_seq:
+            q_pitch = np.asarray(thigh_pitch_seq[idx], dtype=np.float32).reshape(-1)
+            q = _pitch_deg_to_quat_series_wxyz(q_pitch)
+        else:
+            q_pitch = None
+            q = _normalize_quat_series_wxyz(xw[:, F - 4 : F])
         knee_inc = np.asarray(y_seq[idx], dtype=np.float32).reshape(-1)
         if knee_inc.size != W:
             knee_inc = knee_inc[:W]
@@ -817,7 +874,7 @@ def _load_rigtest_query_windows(cfg: EvalConfig, *, max_n: int, seed: int) -> li
                 sample_hz=float(cfg.window_hz),
                 thigh_quat_wxyz=q.astype(np.float32),
                 knee_included_deg=knee_inc.astype(np.float32),
-                thigh_pitch_deg=None,
+                thigh_pitch_deg=None if q_pitch is None else q_pitch.astype(np.float32),
                 X_raw=xw.astype(np.float32),
             )
         )
@@ -1010,25 +1067,36 @@ def _evaluate_query_window(
         ),
     )
 
+    feature_mode = str(cfg.match_feature_mode).strip().lower()
     thq = resample_quat_slerp_wxyz(q.thigh_quat_wxyz, src_hz=float(q.sample_hz), dst_hz=float(match_hz))
     kn_inc = resample_linear(q.knee_included_deg, src_hz=float(q.sample_hz), dst_hz=float(match_hz))
     kn_flex = (180.0 - np.asarray(kn_inc, dtype=np.float32)).astype(np.float32)
+    th_deg = None
+    if q.thigh_pitch_deg is not None:
+        th_deg = resample_linear(np.asarray(q.thigh_pitch_deg, dtype=np.float32), src_hz=float(q.sample_hz), dst_hz=float(match_hz))
 
-    L = int(min(int(thq.shape[0]), int(kn_flex.size)))
+    if feature_mode == "thigh_knee_d" and th_deg is not None:
+        L = int(min(int(th_deg.size), int(kn_flex.size)))
+    else:
+        L = int(min(int(thq.shape[0]), int(kn_flex.size)))
     if L < 2:
         raise RuntimeError(f"Query window too short after resampling (L={L}).")
     thq = thq[:L]
     kn_flex = kn_flex[:L]
+    if th_deg is not None:
+        th_deg = np.asarray(th_deg[:L], dtype=np.float32)
 
     print(f"[mocap_phys_eval] status: motion matching ({q.query_id})  bank={len(bank)}  L={L}")
     candidates = motion_match_one_window(
         bank=bank,
-        query_thigh_deg=None,
-        query_thigh_quat_wxyz=thq,
+        query_thigh_deg=th_deg,
+        query_thigh_quat_wxyz=(None if feature_mode == "thigh_knee_d" else thq),
         query_knee_deg=kn_flex,
         top_k=int(cfg.match_top_k),
         local_refine_radius=int(cfg.match_local_refine_radius),
-        feature_mode=str(cfg.match_feature_mode),
+        feature_mode=feature_mode,
+        knee_weight=float(cfg.match_knee_weight),
+        thigh_weight=float(cfg.match_thigh_weight),
     )
     if not candidates:
         raise RuntimeError("No motion-match candidates found.")
@@ -1039,21 +1107,33 @@ def _evaluate_query_window(
 
     ref_kn_full = np.asarray(bank.knee_deg[bi], dtype=np.float32).reshape(-1)
     ref_kn = ref_kn_full[int(cand.start_step) : int(cand.start_step) + L]
-    ref_thq_full = np.asarray(bank.thigh_anat_quat_world_wxyz[bi], dtype=np.float32).reshape(-1, 4)
-    ref_thq = ref_thq_full[int(cand.start_step) : int(cand.start_step) + L]
-
-    query_thq_al = _align_query_thigh_quat(query_thq=thq, cand=cand)
-    thigh_err_deg = quat_geodesic_deg_wxyz(quat_normalize_wxyz(ref_thq), quat_normalize_wxyz(query_thq_al)).astype(
-        np.float32
-    )
+    if feature_mode == "thigh_knee_d":
+        if th_deg is None:
+            raise RuntimeError("Scalar motion matching requires query thigh pitch.")
+        ref_th_full = np.asarray(bank.thigh_pitch_deg[bi], dtype=np.float32).reshape(-1)
+        ref_th = ref_th_full[int(cand.start_step) : int(cand.start_step) + L]
+        query_th_al = (float(cand.thigh_sign) * th_deg + float(cand.thigh_offset_deg)).astype(np.float32)
+        thigh_err_deg = np.abs(query_th_al - ref_th).astype(np.float32)
+        query_thq_al = None
+        ref_thq = None
+    else:
+        ref_thq_full = np.asarray(bank.thigh_anat_quat_world_wxyz[bi], dtype=np.float32).reshape(-1, 4)
+        ref_thq = ref_thq_full[int(cand.start_step) : int(cand.start_step) + L]
+        query_thq_al = _align_query_thigh_quat(query_thq=thq, cand=cand)
+        thigh_err_deg = quat_geodesic_deg_wxyz(
+            quat_normalize_wxyz(ref_thq),
+            quat_normalize_wxyz(query_thq_al),
+        ).astype(np.float32)
+        ref_th = None
+        query_th_al = None
     kn_al = (float(cand.knee_sign) * kn_flex + float(cand.knee_offset_deg)).astype(np.float32)
 
     mm_plot = plot_motion_match(
         out_path=plots_dir / "motion_match.png",
         sample_hz=float(match_hz),
-        ref_thigh_deg=None,
+        ref_thigh_deg=ref_th,
         ref_knee_deg=ref_kn,
-        query_thigh_aligned_deg=None,
+        query_thigh_aligned_deg=query_th_al,
         query_knee_aligned_deg=kn_al,
         rmse_thigh_deg=float(cand.rmse_thigh_deg),
         rmse_knee_deg=float(cand.rmse_knee_deg),
@@ -1061,14 +1141,17 @@ def _evaluate_query_window(
         title=f"Motion Match  query={q.query_id}  snippet={cand.snippet_id}  start_in_snip={cand.start_step}  L={L}",
     )
 
-    quat_plot = plot_thigh_quat_match(
-        out_path=plots_dir / "thigh_quat_match.png",
-        sample_hz=float(match_hz),
-        ref_thigh_quat_wxyz=np.asarray(ref_thq, dtype=np.float32),
-        query_thigh_quat_aligned_wxyz=np.asarray(query_thq_al, dtype=np.float32),
-        thigh_ori_err_deg=np.asarray(thigh_err_deg, dtype=np.float32),
-        title="Thigh Quaternion Match (ref vs query aligned)",
-    )
+    if feature_mode == "thigh_knee_d":
+        quat_plot = mm_plot
+    else:
+        quat_plot = plot_thigh_quat_match(
+            out_path=plots_dir / "thigh_quat_match.png",
+            sample_hz=float(match_hz),
+            ref_thigh_quat_wxyz=np.asarray(ref_thq, dtype=np.float32),
+            query_thigh_quat_aligned_wxyz=np.asarray(query_thq_al, dtype=np.float32),
+            thigh_ori_err_deg=np.asarray(thigh_err_deg, dtype=np.float32),
+            title="Thigh Quaternion Match (ref vs query aligned)",
+        )
 
     good_kn_flex = kn_flex.copy()
     pred_included_200 = None
@@ -1126,7 +1209,7 @@ def _evaluate_query_window(
     override = OverrideSpec(knee_actuator=str(cfg.knee_actuator), knee_sign=1.0, knee_offset_deg=0.0)
 
     # BAD panel is only meaningful for demo/oracle mode (no real model).
-    # When a TST model is available, show only REF | PRED (the model's override).
+    # When a trained model is available, show only REF | PRED (the model's override).
     run_bad = bool(tst is None or q.X_raw is None)
 
     sim_label = "REF|PRED|BAD" if run_bad else "REF|PRED"
@@ -1153,7 +1236,8 @@ def _evaluate_query_window(
         run_bad=bool(run_bad),
     )
 
-    rr = np.load(rec_paths.npz_path, allow_pickle=True)
+    with np.load(rec_paths.npz_path, allow_pickle=True) as rr0:
+        rr = {str(k): rr0[k] for k in rr0.files}
     dt = float(np.asarray(rr["dt"]).reshape(()))
     knee_ref_actual = np.asarray(rr["knee_ref_actual_deg"], dtype=np.float32)
     knee_good_actual = np.asarray(rr["knee_good_actual_deg"], dtype=np.float32)
@@ -1347,7 +1431,12 @@ def main() -> None:
     queries: list[QueryWindow] = []
 
     if samples_data is not None:
-        loaded = _load_tst_fold_models_if_available(device=str(cfg.device), samples_data=samples_data)
+        loaded = _load_tst_fold_models_if_available(
+            device=str(cfg.device),
+            samples_data=samples_data,
+            run_dir_override=cfg.tst_run_dir_override,
+            allow_partial_coverage=bool(cfg.allow_partial_coverage),
+        )
         if loaded is None:
             raise RuntimeError(
                 "Found samples_dataset.npy, but no trained LOFO `_all` run with fold checkpoints was found. "
@@ -1362,6 +1451,8 @@ def main() -> None:
             seed=int(getattr(cfg, "paper_eval_seed", 42)),
         )
         query_mode = "rigtest_paper_lofo"
+        if len(queries) < target_successes and bool(cfg.allow_partial_coverage):
+            target_successes = int(len(queries))
         if len(queries) < target_successes:
             raise RuntimeError(
                 f"Paper protocol requires {target_successes} successful held-out trials, but the held-out pool only "

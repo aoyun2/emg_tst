@@ -9,6 +9,40 @@ _MODELS_DIR = Path(os.environ.get("MOCAPACT_MODELS_DIR", "mocapact_models")).exp
 _ARTIFACTS_DIR = Path(os.environ.get("MOCAP_PHYS_EVAL_ARTIFACTS_DIR", str(Path("artifacts") / "phys_eval_v2"))).expanduser()
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return int(default)
+    try:
+        return int(raw)
+    except Exception:
+        return int(default)
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return float(default)
+    try:
+        return float(raw)
+    except Exception:
+        return float(default)
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return bool(default)
+    return raw in {"1", "true", "yes", "y", "on"}
+
+
+def _env_opt_path(name: str) -> Path | None:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    return Path(raw).expanduser()
+
+
 @dataclass(frozen=True)
 class EvalConfig:
     # Outputs.
@@ -16,7 +50,7 @@ class EvalConfig:
 
     # MoCapAct multi-clip policy checkpoint (already present in this repo).
     multiclip_ckpt: Path = _MODELS_DIR / "multiclip_policy" / "full_dataset" / "model" / "model.ckpt"
-    device: str = "cpu"
+    device: str = os.environ.get("MOCAP_PHYS_EVAL_DEVICE", "cpu")
 
     # MoCapAct per-snippet experts (~2589). The pipeline will auto-download+extract if missing.
     experts_root: Path = _MODELS_DIR / "experts"
@@ -31,19 +65,26 @@ class EvalConfig:
     # Paper protocol on real rigtest data:
     # sample from the held-out LOFO pool with a fixed random seed and keep
     # replacing failed trials until this many successful evaluations are obtained.
-    paper_eval_n_trials: int = 80
-    paper_eval_seed: int = 42
+    paper_eval_n_trials: int = _env_int("MOCAP_PHYS_EVAL_N_TRIALS", 80)
+    paper_eval_seed: int = _env_int("MOCAP_PHYS_EVAL_SEED", 42)
     # Demo-only fallback window count when rigtest samples / trained folds are unavailable.
     demo_n_windows: int = 3
 
     # Rigtest samples dataset (produced by split_to_samples.py).
     rig_samples_path: Path = Path("samples_dataset.npy")
+    # Optional override for nonstandard / external training runs (for example a
+    # subject-holdout benchmark stored outside `checkpoints/*_all`).
+    tst_run_dir_override: Path | None = _env_opt_path("EMG_TST_RUN_DIR")
+    allow_partial_coverage: bool = _env_bool("MOCAP_PHYS_EVAL_ALLOW_PARTIAL", False)
 
     # Motion matching.
     match_top_k: int = 12
     match_local_refine_radius: int = 15
-    # Use thigh quaternion *relative rotation* (log) + knee derivatives for offset-invariant coarse search.
+    # GT now derives a true marker-based right-thigh segment quaternion from the raw
+    # mocap marker data. Use 3D thigh-orientation + knee-derivative matching by default.
     match_feature_mode: str = "dquat_knee_d"
+    match_knee_weight: float = _env_float("MOCAP_PHYS_EVAL_MATCH_KNEE_WEIGHT", 1.0)
+    match_thigh_weight: float = _env_float("MOCAP_PHYS_EVAL_MATCH_THIGH_WEIGHT", 0.1)
 
     # Compare rollout recording.
     render_width: int = 480

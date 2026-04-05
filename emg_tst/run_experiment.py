@@ -9,16 +9,17 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, SubsetRandomSampler
 from tqdm import tqdm
 
 from emg_tst.data import load_recording
-from emg_tst.model import SensorFusionTransformer, rolling_last_step_predict
+from emg_tst.model import build_last_step_model, rolling_last_step_predict
 
 # ==========================================
 # Hard-coded training config (NO CLI FLAGS)
 # ==========================================
 DATA_GLOB = "data*.npy"
+GT_DATA_GLOB = "gt_data*.npy"
 SAVE_DIR = Path("checkpoints")
 RUN_NAME = datetime.now().strftime("tst_%Y%m%d_%H%M%S")
 
@@ -27,30 +28,35 @@ K_FOLDS = 5
 
 # Windowing / task
 SOURCE_WINDOW = 200
-CONTEXT_WINDOW = 100
+CONTEXT_WINDOW = 200
 TRAIN_STRIDE = 1
 EVAL_STRIDE = 1
-LABEL_SHIFT = 0
+LABEL_SHIFT = 1
 VAL_FRAC_FALLBACK = 0.1
 LABEL_SCALE = 180.0
 
 # Model
-D_MODEL = 96
-N_HEADS = 6
-D_FF = 192
-N_LAYERS = 3
-DROPOUT = 0.20
-CAUSAL_ATTENTION = False
+MODEL_ARCH = "cnn_bilstm"
+STEM_WIDTH = 32
+DROPOUT = 0.10
+TCN_KERNEL_SIZE = 5
+TCN_DILATIONS = (1, 2, 4, 8, 16)
+LSTM_HIDDEN_SIZE = 64
+LSTM_LAYERS = 2
+CNN_DEPTH = 2
 
 # Training
-BATCH_SIZE = 256
+BATCH_SIZE = 128
 LR = 1e-3
 WEIGHT_DECAY = 1e-4
-EPOCHS = 20
-EARLY_STOP_PATIENCE = 5
-TRAIN_NOISE_STD = 0.02
-TRAIN_DROP_IMU_PROB = 0.30
-PRED_BATCH_SIZE = 512
+EPOCHS = 6
+EARLY_STOP_PATIENCE = 2
+TRAIN_NOISE_STD = 0.0
+TRAIN_DROP_IMU_PROB = 0.0
+PRED_BATCH_SIZE = 64
+TRAIN_SAMPLES_PER_EPOCH = 8192
+LOSS_NAME = "huber"
+HUBER_DELTA_DEG = 5.0
 
 
 def set_seed(seed: int) -> None:
@@ -132,7 +138,9 @@ class LazyWindowDataset(Dataset):
         start_i = int(start)
         stop_i = start_i + int(SOURCE_WINDOW)
         x = self.X_list[int(file_i)][start_i:stop_i].astype(np.float32)
-        y = float(self.y_list[int(file_i)][stop_i - 1]) / float(LABEL_SCALE)
+        y_series = self.y_list[int(file_i)]
+        y_idx = min(int(stop_i - 1 + int(LABEL_SHIFT)), int(y_series.shape[0]) - 1)
+        y = float(y_series[y_idx]) / float(LABEL_SCALE)
         x = (x - self.mean[None, :]) / self.std[None, :]
         x = x[:, self.feature_cols]
         if self.context_window < int(x.shape[0]):
@@ -146,7 +154,8 @@ class LazyWindowDataset(Dataset):
 
 
 def _discover_recording_paths() -> list[Path]:
-    paths = sorted(Path(".").glob(DATA_GLOB))
+    gt_paths = sorted(Path(".").glob(GT_DATA_GLOB))
+    paths = gt_paths if gt_paths else sorted(Path(".").glob(DATA_GLOB))
     out = []
     for p in paths:
         if p.name == "samples_dataset.npy" or "samples_" in p.name:
@@ -290,14 +299,138 @@ def _training_label_mean_norm(corpus: RecordingCorpus, train_windows: np.ndarray
     vals = []
     for fid, start in np.asarray(train_windows, dtype=np.int64).reshape(-1, 2).tolist():
         stop = int(start) + int(SOURCE_WINDOW)
-        vals.append(float(corpus.y_list[int(fid)][stop - 1]) / float(LABEL_SCALE))
+        y_series = corpus.y_list[int(fid)]
+        y_idx = min(int(stop - 1 + int(LABEL_SHIFT)), int(y_series.shape[0]) - 1)
+        vals.append(float(y_series[y_idx]) / float(LABEL_SCALE))
     if not vals:
         return 0.5
     return float(np.mean(np.asarray(vals, dtype=np.float64)))
 
 
+def _set_last_linear_bias(module: nn.Module | None, value: float) -> bool:
+    if module is None:
+        return False
+    if isinstance(module, nn.Linear):
+        with torch.no_grad():
+            module.bias.fill_(float(value))
+        return True
+    if isinstance(module, nn.Sequential):
+        for sub in reversed(list(module)):
+            if _set_last_linear_bias(sub, float(value)):
+                return True
+    return False
+
+
+def _model_cfg(*, n_emg_selected: int, n_imu_selected: int) -> dict:
+    arch = str(MODEL_ARCH).strip().lower()
+    model_type = str(MODEL_ARCH)
+    if arch == "residual_tcn" and (int(n_emg_selected) < 1 or int(n_imu_selected) < 1):
+        model_type = "direct_tcn"
+    cfg = {
+        "model_type": str(model_type),
+        "n_emg_vars": int(n_emg_selected),
+        "n_imu_vars": int(n_imu_selected),
+        "seq_len": int(CONTEXT_WINDOW),
+        "stem_width": int(STEM_WIDTH),
+        "dropout": float(DROPOUT),
+    }
+    cfg_arch = str(model_type).strip().lower()
+    if cfg_arch == "tcn":
+        cfg["kernel_size"] = int(TCN_KERNEL_SIZE)
+        cfg["dilations"] = [int(x) for x in TCN_DILATIONS]
+    elif cfg_arch == "direct_tcn":
+        cfg["kernel_size"] = int(TCN_KERNEL_SIZE)
+        cfg["depth"] = 4
+    elif cfg_arch == "residual_tcn":
+        cfg["kernel_size"] = int(TCN_KERNEL_SIZE)
+        cfg["depth"] = 3
+    elif cfg_arch == "lstm":
+        cfg["hidden_size"] = int(LSTM_HIDDEN_SIZE)
+        cfg["n_layers"] = int(LSTM_LAYERS)
+    elif cfg_arch == "cnn_bilstm":
+        cfg["hidden_size"] = int(LSTM_HIDDEN_SIZE)
+        cfg["n_layers"] = int(LSTM_LAYERS)
+        cfg["kernel_size"] = int(TCN_KERNEL_SIZE)
+        cfg["depth"] = int(CNN_DEPTH)
+    else:
+        raise RuntimeError(f"Unsupported MODEL_ARCH={model_type!r}")
+    return cfg
+
+
+def _architecture_summary() -> dict:
+    arch = str(MODEL_ARCH).strip().lower()
+    if arch == "tcn":
+        return {
+            "architecture": "sensor_fusion_last_step_tcn",
+            "stem_width": int(STEM_WIDTH),
+            "kernel_size": int(TCN_KERNEL_SIZE),
+            "dilations": [int(x) for x in TCN_DILATIONS],
+            "dropout": float(DROPOUT),
+        }
+    if arch == "direct_tcn":
+        return {
+            "architecture": "direct_last_step_tcn",
+            "width": int(STEM_WIDTH),
+            "kernel_size": int(TCN_KERNEL_SIZE),
+            "depth": 4,
+            "dropout": float(DROPOUT),
+        }
+    if arch == "residual_tcn":
+        return {
+            "architecture": "residual_fusion_tcn",
+            "width": int(STEM_WIDTH),
+            "kernel_size": int(TCN_KERNEL_SIZE),
+            "depth": 3,
+            "dropout": float(DROPOUT),
+        }
+    if arch == "lstm":
+        return {
+            "architecture": "sensor_fusion_last_step_lstm",
+            "stem_width": int(STEM_WIDTH),
+            "hidden_size": int(LSTM_HIDDEN_SIZE),
+            "n_layers": int(LSTM_LAYERS),
+            "dropout": float(DROPOUT),
+        }
+    if arch == "cnn_bilstm":
+        return {
+            "architecture": "cnn_bilstm_last_step",
+            "conv_width": int(STEM_WIDTH),
+            "conv_kernel_size": int(TCN_KERNEL_SIZE),
+            "conv_depth": int(CNN_DEPTH),
+            "hidden_size": int(LSTM_HIDDEN_SIZE),
+            "n_layers": int(LSTM_LAYERS),
+            "bidirectional": True,
+            "dropout": float(DROPOUT),
+        }
+    raise RuntimeError(f"Unsupported MODEL_ARCH={MODEL_ARCH!r}")
+
+
+def _make_epoch_train_loader(ds_train: Dataset, *, seed: int, epoch: int) -> DataLoader:
+    n_total = int(len(ds_train))
+    if n_total < 1:
+        raise RuntimeError("Training dataset is empty.")
+    n_take = int(min(n_total, int(TRAIN_SAMPLES_PER_EPOCH)))
+    if n_take >= n_total:
+        return DataLoader(
+            ds_train,
+            batch_size=min(int(BATCH_SIZE), n_total),
+            shuffle=True,
+            drop_last=n_total > int(BATCH_SIZE),
+        )
+
+    rng = np.random.default_rng(int(seed) + int(epoch) * 100003)
+    idx = rng.choice(n_total, size=n_take, replace=False).astype(np.int64).tolist()
+    sampler = SubsetRandomSampler(idx)
+    return DataLoader(
+        ds_train,
+        batch_size=min(int(BATCH_SIZE), n_take),
+        sampler=sampler,
+        drop_last=n_take > int(BATCH_SIZE),
+    )
+
+
 @torch.no_grad()
-def eval_last_step(model: SensorFusionTransformer, loader: DataLoader, device: torch.device) -> dict[str, float]:
+def eval_last_step(model: nn.Module, loader: DataLoader, device: torch.device) -> dict[str, float]:
     model.eval()
     se = 0.0
     ae = 0.0
@@ -318,7 +451,7 @@ def eval_last_step(model: SensorFusionTransformer, loader: DataLoader, device: t
 
 @torch.no_grad()
 def eval_recording_rollout(
-    model: SensorFusionTransformer,
+    model: nn.Module,
     *,
     corpus: RecordingCorpus,
     file_ids: tuple[int, ...],
@@ -337,10 +470,18 @@ def eval_recording_rollout(
         xs = xn[:, feature_cols]
         pred = rolling_last_step_predict(model, xs, batch_size=int(PRED_BATCH_SIZE)).numpy().astype(np.float32)
         gt = corpus.y_list[int(fid)].astype(np.float32)
-        m = int(min(pred.size, gt.size))
+        shift = int(max(0, int(LABEL_SHIFT)))
+        if shift > 0:
+            m = int(min(pred.size, max(0, gt.size - shift)))
+            gt_cmp = gt[shift : shift + m]
+            pred_cmp = pred[:m]
+        else:
+            m = int(min(pred.size, gt.size))
+            gt_cmp = gt[:m]
+            pred_cmp = pred[:m]
         if m < 1:
             continue
-        diff = (pred[:m] * float(LABEL_SCALE)) - gt[:m]
+        diff = (pred_cmp * float(LABEL_SCALE)) - gt_cmp
         se += float(np.sum(diff * diff))
         ae += float(np.sum(np.abs(diff)))
         n += int(m)
@@ -353,7 +494,7 @@ def eval_recording_rollout(
 def _save_checkpoint(
     path: Path,
     *,
-    model: SensorFusionTransformer,
+    model: nn.Module,
     mean: np.ndarray,
     std: np.ndarray,
     feature_cols: np.ndarray,
@@ -365,19 +506,7 @@ def _save_checkpoint(
     ckpt = {
         "model_state_dict": cpu_state,
         "reg_state_dict": cpu_state,
-        "model_cfg": {
-            "model_type": "sensor_fusion_last_step_transformer",
-            "n_vars": int(feature_cols.size),
-            "n_emg_vars": int(model.n_emg_vars),
-            "n_imu_vars": int(model.n_imu_vars),
-            "seq_len": int(model.seq_len),
-            "d_model": int(model.d_model),
-            "n_heads": int(model.n_heads),
-            "d_ff": int(model.d_ff),
-            "n_layers": int(model.n_layers),
-            "dropout": float(model.dropout),
-            "causal": bool(model.causal),
-        },
+        "model_cfg": dict(getattr(model, "cfg_dict", {})) | {"n_vars": int(feature_cols.size)},
         "task_cfg": {
             "predict_last_only": True,
             "label_shift": int(LABEL_SHIFT),
@@ -469,27 +598,31 @@ def train_one_fold(
     if len(ds_test) < 1:
         raise RuntimeError("Test fold has no windows.")
 
-    dl_train = DataLoader(ds_train, batch_size=min(int(BATCH_SIZE), len(ds_train)), shuffle=True, drop_last=len(ds_train) > int(BATCH_SIZE))
     dl_val = DataLoader(ds_val, batch_size=min(int(PRED_BATCH_SIZE), max(len(ds_val), 1)), shuffle=False) if len(ds_val) > 0 else None
     dl_test = DataLoader(ds_test, batch_size=min(int(PRED_BATCH_SIZE), len(ds_test)), shuffle=False)
 
-    model = SensorFusionTransformer(
-        n_emg_vars=int(n_emg_selected),
-        n_imu_vars=int(n_imu_selected),
-        seq_len=int(CONTEXT_WINDOW),
-        d_model=int(D_MODEL),
-        n_heads=int(N_HEADS),
-        d_ff=int(D_FF),
-        n_layers=int(N_LAYERS),
-        dropout=float(DROPOUT),
-        causal=bool(CAUSAL_ATTENTION),
-    ).to(device)
+    model_cfg = _model_cfg(n_emg_selected=int(n_emg_selected), n_imu_selected=int(n_imu_selected))
+    model = build_last_step_model(**model_cfg).to(device)
+    model.cfg_dict = dict(model_cfg)
 
     with torch.no_grad():
-        model.head.bias.fill_(_training_label_mean_norm(corpus, train_windows))
+        y0 = _training_label_mean_norm(corpus, train_windows)
+        if hasattr(model, "head") and getattr(model, "head") is not None:
+            _set_last_linear_bias(getattr(model, "head"), y0)
+        elif hasattr(model, "thigh_branch") and hasattr(model.thigh_branch, "head"):
+            _set_last_linear_bias(getattr(model.thigh_branch, "head"), y0)
 
-    opt = torch.optim.Adam(model.parameters(), lr=float(LR), weight_decay=float(WEIGHT_DECAY))
-    mse = nn.MSELoss()
+    opt = torch.optim.Adam(
+        model.parameters(),
+        lr=float(LR),
+        weight_decay=float(WEIGHT_DECAY),
+    )
+    if str(LOSS_NAME).strip().lower() == "huber":
+        loss_fn = nn.SmoothL1Loss(beta=float(HUBER_DELTA_DEG) / float(LABEL_SCALE))
+    elif str(LOSS_NAME).strip().lower() == "mse":
+        loss_fn = nn.MSELoss()
+    else:
+        raise RuntimeError(f"Unsupported LOSS_NAME={LOSS_NAME!r}")
     best_val_rmse = float("inf")
     best_epoch = 0
     best_state = None
@@ -511,14 +644,15 @@ def train_one_fold(
     }
 
     if not quiet:
+        epoch_train_take = int(min(len(ds_train), int(TRAIN_SAMPLES_PER_EPOCH)))
         print(
             f"fold={int(fold_i)} label={label} train={len(ds_train)} val={len(ds_val)} "
-            f"test={len(ds_test)} vars={int(feature_cols.size)}"
+            f"test={len(ds_test)} vars={int(feature_cols.size)} epoch_train_take={epoch_train_take}"
         )
 
     it = tqdm(
         range(1, int(epochs) + 1),
-        desc=f"Finetune-{label}-F{int(fold_i):02d}",
+        desc=f"Train-{label}-F{int(fold_i):02d}",
         unit="epoch",
         disable=quiet,
         dynamic_ncols=True,
@@ -527,11 +661,12 @@ def train_one_fold(
         model.train()
         se_train = 0.0
         n_train = 0
+        dl_train = _make_epoch_train_loader(ds_train, seed=int(SEED + fold_i * 1000), epoch=int(epoch))
         for xb, yb in dl_train:
             xb = xb.to(device)
             yb = yb.to(device)
             pred = model(xb)
-            loss = mse(pred, yb[:, 0])
+            loss = loss_fn(pred, yb[:, 0])
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -657,7 +792,7 @@ def _train_cv(
 ) -> list[dict]:
     n_files = int(len(corpus.file_names))
     if n_files < 2:
-        raise RuntimeError("The transformer training pipeline requires at least two recording files for LOFO evaluation.")
+        raise RuntimeError("The sensor-fusion training pipeline requires at least two recording files for LOFO evaluation.")
 
     all_fold_metrics: list[dict] = []
     cv_manifest = {
@@ -737,15 +872,20 @@ def _ablation_configs(corpus: RecordingCorpus) -> list[tuple[str, np.ndarray, in
 
 def main():
     set_seed(SEED)
+    arch = str(MODEL_ARCH).strip().lower()
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
+        print("Using CUDA GPU")
     else:
         try:
             import torch_directml
-
-            device = torch_directml.device()
-            print("Using DirectML (AMD GPU)")
+            if arch in {"lstm", "cnn_bilstm"}:
+                device = torch.device("cpu")
+                print("DirectML does not support this LSTM-based architecture cleanly; using CPU")
+            else:
+                device = torch_directml.device()
+                print("Using DirectML (AMD GPU)")
         except ImportError:
             device = torch.device("cpu")
             print("DirectML not found, using CPU. Install with: pip install torch-directml")
@@ -760,6 +900,7 @@ def main():
         f"Training windows: source={int(SOURCE_WINDOW)} context={int(CONTEXT_WINDOW)} "
         f"train_stride={int(TRAIN_STRIDE)} eval_stride={int(EVAL_STRIDE)}"
     )
+    print(f"Model architecture: {_architecture_summary()['architecture']}")
     for i, name in enumerate(corpus.file_names):
         n_steps = int(corpus.y_list[i].shape[0])
         n_train_windows = max(0, n_steps - int(SOURCE_WINDOW) + 1)
@@ -825,21 +966,15 @@ def main():
             "train_stride": int(TRAIN_STRIDE),
             "eval_stride": int(EVAL_STRIDE),
             "label_shift": int(LABEL_SHIFT),
-            "model": {
-                "architecture": "sensor_fusion_last_step_transformer",
-                "d_model": int(D_MODEL),
-                "n_heads": int(N_HEADS),
-                "d_ff": int(D_FF),
-                "n_layers": int(N_LAYERS),
-                "dropout": float(DROPOUT),
-                "causal": bool(CAUSAL_ATTENTION),
-            },
+            "model": _architecture_summary(),
             "train": {
                 "batch_size": int(BATCH_SIZE),
                 "lr": float(LR),
                 "weight_decay": float(WEIGHT_DECAY),
                 "epochs": int(EPOCHS),
                 "early_stop_patience": int(EARLY_STOP_PATIENCE),
+                "loss_name": str(LOSS_NAME),
+                "huber_delta_deg": float(HUBER_DELTA_DEG),
                 "train_noise_std": float(TRAIN_NOISE_STD),
                 "train_drop_imu_prob": float(TRAIN_DROP_IMU_PROB),
             },

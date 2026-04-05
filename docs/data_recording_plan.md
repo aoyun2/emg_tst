@@ -4,7 +4,7 @@ This document is the full runbook for reproducing the paper methodology in this 
 
 1. Record wearable data
 2. Build the 1.0 s windowed dataset (stride 30 / 85% overlap)
-3. Train the TST with leave-one-file-out (LOFO) cross-validation
+3. Train the sensor-fusion TCN with leave-one-file-out (LOFO) cross-validation
 4. Run the MoCapAct physical evaluation on held-out LOFO windows only
 5. Compute the final partial Spearman correlation using balance-risk AUC
 
@@ -19,20 +19,19 @@ The implemented methodology is:
 1. Signal preprocessing
    - Resample recordings to 200 Hz
    - Extract causal raw EMG snippets per timestep
-2. Transformer training
-   - Encoder-only TST
-   - Masked reconstruction pretraining
-   - Regression fine-tuning
+2. Model training
+   - Sensor-fusion TCN
+   - Direct supervised regression
    - Outer split: leave-one-file-out (LOFO)
    - Inner validation: one additional training file held out inside each outer fold
 3. Physical evaluation
    - Use only held-out LOFO test windows
    - Match each window to the MoCapAct reference bank
    - Run MuJoCo with the matched expert policy
-   - Override the right knee with the fold-matched TST prediction
+   - Override the right knee with the fold-matched model prediction
    - Record balance-risk AUC
 4. Statistics
-   - Predictor: TST knee RMSE against ground truth
+   - Predictor: model knee RMSE against ground truth
    - Outcome: balance-risk AUC from the `PRED` rollout
    - Controls: motion-match knee RMSE and thigh orientation RMS geodesic error
    - Test: partial Spearman rho via rank transform + OLS residualization
@@ -47,8 +46,8 @@ Each recording session captures:
 
 | Stream | Hardware | Placement | Rate | Used For |
 |---|---|---|---|---|
-| 3 x sEMG | uMyo sensors via USB base | Upper right thigh: VM, SM, BF | about 400 Hz raw | TST EMG input |
-| 1 x IMU quaternion | uMyo sensor 2 | Right thigh | about 200 Hz | TST thigh quaternion input + knee label derivation |
+| 3 x sEMG | uMyo sensors via USB base | Upper right thigh: VM, SM, BF | about 400 Hz raw | model EMG input |
+| 1 x IMU quaternion | uMyo sensor 2 | Right thigh | about 200 Hz | model thigh quaternion input + knee label derivation |
 | 1 x IMU quaternion | BWT901CL | Right shin/calf | 200 Hz | Knee label derivation |
 
 The knee label is computed online in `rigtest_gui.py`:
@@ -232,7 +231,7 @@ If `samples_dataset.npy` is missing or malformed, the evaluator cannot run the r
 
 ---
 
-## 7. Train the TST
+## 7. Train the Model
 
 Run:
 
@@ -296,7 +295,7 @@ When `samples_dataset.npy` and a trained `_all` LOFO run are present, the evalua
 5. Motion-matches each window to the MoCapAct bank
 6. Simulates:
    - `REF`: no override
-   - `PRED`: right knee forced to the TST prediction
+   - `PRED`: right knee forced to the model prediction
    - `BAD`: auxiliary diagnostic only
 7. If a sampled window fails motion matching or simulation, discards it
 8. Continues to the next seeded held-out window until `80` successful trials are retained

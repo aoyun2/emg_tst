@@ -7,11 +7,12 @@ from emg_tst.data import load_recording
 
 # ==========================================
 # Hard-coded sample builder (NO CLI FLAGS)
-# Note: the main transformer trainer now reads raw `data*.npy` recordings
+# Note: the main sensor-fusion trainer now reads raw `data*.npy` recordings
 # directly. This script remains important for physical-eval query pools,
 # held-out window bookkeeping, and visualization.
 # ==========================================
 DATA_GLOB = "data*.npy"
+GT_DATA_GLOB = "gt_data*.npy"
 OUT_FILE = Path("samples_dataset.npy")
 
 # At ~200Hz effective sample rate (BWT901CL at 200Hz):
@@ -78,7 +79,8 @@ def make_windows(X, y, w=WINDOW, stride=STRIDE, label_shift=LABEL_SHIFT):
 
 
 def main():
-    paths = sorted(glob.glob(DATA_GLOB))
+    gt_paths = sorted(glob.glob(GT_DATA_GLOB))
+    paths = gt_paths if gt_paths else sorted(glob.glob(DATA_GLOB))
     # Don't accidentally treat the sample dataset as a recording
     paths = [p for p in paths if Path(p).name != OUT_FILE.name and "samples_" not in Path(p).name]
 
@@ -88,6 +90,8 @@ def main():
     file_names = [Path(p).name for p in paths]
 
     all_X, all_y, all_y_seq, all_file_id, all_start = [], [], [], [], []
+    all_thigh_pitch_seq = []
+    all_thigh_quat_seq = []
     first_meta = None
 
     for file_id, p in enumerate(tqdm(paths, desc="Processing recordings", unit="file")):
@@ -135,6 +139,28 @@ def main():
         all_y_seq.append(y_seq)
         all_file_id.append(np.full((Xs.shape[0],), file_id, dtype=np.int32))
         all_start.append(starts)
+        pitch_series = meta.get("thigh_pitch_deg_series", None)
+        if pitch_series is not None:
+            pitch_series = np.asarray(pitch_series, dtype=np.float32).reshape(-1)
+            if int(pitch_series.shape[0]) != int(X.shape[0]):
+                raise RuntimeError(
+                    f"thigh_pitch_deg_series length mismatch in {Path(p).name}: {pitch_series.shape[0]} vs {X.shape[0]}"
+                )
+            pitch_windows = np.empty((Xs.shape[0], WINDOW), dtype=np.float32)
+            for i, t in enumerate(starts):
+                pitch_windows[i] = pitch_series[int(t) : int(t) + int(WINDOW)].astype(np.float32)
+            all_thigh_pitch_seq.append(pitch_windows)
+        quat_series = meta.get("thigh_quat_series", None)
+        if quat_series is not None:
+            quat_series = np.asarray(quat_series, dtype=np.float32).reshape(-1, 4)
+            if int(quat_series.shape[0]) != int(X.shape[0]):
+                raise RuntimeError(
+                    f"thigh_quat_series length mismatch in {Path(p).name}: {quat_series.shape[0]} vs {X.shape[0]}"
+                )
+            quat_windows = np.empty((Xs.shape[0], WINDOW, 4), dtype=np.float32)
+            for i, t in enumerate(starts):
+                quat_windows[i] = quat_series[int(t) : int(t) + int(WINDOW)].astype(np.float32)
+            all_thigh_quat_seq.append(quat_windows)
         overlap_pct = int(100 * (1 - STRIDE / WINDOW))
         print(f"  -> {Xs.shape[0]} windows (window={WINDOW}, stride={STRIDE}, {overlap_pct}% overlap)")
 
@@ -146,7 +172,7 @@ def main():
 
     assert first_meta is not None
     dataset = {
-        "X": X_out,                       # (N, WINDOW, F): emg + omega + thigh quat
+        "X": X_out,                       # (N, WINDOW, F): emg + thigh quat
         "y": y_out,                       # (N,)
         "y_seq": y_seq_out,               # (N, WINDOW)
         "file_id": file_id_out,           # (N,)
@@ -157,7 +183,7 @@ def main():
         "mode": "overlap" if STRIDE < WINDOW else "nonoverlap",
         "stride": np.int32(STRIDE),
         "created_at": datetime.now().isoformat(timespec="seconds"),
-        # Dataset sample rate after resampling (used for TST + physics eval).
+        # Dataset sample rate after resampling (used for model training bookkeeping + physics eval).
         "sample_hz": np.float32(first_meta.get("effective_hz", 0.0)),
         "orig_hz": np.float32(first_meta.get("orig_hz", first_meta.get("effective_hz", 0.0))),
         # Feature layout metadata (from first file)
@@ -171,6 +197,10 @@ def main():
         "thigh_n_features": np.int32(first_meta.get("thigh_n_features", 1)),
         "n_angular_velocity_features": np.int32(first_meta.get("n_angular_velocity_features", 0)),
     }
+    if all_thigh_pitch_seq:
+        dataset["thigh_pitch_seq"] = np.concatenate(all_thigh_pitch_seq, axis=0).astype(np.float32)
+    if all_thigh_quat_seq:
+        dataset["thigh_quat_seq"] = np.concatenate(all_thigh_quat_seq, axis=0).astype(np.float32)
 
     np.save(OUT_FILE, dataset, allow_pickle=True)
     print(f"\nWrote: {OUT_FILE}  X={X_out.shape}  y={y_out.shape}  y_seq={y_seq_out.shape}")
