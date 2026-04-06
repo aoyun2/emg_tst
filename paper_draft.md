@@ -34,9 +34,9 @@ The sEMG signal encodes residual-muscle activation as a noisy proxy for intended
 
 **XCoM balance stability.** The instability metric used in this study is grounded in the extrapolated centre of mass (XCoM) framework of Hof et al. (2005). Under a linear inverted pendulum model of bipedal gait—which treats the body as a point mass on a rigid leg—the necessary and sufficient condition for *dynamic* stability is that the XCoM
 
-$$\xi = \mathbf{x}_{\mathrm{CoM}} + \frac{\dot{\mathbf{x}}_{\mathrm{CoM}}}{\omega_0}$$
+$$\xi = x_\mathrm{CoM} + \frac{\dot{x}_\mathrm{CoM}}{\omega_0}$$
 
-lies within the base of support (BoS), defined as the convex hull of current foot-contact points. Here $\omega_0 = \sqrt{g / l_0}$ is the pendulum's natural frequency ($g$ = 9.81 m s⁻², $l_0$ ≈ 1.0 m leg length, giving $\omega_0 \approx 3.13$ rad s⁻¹). The XCoM velocity term $\dot{\mathbf{x}}_{\mathrm{CoM}} / \omega_0$ is a forward-looking momentum projection: a centre of mass moving rapidly toward the BoS edge is less stable than a stationary one at the same position. The signed margin $\delta = \text{dist}(\xi, \partial \text{BoS})$ (positive inside BoS, negative outside) is therefore a more predictive pre-fall indicator than CoM position alone (Hof et al., 2005). Figure 2 illustrates the geometry, defines the AUC instability scalar, and shows how the paired excess AUC isolates the override effect.
+lies within the base of support (BoS), defined as the convex hull of current foot-contact points. Here $\omega_0 = \sqrt{g/l_0}$ is the pendulum's natural frequency ($g = 9.81~\mathrm{m\,s^{-2}}$, $l_0 \approx 1.0~\mathrm{m}$, giving $\omega_0 \approx 3.13~\mathrm{rad\,s^{-1}}$). The velocity term $\dot{x}_\mathrm{CoM}/\omega_0$ is a forward-looking momentum projection: a centre of mass moving rapidly toward the BoS edge is less stable than a stationary one at the same position. The signed margin $\delta = \mathrm{dist}(\xi,\,\partial\mathrm{BoS})$ (positive inside BoS, negative outside) is therefore a more predictive pre-fall indicator than CoM position alone (Hof et al., 2005). Figure 2 illustrates the geometry, defines the AUC instability scalar, and shows how the paired excess AUC isolates the override effect.
 
 ---
 
@@ -73,23 +73,23 @@ Both rollouts ran for 67 steps (≈2.01 s at dt = 0.03 s) following 101 warm-up 
 
 ### 3.6 Instability Metric
 
-At each timestep we computed two quantities from the simulation state: (i) trunk *uprightness u* (cosine of the root-segment tilt angle from vertical, ranging from 1 = perfectly upright to 0 = horizontal); and (ii) the signed XCoM margin δ (Section 2.2). These were combined into a per-step risk score r_t ∈ [0, 1]:
+At each timestep we computed two quantities from the simulation state: (i) trunk *uprightness u* (cosine of the root-segment tilt angle from vertical, ranging from 1 = perfectly upright to 0 = horizontal); and (ii) the signed XCoM margin $\delta$ (Section 2.2). These were combined into a per-step risk score $r_t \in [0, 1]$:
 
-$$r_t = 1 - (1 - r_{\text{tilt},t})(1 - r_{\text{support},t})$$
+$$r_t = 1 - (1 - r_{\mathrm{tilt},t})(1 - r_{\mathrm{supp},t})$$
 
-where r_tilt,t increases from 0 toward 1 as trunk uprightness degrades (incorporating both absolute tilt and tilt rate), and r_support,t increases as the rolling minimum XCoM margin over a ten-step window becomes persistently negative. A score of 0 indicates no detected risk; a score of 1 indicates both trunk collapse and sustained XCoM-outside-BoS instability. Figure 2 (Panels B and C) shows representative XCoM margin and risk-score traces for REF and PRED in the same trial.
+where $r_{\mathrm{tilt},t}$ increases from 0 toward 1 as trunk uprightness degrades (incorporating both absolute tilt and tilt rate), and $r_{\mathrm{supp},t}$ increases as the rolling minimum XCoM margin over a ten-step window becomes persistently negative. A score of 0 indicates no detected risk; a score of 1 indicates both trunk collapse and sustained XCoM-outside-BoS instability. Figure 2 (Panel B) illustrates how the per-step risk score accumulates into an AUC, and Panel C shows the excess AUC for a representative trial.
 
 The **primary outcome** is the excess instability area under the curve (AUC)—the time-integrated risk across a trial minus the same quantity for the paired REF rollout:
 
-$$\Delta_{\text{AUC}} = \int_0^T r_t^{\text{PRED}}\,\mathrm{d}t - \int_0^T r_t^{\text{REF}}\,\mathrm{d}t$$
+$$\Delta_\mathrm{AUC} = \int_0^T r_t^\mathrm{PRED}\,dt - \int_0^T r_t^\mathrm{REF}\,dt$$
 
 computed via the trapezoidal rule. Using the *difference* rather than the PRED AUC alone implements a within-trial paired control. REF and PRED share identical initial conditions, reference clip, and expert-policy weights; the only variable that differs is the presence of the knee override. Different clips vary substantially in their inherent balance difficulty regardless of any override—a clip that demands extreme lateral corrections will produce high PRED AUC for any model. Subtracting AUC_REF removes this clip-level baseline and isolates the marginal effect attributable to the override, analogous to a change-from-baseline design in a controlled experiment. A positive Δ_AUC indicates the override increased integrated balance risk relative to what the expert would have produced unassisted.
 
 ### 3.7 Partial Spearman Correlation
 
-The primary scientific question is whether prediction accuracy (predictor X = model RMSE against GT wearable data) independently predicts instability (outcome Y = Δ_AUC). However, motion-matching quality—how closely the retrieved clip resembles the predicted motion—also influences the simulation outcome and is correlated with model RMSE. A naive Spearman correlation between X and Y would conflate model quality with retrieval quality.
+The primary scientific question is whether prediction accuracy (predictor $X$ = model RMSE against GT wearable data) independently predicts instability (outcome $Y = \Delta_\mathrm{AUC}$). However, motion-matching quality—how closely the retrieved clip resembles the query—also influences the simulation outcome and is correlated with model RMSE. A naive Spearman correlation between $X$ and $Y$ would conflate model quality with retrieval quality.
 
-We controlled for this using Frisch–Waugh–Lovell (FWL) residualization (Frisch & Waugh, 1933) with two controls (Z₁ = match knee RMSE, Z₂ = thigh orientation RMS error). Figure 5 illustrates the three-step procedure: (1) regress ranked(X) on ranked(Z) to obtain residuals e_X; (2) regress ranked(Y) on ranked(Z) to obtain residuals e_Y; (3) compute Pearson r(e_X, e_Y). The FWL theorem guarantees this equals the partial regression coefficient on X in the full model Y ~ X + Z, so r(e_X, e_Y) is the *partial Spearman rho*—the monotone association between X and Y that is orthogonal to Z. Significance was assessed with a t-statistic on n − 2 − q = 76 degrees of freedom (n = 80 trials, q = 2 controls).
+We controlled for this using Frisch–Waugh–Lovell (FWL) residualization (Frisch & Waugh, 1933) with two controls ($Z_1$ = match knee RMSE, $Z_2$ = thigh orientation RMS error). Figure 5 illustrates the three-step procedure: (1) regress $\mathrm{rank}(X)$ on $\mathrm{rank}(Z)$ to obtain residuals $e_X$; (2) regress $\mathrm{rank}(Y)$ on $\mathrm{rank}(Z)$ to obtain residuals $e_Y$; (3) compute Pearson $r(e_X, e_Y)$. The FWL theorem guarantees this equals the partial regression coefficient on $X$ in the full model $Y \sim X + Z$, so $r(e_X, e_Y)$ is the *partial Spearman rho*—the monotone association between $X$ and $Y$ orthogonal to $Z$. Significance was assessed with a $t$-statistic on $n - 2 - q = 76$ degrees of freedom ($n = 80$ trials, $q = 2$ controls).
 
 ---
 
