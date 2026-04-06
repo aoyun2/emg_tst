@@ -59,9 +59,10 @@ class EvalConfig:
     # We evaluate a "prosthetic" right knee by overriding the knee DoF only.
     knee_actuator: str = "walker/rtibiarx"  # right knee flexion
 
-    # TST windowing (training/eval window length).
+    # Native GT rate is 200 Hz. Keep 2.0 s windows = 400 samples so physical
+    # window duration stays aligned with the training path.
     window_hz: float = 200.0
-    window_n: int = 200  # 1.0s at 200Hz
+    window_n: int = 400  # 2.0s at 200Hz
     # Paper protocol on real rigtest data:
     # sample from the held-out LOFO pool with a fixed random seed and keep
     # replacing failed trials until this many successful evaluations are obtained.
@@ -79,12 +80,14 @@ class EvalConfig:
 
     # Motion matching.
     match_top_k: int = 12
-    match_local_refine_radius: int = 15
-    # GT now derives a true marker-based right-thigh segment quaternion from the raw
-    # mocap marker data. Use 3D thigh-orientation + knee-derivative matching by default.
-    match_feature_mode: str = "dquat_knee_d"
+    match_local_refine_radius: int = 30
+    # Empirically best publication setting on the current 80-window GT held-out pool:
+    # use scalar thigh pitch + knee dynamics for candidate scoring, with the score
+    # driven entirely by knee RMSE. The GT marker-derived thigh quaternion is still
+    # stored and available for diagnostics / alternative matching modes.
+    match_feature_mode: str = "thigh_knee_d"
     match_knee_weight: float = _env_float("MOCAP_PHYS_EVAL_MATCH_KNEE_WEIGHT", 1.0)
-    match_thigh_weight: float = _env_float("MOCAP_PHYS_EVAL_MATCH_THIGH_WEIGHT", 0.1)
+    match_thigh_weight: float = _env_float("MOCAP_PHYS_EVAL_MATCH_THIGH_WEIGHT", 0.0)
 
     # Compare rollout recording.
     render_width: int = 480

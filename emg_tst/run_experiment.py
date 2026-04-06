@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -22,16 +23,21 @@ DATA_GLOB = "data*.npy"
 GT_DATA_GLOB = "gt_data*.npy"
 SAVE_DIR = Path("checkpoints")
 RUN_NAME = datetime.now().strftime("tst_%Y%m%d_%H%M%S")
+RUN_NAME_OVERRIDE = os.environ.get("EMG_TST_RUN_NAME", "").strip()
+ABLATIONS_OVERRIDE = os.environ.get("EMG_TST_ABLATIONS", "").strip()
 
 SEED = 7
 K_FOLDS = 5
 
 # Windowing / task
-SOURCE_WINDOW = 200
-CONTEXT_WINDOW = 200
+# Native GT rate is 200 Hz for angle + IMU. Keep the same physical context as the
+# earlier 100 Hz / 2 s path by using 400 samples = 2.0 s.
+SOURCE_WINDOW = 400
+CONTEXT_WINDOW = 400
 TRAIN_STRIDE = 1
 EVAL_STRIDE = 1
-LABEL_SHIFT = 1
+# Preserve the same 10 ms forecast horizon at 200 Hz.
+LABEL_SHIFT = 2
 VAL_FRAC_FALLBACK = 0.1
 LABEL_SCALE = 180.0
 
@@ -814,6 +820,29 @@ def _train_cv(
 
     for fold_i, (train_file_ids, test_file_ids) in enumerate(file_splits, start=1):
         print(f"\n========== {label} | Fold {int(fold_i)}/{len(file_splits)} ==========")
+        fold_dir = run_dir / f"fold_{int(fold_i):02d}"
+        metrics_path = fold_dir / "metrics.json"
+        best_ckpt_path = fold_dir / "reg_best.pt"
+        split_manifest_path = fold_dir / "split_manifest.json"
+        if metrics_path.exists() and best_ckpt_path.exists() and split_manifest_path.exists():
+            try:
+                with open(metrics_path, "r", encoding="utf-8") as f:
+                    metrics = json.load(f)
+                print(f"Resuming: reusing completed fold_{int(fold_i):02d}")
+                all_fold_metrics.append(metrics)
+                cv_manifest["folds"].append(
+                    {
+                        "fold": int(fold_i),
+                        "test_file_ids": [int(x) for x in test_file_ids],
+                        "test_file_names": [str(corpus.file_names[int(x)]) for x in test_file_ids],
+                        "test_indices": [],
+                        "checkpoint": str(best_ckpt_path),
+                        "split_manifest": str(split_manifest_path),
+                    }
+                )
+                continue
+            except Exception:
+                pass
         train_windows, val_windows, test_windows, train_files_final, val_files = build_fold_windows(
             corpus,
             train_file_ids=tuple(train_file_ids),
@@ -863,16 +892,27 @@ def _ablation_configs(corpus: RecordingCorpus) -> list[tuple[str, np.ndarray, in
     all_cols = np.arange(corpus.n_features, dtype=np.int64)
     emg_cols = np.arange(0, corpus.n_emg, dtype=np.int64)
     imu_cols = np.arange(corpus.n_features - corpus.n_imu, corpus.n_features, dtype=np.int64)
-    return [
+    configs = [
         ("all", all_cols, int(corpus.n_emg), int(corpus.n_imu), "ALL"),
         ("thigh_only", imu_cols, 0, int(corpus.n_imu), "THIGH-ONLY"),
         ("emg_only", emg_cols, int(corpus.n_emg), 0, "EMG-ONLY"),
     ]
+    raw = str(ABLATIONS_OVERRIDE).strip().lower()
+    if not raw:
+        return configs
+    wanted = {x.strip() for x in raw.split(",") if x.strip()}
+    out = [cfg for cfg in configs if cfg[0].lower() in wanted]
+    if not out:
+        raise RuntimeError(
+            f"EMG_TST_ABLATIONS={ABLATIONS_OVERRIDE!r} did not match any known ablation keys."
+        )
+    return out
 
 
 def main():
     set_seed(SEED)
     arch = str(MODEL_ARCH).strip().lower()
+    run_name = str(RUN_NAME_OVERRIDE) if str(RUN_NAME_OVERRIDE) else str(RUN_NAME)
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -918,7 +958,7 @@ def main():
 
     for key, feature_cols, n_emg_selected, n_imu_selected, label in _ablation_configs(corpus):
         print(f"\n>>> {label}")
-        run_dir = SAVE_DIR / (RUN_NAME + f"_{key}")
+        run_dir = SAVE_DIR / (run_name + f"_{key}")
         run_dir.mkdir(parents=True, exist_ok=True)
         fold_metrics = _train_cv(
             corpus=corpus,
@@ -980,7 +1020,7 @@ def main():
             },
         },
     }
-    summary_path = SAVE_DIR / RUN_NAME / "ablation_summary.json"
+    summary_path = SAVE_DIR / run_name / "ablation_summary.json"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)

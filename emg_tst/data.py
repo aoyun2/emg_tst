@@ -20,9 +20,8 @@ EMG_ENVELOPE_FEATURE_MODE = "causal_envelope"
 
 # Recordings are not perfectly uniform in time (Bluetooth + serial jitter). For
 # reproducible training/evaluation (and consistent window length in seconds),
-# we resample each recording to a fixed uniform rate using its timestamps.
+# we resample custom recordings to a fixed uniform rate using their timestamps.
 TARGET_HZ = 200.0
-GT_PAPER_HZ = 100.0
 
 
 def _ensure_strictly_increasing(t: np.ndarray, *, eps: float = 1e-6) -> np.ndarray:
@@ -396,18 +395,13 @@ def load_recording(path: str | Path) -> Tuple[np.ndarray, np.ndarray, dict]:
             dur = float(t_src[-1])
             if np.isfinite(dur) and dur > 1e-6:
                 orig_hz = float((T0 - 1) / dur)
-                n_dst = int(round(dur * float(GT_PAPER_HZ))) + 1
-                n_dst = max(2, n_dst)
-                t_dst = (np.arange(n_dst, dtype=np.float64) / float(GT_PAPER_HZ)).astype(np.float64)
-                y = _resample_linear_by_timestamps(y, t_src, t_dst)
-                thigh_imu = _resample_linear_by_timestamps(thigh_imu, t_src, t_dst)
-                thigh_pitch = _resample_linear_by_timestamps(thigh_pitch, t_src, t_dst)
-                if thigh_quat is not None:
-                    thigh_quat = _resample_quat_slerp_wxyz_by_timestamps(thigh_quat, t_src, t_dst)
-                did_resample = True
+                # GT processed angle and IMU streams are already uniformly sampled at
+                # their native rate (~200 Hz). Keep that native rate rather than
+                # introducing an artificial 100 Hz downsample.
+                t_dst = None
 
         T = int(y.shape[0])
-        effective_hz = float(GT_PAPER_HZ) if bool(did_resample) else float(orig_hz)
+        effective_hz = float(orig_hz)
         imu_times = t_dst if t_dst is not None else t_src
 
         raw_emg = np.asarray(d["raw_emg_channels"], dtype=np.float64)
@@ -426,7 +420,7 @@ def load_recording(path: str | Path) -> Tuple[np.ndarray, np.ndarray, dict]:
             "n_samples": int(T),
             "effective_hz": float(effective_hz),
             "orig_hz": float(orig_hz),
-            "target_hz": float(GT_PAPER_HZ),
+            "target_hz": float(effective_hz),
             "resampled": bool(did_resample),
             "thigh_mode": "imu6",
             "thigh_n_features": int(thigh_imu.shape[1]),

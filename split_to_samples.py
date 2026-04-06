@@ -15,26 +15,26 @@ DATA_GLOB = "data*.npy"
 GT_DATA_GLOB = "gt_data*.npy"
 OUT_FILE = Path("samples_dataset.npy")
 
-# At ~200Hz effective sample rate (BWT901CL at 200Hz):
+# Native GT angle/IMU rate is 200 Hz. Keep a 2.0 s physical window and a
+# 10 ms forecast horizon so the query pool stays aligned with training.
+#   WINDOW=400 -> 2.0s windows
 #   WINDOW=200 -> 1.0s windows
 #   WINDOW=100 -> 0.5s windows
-#   WINDOW=40  -> 0.2s windows
-WINDOW = 200         # 1 second at 200Hz
-LABEL_SHIFT = 0      # samples of lookahead
+WINDOW = 400
+LABEL_SHIFT = 2      # samples of lookahead (10 ms at 200 Hz)
 
 # Stride for overlapping windows.
-#   STRIDE = WINDOW  -> non-overlapping (original behaviour)
+#   STRIDE = WINDOW  -> non-overlapping
 #   STRIDE = 1       -> maximum overlap; every timestep starts a new window
 #                       (WARNING: with ~800K timesteps this produces ~26 GiB)
-#   STRIDE = 10      -> 95% overlap; ~80K windows per 800K timesteps (~2.6 GiB)
-#   STRIDE = WINDOW  -> non-overlapping (original behaviour)
+#   STRIDE = 60      -> 85% overlap; 0.3 s hop at 200 Hz
 #
 # LOFO validity: all windows from the same recording file keep the same
 # file_id regardless of stride, so Leave-One-File-Out cross-validation is
 # unaffected (no leakage between files). Overlap within a file is fine because
 # the model sees windows from the same file only in train or only in test, never
 # mixed – which is what matters.
-STRIDE = 30
+STRIDE = 60
 
 
 def make_windows(X, y, w=WINDOW, stride=STRIDE, label_shift=LABEL_SHIFT):

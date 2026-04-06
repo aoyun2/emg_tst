@@ -1294,23 +1294,43 @@ def _evaluate_query_window(
         },
     }
 
+    ref_risk = float(np.asarray(rr["predicted_fall_risk_ref"]).reshape(()))
+    pred_risk = float(np.asarray(rr["predicted_fall_risk_good"]).reshape(()))
+    bad_risk = float(np.asarray(rr["predicted_fall_risk_bad"]).reshape(()))
+    ref_auc = _risk_auc(np.asarray(rr["predicted_fall_risk_trace_ref"], dtype=np.float32), dt=dt)
+    pred_auc = _risk_auc(np.asarray(rr["predicted_fall_risk_trace_good"], dtype=np.float32), dt=dt)
+    bad_auc = _risk_auc(np.asarray(rr["predicted_fall_risk_trace_bad"], dtype=np.float32), dt=dt)
+
     ref_metrics = {
-        "predicted_fall_risk": float(np.asarray(rr["predicted_fall_risk_ref"]).reshape(())),
-        "balance_risk_auc": _risk_auc(np.asarray(rr["predicted_fall_risk_trace_ref"], dtype=np.float32), dt=dt),
+        "predicted_fall_risk": float(ref_risk),
+        "instability_score": float(ref_risk),
+        "balance_risk_auc": float(ref_auc),
+        "instability_auc": float(ref_auc),
         "balance_loss_step": int(np.asarray(rr["balance_loss_step_ref"]).reshape(())),
         "knee_rmse_deg": float(_rmse(ref_kn, knee_ref_actual)),
     }
     pred_metrics = {
-        "predicted_fall_risk": float(np.asarray(rr["predicted_fall_risk_good"]).reshape(())),
-        "balance_risk_auc": _risk_auc(np.asarray(rr["predicted_fall_risk_trace_good"], dtype=np.float32), dt=dt),
+        "predicted_fall_risk": float(pred_risk),
+        "instability_score": float(pred_risk),
+        "balance_risk_auc": float(pred_auc),
+        "instability_auc": float(pred_auc),
         "balance_loss_step": int(np.asarray(rr["balance_loss_step_good"]).reshape(())),
         "knee_rmse_deg": float(_rmse(good_target_kn, knee_good_actual)),
     }
     bad_metrics = {
-        "predicted_fall_risk": float(np.asarray(rr["predicted_fall_risk_bad"]).reshape(())),
-        "balance_risk_auc": _risk_auc(np.asarray(rr["predicted_fall_risk_trace_bad"], dtype=np.float32), dt=dt),
+        "predicted_fall_risk": float(bad_risk),
+        "instability_score": float(bad_risk),
+        "balance_risk_auc": float(bad_auc),
+        "instability_auc": float(bad_auc),
         "balance_loss_step": int(np.asarray(rr["balance_loss_step_bad"]).reshape(())),
         "knee_rmse_deg": float(_rmse(bad_target_kn, knee_bad_actual)),
+    }
+    excess_metrics = {
+        "instability_score_delta": float(pred_risk - ref_risk),
+        "balance_risk_auc_delta": float(pred_auc - ref_auc),
+        "instability_auc_delta": float(pred_auc - ref_auc),
+        "knee_rmse_deg_delta": float(pred_metrics["knee_rmse_deg"] - ref_metrics["knee_rmse_deg"]),
+        "balance_loss_step_delta": float(pred_metrics["balance_loss_step"] - ref_metrics["balance_loss_step"]),
     }
     sim_metrics = {
         "ref": ref_metrics,
@@ -1318,6 +1338,7 @@ def _evaluate_query_window(
         # Compatibility alias for older tooling and older manuscript wording.
         "good": dict(pred_metrics),
         "bad": bad_metrics,
+        "excess": excess_metrics,
     }
 
     top_candidates = [

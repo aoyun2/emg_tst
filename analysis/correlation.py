@@ -19,7 +19,7 @@ class TrialRecord:
     query_id: str
     summary_path: str
     predictor_knee_rmse_deg: float
-    outcome_balance_risk_auc: float
+    outcome_value: float
     control_match_knee_rmse_deg: float
     control_thigh_rms_deg: float
     outcome_source: str
@@ -65,10 +65,19 @@ def _parse_args() -> argparse.Namespace:
         help="Aggregate trials across every run under --runs-root instead of just the latest one.",
     )
     parser.add_argument(
+        "--outcome",
+        choices=("excess_auc", "pred_auc", "ref_auc", "excess_score", "pred_score", "ref_score"),
+        default="excess_auc",
+        help=(
+            "Outcome to analyze. Publication default is 'excess_auc' = "
+            "sim.pred.instability_auc - sim.ref.instability_auc."
+        ),
+    )
+    parser.add_argument(
         "--rollout",
         choices=("pred", "good", "bad"),
         default="pred",
-        help="Which override rollout to analyze. The paper uses 'pred'.",
+        help="Which override rollout to analyze for non-excess outcomes. The paper uses 'pred'.",
     )
     parser.add_argument(
         "--output-dir",
@@ -169,6 +178,9 @@ def _extract_balance_risk_auc(summary: dict[str, Any], summary_path: Path, *, ro
     sim_all = summary.get("sim", {})
     for key in _summary_rollout_keys(rollout):
         sim = sim_all.get(key, {})
+        auc = _safe_float(sim.get("instability_auc"))
+        if math.isfinite(auc):
+            return auc, f"summary.sim.{key}.instability_auc"
         auc = _safe_float(sim.get("balance_risk_auc"))
         if math.isfinite(auc):
             return auc, f"summary.sim.{key}.balance_risk_auc"
@@ -188,7 +200,74 @@ def _extract_balance_risk_auc(summary: dict[str, Any], summary_path: Path, *, ro
     return float("nan"), "missing"
 
 
-def _load_trial(summary_path: Path, *, rollout: str) -> tuple[TrialRecord | None, str | None]:
+def _extract_instability_score(summary: dict[str, Any], summary_path: Path, *, rollout: str) -> tuple[float, str]:
+    sim_all = summary.get("sim", {})
+    for key in _summary_rollout_keys(rollout):
+        sim = sim_all.get(key, {})
+        score = _safe_float(sim.get("instability_score"))
+        if math.isfinite(score):
+            return score, f"summary.sim.{key}.instability_score"
+        score = _safe_float(sim.get("predicted_fall_risk"))
+        if math.isfinite(score):
+            return score, f"summary.sim.{key}.predicted_fall_risk"
+
+    npz_path = _resolve_artifact_path(summary_path, summary.get("artifacts", {}).get("compare_npz"))
+    if npz_path is None:
+        return float("nan"), "missing"
+
+    with np.load(npz_path, allow_pickle=True) as npz:
+        for key in _trace_rollout_keys(rollout):
+            scalar_key = f"predicted_fall_risk_{key}"
+            if scalar_key not in npz:
+                continue
+            score = _safe_float(np.asarray(npz[scalar_key]).reshape(()))
+            if math.isfinite(score):
+                return score, f"npz.{scalar_key}"
+    return float("nan"), "missing"
+
+
+def _extract_outcome(summary: dict[str, Any], summary_path: Path, *, rollout: str, outcome: str) -> tuple[float, str]:
+    mode = str(outcome).strip().lower()
+    sim_all = summary.get("sim", {})
+
+    if mode == "excess_auc":
+        exc = sim_all.get("excess", {})
+        y = _safe_float(exc.get("instability_auc_delta"))
+        if math.isfinite(y):
+            return y, "summary.sim.excess.instability_auc_delta"
+        y = _safe_float(exc.get("balance_risk_auc_delta"))
+        if math.isfinite(y):
+            return y, "summary.sim.excess.balance_risk_auc_delta"
+        y_pred, src_pred = _extract_balance_risk_auc(summary, summary_path, rollout="pred")
+        y_ref, src_ref = _extract_balance_risk_auc(summary, summary_path, rollout="ref")
+        if math.isfinite(y_pred) and math.isfinite(y_ref):
+            return float(y_pred - y_ref), f"derived({src_pred}-{src_ref})"
+        return float("nan"), "missing"
+
+    if mode == "excess_score":
+        exc = sim_all.get("excess", {})
+        y = _safe_float(exc.get("instability_score_delta"))
+        if math.isfinite(y):
+            return y, "summary.sim.excess.instability_score_delta"
+        y_pred, src_pred = _extract_instability_score(summary, summary_path, rollout="pred")
+        y_ref, src_ref = _extract_instability_score(summary, summary_path, rollout="ref")
+        if math.isfinite(y_pred) and math.isfinite(y_ref):
+            return float(y_pred - y_ref), f"derived({src_pred}-{src_ref})"
+        return float("nan"), "missing"
+
+    if mode == "pred_auc":
+        return _extract_balance_risk_auc(summary, summary_path, rollout=rollout)
+    if mode == "ref_auc":
+        return _extract_balance_risk_auc(summary, summary_path, rollout="ref")
+    if mode == "pred_score":
+        return _extract_instability_score(summary, summary_path, rollout=rollout)
+    if mode == "ref_score":
+        return _extract_instability_score(summary, summary_path, rollout="ref")
+
+    return float("nan"), "missing"
+
+
+def _load_trial(summary_path: Path, *, rollout: str, outcome: str) -> tuple[TrialRecord | None, str | None]:
     try:
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
     except Exception as exc:
@@ -198,9 +277,9 @@ def _load_trial(summary_path: Path, *, rollout: str) -> tuple[TrialRecord | None
     if not math.isfinite(x):
         return None, "missing_predictor_rmse"
 
-    y, y_source = _extract_balance_risk_auc(summary, summary_path, rollout=rollout)
+    y, y_source = _extract_outcome(summary, summary_path, rollout=rollout, outcome=outcome)
     if not math.isfinite(y):
-        return None, "missing_balance_risk_auc"
+        return None, f"missing_outcome:{outcome}"
 
     k = _safe_float(summary.get("match", {}).get("rmse_knee_deg"))
     if not math.isfinite(k):
@@ -218,7 +297,7 @@ def _load_trial(summary_path: Path, *, rollout: str) -> tuple[TrialRecord | None
             query_id=query_id,
             summary_path=str(summary_path),
             predictor_knee_rmse_deg=x,
-            outcome_balance_risk_auc=y,
+            outcome_value=y,
             control_match_knee_rmse_deg=k,
             control_thigh_rms_deg=h,
             outcome_source=y_source,
@@ -281,7 +360,7 @@ def _write_plot(
         xs = np.linspace(float(np.min(x)), float(np.max(x)), 100)
         ax.plot(xs, m * xs + b, color="tab:red", lw=1.5)
     ax.set_xlabel("Residualized rank(model knee RMSE)")
-    ax.set_ylabel(f"Residualized rank({rollout} balance-risk AUC)")
+    ax.set_ylabel(f"Residualized rank({rollout}) outcome")
     ax.set_title(f"Partial Spearman rho={rho:.4f}, p={p_value:.4g}, n={n}")
     ax.grid(True, alpha=0.25)
     fig.tight_layout()
@@ -303,7 +382,7 @@ def main() -> None:
     for run_dir in run_dirs:
         for summary_path in _eval_summary_paths(run_dir):
             total_trials += 1
-            trial, skip_reason = _load_trial(summary_path, rollout=args.rollout)
+            trial, skip_reason = _load_trial(summary_path, rollout=args.rollout, outcome=args.outcome)
             if trial is None:
                 if skip_reason is not None:
                     skipped_reasons[skip_reason] = skipped_reasons.get(skip_reason, 0) + 1
@@ -317,7 +396,7 @@ def main() -> None:
         )
 
     x = np.asarray([t.predictor_knee_rmse_deg for t in trials], dtype=np.float64)
-    y = np.asarray([t.outcome_balance_risk_auc for t in trials], dtype=np.float64)
+    y = np.asarray([t.outcome_value for t in trials], dtype=np.float64)
     k = np.asarray([t.control_match_knee_rmse_deg for t in trials], dtype=np.float64)
     h = np.asarray([t.control_thigh_rms_deg for t in trials], dtype=np.float64)
 
@@ -346,7 +425,7 @@ def main() -> None:
         row = asdict(trial)
         row.update(
             rank_predictor_knee_rmse=float(xr[i]),
-            rank_outcome_balance_risk_auc=float(yr[i]),
+            rank_outcome_value=float(yr[i]),
             rank_control_match_knee_rmse=float(kr[i]),
             rank_control_thigh_rms=float(hr[i]),
             residual_predictor=float(x_res[i]),
@@ -367,7 +446,7 @@ def main() -> None:
             rho=rho,
             p_value=p_value,
             n=n,
-            rollout=args.rollout,
+            rollout=args.outcome,
         )
     except Exception:
         residual_plot = None
@@ -379,7 +458,7 @@ def main() -> None:
         n_skipped_trials=int(total_trials - n),
         skipped_reasons=skipped_reasons,
         predictor="model.pred_vs_gt_knee_flex_rmse_deg",
-        outcome=f"sim.{args.rollout}.balance_risk_auc",
+        outcome=str(args.outcome),
         controls=["match.rmse_knee_deg", "match.rms_thigh_ori_err_deg"],
         rho_partial_spearman=float(rho),
         t_statistic=float(t_stat),

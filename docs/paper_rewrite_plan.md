@@ -4,6 +4,11 @@ This file is a repo-faithful rewrite guide for replacing the current transformer
 
 Use this together with the `Paper Handoff` section in [README.md](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/README.md).
 
+Important:
+- the methodology below should follow the current native-rate `200 Hz` code path
+- the specific benchmark numbers listed here are from the most recent historical pre-native-rate run
+- if you want final publication numbers from the current code, rerun the pipeline first and replace those values
+
 ## Main Change
 
 The current Word draft describes:
@@ -33,7 +38,7 @@ Use 4 parts:
 
 1. Problem
    - continuous knee-angle prediction from wearable EMG and thigh IMU is often evaluated only with statistical error metrics
-   - it is unclear whether lower numerical prediction error corresponds to safer physical behavior in simulation
+   - it is unclear whether lower numerical prediction error corresponds to lower excess instability in simulation
 
 2. Method
    - Georgia Tech processed biomechanics data
@@ -46,11 +51,11 @@ Use 4 parts:
 3. Main results
    - held-out test RMSE `8.96°`
    - 80 successful simulation windows
-   - raw RMSE-risk association weakly positive
-   - partial correlation after controls approximately zero
+   - raw RMSE vs excess instability approximately zero
+   - partial correlation after controls remains non-significant
 
 4. Interpretation
-   - lower model error did not show a meaningful independent association with simulated balance-risk AUC once motion-matching quality was controlled
+   - lower model error did not show a meaningful independent association with excess simulated instability once motion-matching quality was controlled
    - motion-match quality was a stronger driver of risk in this setup
 
 ## Section-by-Section Rewrite
@@ -70,7 +75,7 @@ Change:
 
 Suggested replacement thesis sentence:
 
-`This study examines whether lower wearable-sensor knee-prediction error corresponds to lower simulated balance risk when the predicted trajectory is injected into a physics-based prosthetic-override pipeline.`
+`This study examines whether lower wearable-sensor knee-prediction error corresponds to lower excess simulated instability when the predicted trajectory is injected into a physics-based prosthetic-override pipeline.`
 
 ### 1.1 Prior Work
 
@@ -104,8 +109,9 @@ Replace the old custom-data / transformer subsections with:
    - high-pass EMG at `20 Hz`
    - rectify
    - low-pass at `5 Hz`
-   - resample GT branch to `100 Hz`
-   - 2.0-second windows, `200` samples
+   - keep GT angle + IMU at native `200 Hz`
+   - resample the filtered EMG envelope onto that same native `200 Hz` timebase
+   - 2.0-second windows, `400` samples
    - z-score EMG per recording
    - global feature scaler on training recordings
    - target normalized by `180`
@@ -116,7 +122,7 @@ Replace the old custom-data / transformer subsections with:
    - `Conv1d(32 -> 32, k=5)`
    - `BiLSTM(hidden=64, layers=2, bidirectional=True)`
    - `Linear(128 -> 64) -> GELU -> Dropout(0.10) -> Linear(64 -> 1)`
-   - one-sample-ahead forecast because `LABEL_SHIFT = 1`
+   - `10 ms` forecast because `LABEL_SHIFT = 2` at `200 Hz`
 
 4. Training
    - subject-holdout split for the GT benchmark used here
@@ -129,21 +135,24 @@ Replace the old custom-data / transformer subsections with:
 
 5. Simulation
    - build `samples_dataset.npy` from GT windows
-   - motion match each held-out window into the MoCapAct bank using scalar thigh-pitch proxy plus knee dynamics
+   - motion match each held-out window into the MoCapAct bank using scalar `thigh_knee_d`
+   - publication-default matching weights: `knee=1.0`, `thigh=0.0`
+   - local refine radius: `30`
    - run `REF` and `PRED` MuJoCo rollouts
    - override only the right knee
 
 6. Statistics
    - predictor: `model.pred_vs_gt_knee_flex_rmse_deg`
-   - outcome: `sim.pred.balance_risk_auc`
+   - outcome: `sim.excess.instability_auc_delta`
    - nuisance controls:
      - `match.rmse_knee_deg`
      - `match.rms_thigh_ori_err_deg`
    - rank-transform variables
    - residualize predictor and outcome on controls
    - Pearson correlation on residuals = partial Spearman via Frisch-Waugh-Lovell
+   - justify the outcome as `PRED - REF` because the instability trace is heuristic and absolute `PRED` AUC inherits clip difficulty and reference bias
 
-### 2.x Exact Numbers To Use
+### 2.x Historical Numbers To Replace After Rerun
 
 Training result from [metrics_summary.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/gt_full_subject_holdout/all/metrics_summary.json):
 - `n_train = 88,298`
@@ -154,24 +163,27 @@ Training result from [metrics_summary.json](/C:/Users/aaron/OneDrive/Documents/G
 - `test_seq_rmse = 8.96°`
 - `test_mae = 6.11°`
 
-Simulation result from [summary.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/phys_eval_v2/runs/20260404_165818/summary.json):
+Simulation result from [summary.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/phys_eval_v2/runs/20260405_164303/summary.json):
 - `80` successful trials
 - fixed seed `42`
 - mean predictor RMSE across simulation windows: `8.63°`
-- mean reference balance-risk AUC: `0.677`
-- mean predicted balance-risk AUC: `0.891`
-- mean reference simulated knee RMSE: `12.26°`
-- mean predicted simulated knee RMSE: `9.82°`
+- mean reference balance-risk AUC: `0.858`
+- mean predicted balance-risk AUC: `1.040`
+- mean reference simulated knee RMSE: `9.99°`
+- mean predicted simulated knee RMSE: `9.56°`
 
-Correlation result from [partial_spearman_summary.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/phys_eval_v2/runs/20260404_165818/analysis/partial_spearman_summary.json):
+Exact-pool motion-matching benchmark from [gt_pool_match_grid_80_resampled.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/gt_pool_match_grid_80_resampled.json):
+- best publication-default mean knee match RMSE: `9.47°`
+
+Correlation result from [partial_spearman_summary.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/phys_eval_v2/runs/20260405_164303/analysis/partial_spearman_summary.json):
 - `n = 80`
-- partial Spearman `rho = -0.0105`
-- `p = 0.927`
+- partial Spearman on excess instability `rho = 0.169`
+- `p = 0.140`
 
-Raw and control correlations from [figures/gt_correlation](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/gt_correlation):
-- raw RMSE vs risk: `rho = 0.234`, `p = 0.037`
-- match knee error vs risk: `rho = 0.506`, `p = 1.66e-6`
-- match thigh error vs risk: `rho = 0.598`, `p = 4.75e-9`
+Raw and control correlations from [paper_plot_stats_excess.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/phys_eval_v2/runs/20260405_164303/analysis/paper_plot_stats_excess.json):
+- raw RMSE vs excess instability: `rho = -0.038`, `p = 0.740`
+- match knee error vs excess instability: `rho = -0.340`, `p = 0.0020`
+- match thigh error vs excess instability: `rho = -0.358`, `p = 0.0011`
 
 ## Recommended Results Section
 
@@ -197,7 +209,7 @@ Key points:
 
 Suggested sentence:
 
-`Across the 80-window simulation run, the model-conditioned rollout had lower mean simulated knee RMSE than the reference rollout (9.82° vs. 12.26°), yet its mean balance-risk AUC was higher (0.891 vs. 0.677), indicating that improved local knee tracking did not automatically translate into lower simulated balance risk.`
+`Across the 80-window simulation run, the model-conditioned rollout had slightly lower mean simulated knee RMSE than the reference rollout (9.56° vs. 9.99°), yet its mean heuristic instability AUC was higher (1.040 vs. 0.858), indicating that improved local knee tracking did not automatically translate into lower simulated instability.`
 
 ### 3.3 Correlation Results
 
@@ -207,19 +219,19 @@ Key points:
 
 Suggested paragraph:
 
-`Raw prediction error showed only a weak positive relationship with simulated balance-risk AUC (Spearman rho = 0.234, p = 0.037). However, after controlling for motion-match knee error and thigh-orientation error using a partial Spearman procedure based on the Frisch-Waugh-Lovell theorem, the association was effectively null (rho = -0.0105, p = 0.927). In contrast, the motion-match controls themselves were substantially more correlated with risk, particularly thigh-match error.`
+`Using excess instability AUC, defined as the model-conditioned instability AUC minus the reference instability AUC for the matched clip, raw prediction error showed no meaningful monotonic association with outcome (Spearman rho = -0.038, p = 0.740). After controlling for motion-match knee error and thigh-orientation error using a partial Spearman procedure based on the Frisch-Waugh-Lovell theorem, the association remained non-significant (rho = 0.169, p = 0.140).`
 
 ## Recommended Discussion Section
 
 Main message:
 - sub-10° prediction error is achievable on the current GT benchmark
-- but prediction RMSE is not the dominant determinant of simulation risk in the present pipeline
-- motion-match quality is the stronger bottleneck
+- but prediction RMSE is not a significant predictor of excess instability in the present pipeline
+- the instability trace should be framed as a heuristic stability cost, not a literal fall probability
 
 Suggested discussion claims:
 
 1. `The study does not support using RMSE alone as a proxy for physical usefulness in this simulation setting.`
-2. `The null partial correlation suggests that once motion-matching quality is accounted for, prediction error contributes little additional explanatory power for balance-risk AUC.`
+2. `The non-significant partial correlation suggests that once motion-matching quality is accounted for, prediction error contributes limited additional explanatory power for excess instability AUC.`
 3. `This indicates that future improvements in the simulator pipeline may need to focus as much on match quality and whole-body contextual consistency as on lowering knee-prediction RMSE.`
 
 ## Figures To Insert
@@ -227,13 +239,13 @@ Suggested discussion claims:
 Use these files directly:
 
 1. Raw relationship
-   - [raw_rmse_vs_risk.png](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/gt_correlation/raw_rmse_vs_risk.png)
+   - [raw_rmse_vs_excess_instability.png](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/gt_correlation/raw_rmse_vs_excess_instability.png)
 
 2. Partial / adjusted relationship
-   - [partial_rmse_vs_risk.png](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/gt_correlation/partial_rmse_vs_risk.png)
+   - [partial_rmse_vs_excess_instability.png](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/gt_correlation/partial_rmse_vs_excess_instability.png)
 
 3. Motion-match confounders
-   - [match_controls_vs_risk.png](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/gt_correlation/match_controls_vs_risk.png)
+   - [match_controls_vs_excess_instability.png](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/gt_correlation/match_controls_vs_excess_instability.png)
 
 ## What To Delete From The Current Draft
 
@@ -258,4 +270,6 @@ You can keep and adapt:
 Two caveats should stay explicit in the paper:
 
 1. The current repo benchmark uses the publicly accessible GT processed dataset integrated here, which may not be identical to the exact corpus used in the external GT paper.
-2. For the GT path, motion matching uses a scalar thigh-pitch proxy derived from `hip_flexion_r`, not a directly measured thigh quaternion.
+2. For the GT path, the repo stores a marker-derived `thigh_quat_wxyz`, but the current publication-default matcher is still scalar `thigh_knee_d` because it gave the best knee match RMSE on the exact 80-window held-out pool.
+3. Results generated before the native-rate switch came from the older 100 Hz model path. If you use the current 200 Hz code path for publication, regenerate the training and simulation numbers before reporting them.
+4. The scalar `predicted_fall_risk` in historical artifacts is a heuristic instability score, not a calibrated fall probability. For the paper, describe it accordingly and prefer the excess instability outcome relative to `REF`.
