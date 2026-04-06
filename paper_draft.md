@@ -34,9 +34,9 @@ The sEMG signal encodes residual-muscle activation as a noisy proxy for intended
 
 **XCoM balance stability.** The instability metric used in this study is grounded in the extrapolated centre of mass (XCoM) framework of Hof et al. (2005). Under a linear inverted pendulum model of bipedal gait—which treats the body as a point mass on a rigid leg—the necessary and sufficient condition for *dynamic* stability is that the XCoM
 
-$$\xi = x_\mathrm{CoM} + \frac{\dot{x}_\mathrm{CoM}}{\omega_0}$$
+$$\xi = x_\mathrm{CoM} + \dot{x}_\mathrm{CoM}/\omega_0$$
 
-lies within the base of support (BoS), defined as the convex hull of current foot-contact points. Here $\omega_0 = \sqrt{g/l_0}$ is the pendulum's natural frequency ($g = 9.81~\mathrm{m\,s^{-2}}$, $l_0 \approx 1.0~\mathrm{m}$, giving $\omega_0 \approx 3.13~\mathrm{rad\,s^{-1}}$). The velocity term $\dot{x}_\mathrm{CoM}/\omega_0$ is a forward-looking momentum projection: a centre of mass moving rapidly toward the BoS edge is less stable than a stationary one at the same position. The signed margin $\delta = \mathrm{dist}(\xi,\,\partial\mathrm{BoS})$ (positive inside BoS, negative outside) is therefore a more predictive pre-fall indicator than CoM position alone (Hof et al., 2005). Figure 2 illustrates the geometry, defines the AUC instability scalar, and shows how the paired excess AUC isolates the override effect.
+lies within the base of support (BoS), defined as the convex hull of current foot-contact points. Here $\omega_0 = \sqrt{g/l_0}$ is the pendulum's natural frequency ($g$ = 9.81 m s⁻², $l_0$ ≈ 1.0 m, giving $\omega_0$ ≈ 3.13 rad s⁻¹). The velocity term $\dot{x}_\mathrm{CoM}/\omega_0$ is a forward-looking momentum projection: a centre of mass moving rapidly toward the BoS edge is less stable than a stationary one at the same position. The signed margin $\delta = \mathrm{dist}(\xi, \partial\mathrm{BoS})$ (positive inside BoS, negative outside) is therefore a more predictive pre-fall indicator than CoM position alone (Hof et al., 2005). Figure 2 illustrates the geometry, defines the AUC instability scalar, and shows how the paired excess AUC isolates the override effect.
 
 ---
 
@@ -81,9 +81,9 @@ where $r_{\mathrm{tilt},t}$ increases from 0 toward 1 as trunk uprightness degra
 
 The **primary outcome** is the excess instability area under the curve (AUC)—the time-integrated risk across a trial minus the same quantity for the paired REF rollout:
 
-$$\Delta_\mathrm{AUC} = \int_0^T r_t^\mathrm{PRED}\,dt - \int_0^T r_t^\mathrm{REF}\,dt$$
+$$\Delta_\mathrm{AUC} = \int_0^T r_t^\mathrm{PRED} dt - \int_0^T r_t^\mathrm{REF} dt$$
 
-computed via the trapezoidal rule. Using the *difference* rather than the PRED AUC alone implements a within-trial paired control. REF and PRED share identical initial conditions, reference clip, and expert-policy weights; the only variable that differs is the presence of the knee override. Different clips vary substantially in their inherent balance difficulty regardless of any override—a clip that demands extreme lateral corrections will produce high PRED AUC for any model. Subtracting AUC_REF removes this clip-level baseline and isolates the marginal effect attributable to the override, analogous to a change-from-baseline design in a controlled experiment. A positive Δ_AUC indicates the override increased integrated balance risk relative to what the expert would have produced unassisted.
+computed via the trapezoidal rule. Using the *difference* rather than the PRED AUC alone implements a within-trial paired control. REF and PRED share identical initial conditions, reference clip, and expert-policy weights; the only variable that differs is the presence of the knee override. Different clips vary substantially in their inherent balance difficulty regardless of any override—a clip that demands extreme lateral corrections will produce high PRED AUC for any model. Subtracting $\mathrm{AUC}_\mathrm{REF}$ removes this clip-level baseline and isolates the marginal effect attributable to the override, analogous to a change-from-baseline design in a controlled experiment. A positive $\Delta_\mathrm{AUC}$ indicates the override increased integrated balance risk relative to what the expert would have produced unassisted.
 
 ### 3.7 Partial Spearman Correlation
 
