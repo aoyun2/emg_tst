@@ -20,23 +20,19 @@ Paper interpretation note:
 - it produces a heuristic per-step instability trace from uprightness, support/contact, and XCoM margin
 - the paper-default continuous outcome is therefore the excess instability AUC, `PRED - REF`, not the absolute `PRED` AUC alone
 
-For the GT path, the repo now derives a marker-based right-thigh segment quaternion from the raw GT marker data, not just a hip-angle proxy. The publication-default motion matcher is currently scalar `thigh_knee_d` with `knee_weight=1.0`, `thigh_weight=0.0`, and `local_refine_radius=30`. The most recent historical benchmark for that matcher, from the pre-native-rate run, gave mean knee match RMSE `9.47°` in [gt_pool_match_grid_80_resampled.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/gt_pool_match_grid_80_resampled.json). The marker-derived 3D thigh quaternion is still stored and available for diagnostics and alternative match modes.
+For the GT path, the repo now derives a marker-based right-thigh segment quaternion from the raw GT marker data, not just a hip-angle proxy. The publication-default motion matcher is scalar `thigh_knee_d` with `knee_weight=1.0`, `thigh_weight=0.0`, and `local_refine_radius=30`. On the current native-rate 80-window run [20260405_230549](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/phys_eval_v2/runs/20260405_230549), that matcher achieved mean knee match RMSE `7.93°` and median knee match RMSE `5.86°` in [summary_metrics_native.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/phys_eval_v2/runs/20260405_230549/summary_metrics_native.json). The marker-derived 3D thigh quaternion is still stored for diagnostics and alternative match modes.
 
 Integration status:
 - the current trainer default in [run_experiment.py](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/emg_tst/run_experiment.py) is `MODEL_ARCH = "cnn_bilstm"`
 - the simulator in [run.py](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/mocap_phys_eval/run.py) is checkpoint-driven and can load this architecture
-- the full GT subject-holdout benchmark run currently lives under [gt_full_subject_holdout](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/gt_full_subject_holdout)
-- the most recent historical `ALL` fold there reached `test_rmse = 8.96 deg` in [metrics_summary.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/gt_full_subject_holdout/all/metrics_summary.json)
-- the evaluator can run that benchmark directly via `EMG_TST_RUN_DIR=artifacts/gt_full_subject_holdout/all` and `MOCAP_PHYS_EVAL_ALLOW_PARTIAL=1`
-
-Important current caveat:
-- the code now uses the native GT `200 Hz` angle/IMU timebase with `400`-sample windows
-- the previously reported benchmark artifacts were generated on the older `100 Hz` model path
-- after this switch, retrain and rerun simulation/statistics before using fresh publication numbers
+- the current native-rate GT subject-holdout training run is [tst_20260405_173725_all](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/checkpoints/tst_20260405_173725_all)
+- that run achieved mean held-out `test_rmse = 7.84°` in [metrics_summary.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/checkpoints/tst_20260405_173725_all/metrics_summary.json)
+- the current native-rate simulation/statistics run is [20260405_230549](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/phys_eval_v2/runs/20260405_230549)
+- the evaluator can rerun that benchmark directly via `EMG_TST_RUN_DIR=checkpoints/tst_20260405_173725_all` and `MOCAP_PHYS_EVAL_ALLOW_PARTIAL=1`
 
 ## Publication Checklist
 
-If you want paper-ready numbers from the current code, use this order:
+To reproduce the current paper-ready native-rate numbers, use this order:
 
 1. Regenerate the GT recordings if needed:
 
@@ -59,7 +55,7 @@ python split_to_samples.py
 4. Run the physical simulation benchmark:
 
 ```powershell
-$env:EMG_TST_RUN_DIR = "artifacts\\gt_full_subject_holdout\\all"
+$env:EMG_TST_RUN_DIR = "checkpoints\\tst_20260405_173725_all"
 $env:MOCAP_PHYS_EVAL_ALLOW_PARTIAL = "1"
 $env:MOCAP_PHYS_EVAL_N_TRIALS = "80"
 python -m mocap_phys_eval.run
@@ -71,7 +67,7 @@ python -m mocap_phys_eval.run
 python -m analysis.correlation --run-dir artifacts/phys_eval_v2/runs/<run_id>
 ```
 
-Only after those five steps should you replace the historical numbers referenced below.
+The current publication run IDs referenced below were produced with this exact sequence.
 
 ---
 
@@ -320,7 +316,7 @@ python -m mocap_phys_eval
 Run the current GT subject-holdout benchmark checkpoint through the evaluator:
 
 ```powershell
-$env:EMG_TST_RUN_DIR = "artifacts\\gt_full_subject_holdout\\all"
+$env:EMG_TST_RUN_DIR = "checkpoints\\tst_20260405_173725_all"
 $env:MOCAP_PHYS_EVAL_ALLOW_PARTIAL = "1"
 $env:MOCAP_PHYS_EVAL_N_TRIALS = "80"
 python -m mocap_phys_eval.run
@@ -352,23 +348,34 @@ Paper-mode defaults:
 - match weights: `knee=1.0`, `thigh=0.0`
 - local refine radius: `30`
 
-Historical GT benchmark result (pre-native-rate switch):
-- training: [metrics_summary.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/gt_full_subject_holdout/all/metrics_summary.json)
-- simulation/statistics: [summary.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/phys_eval_v2/runs/20260405_164303/summary.json)
-- correlation output: [partial_spearman_summary.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/phys_eval_v2/runs/20260405_164303/analysis/partial_spearman_summary.json)
-- exact 80-window matcher benchmark: [gt_pool_match_grid_80_resampled.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/gt_pool_match_grid_80_resampled.json)
+Current native-rate GT benchmark result:
+- training: [metrics_summary.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/checkpoints/tst_20260405_173725_all/metrics_summary.json)
+- simulation/statistics: [summary.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/phys_eval_v2/runs/20260405_230549/summary.json)
+- simulation aggregates: [summary_metrics_native.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/phys_eval_v2/runs/20260405_230549/summary_metrics_native.json)
+- correlation output: [partial_spearman_summary.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/phys_eval_v2/runs/20260405_230549/analysis/partial_spearman_summary.json)
+- plot stats: [paper_plot_stats_excess.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/phys_eval_v2/runs/20260405_230549/analysis/paper_plot_stats_excess.json)
 
-Historical interpretation:
-- held-out model test RMSE on the GT subject-holdout run is `8.96°`
-- mean predictor RMSE across the 80 evaluated simulation windows is `8.63°`
-- the best exact-pool motion matcher in that historical run gets mean knee match RMSE `9.47°`
-- using the corrected paper outcome `excess instability AUC = pred_auc - ref_auc`, raw predictor RMSE is essentially uncorrelated with outcome
-- after controlling for motion-match knee and thigh errors, the partial Spearman estimate is `rho = 0.169`, `p = 0.140`
+Current interpretation:
+- mean held-out model test RMSE on the 55-fold GT subject-holdout run is `7.84°`
+- median held-out model test RMSE is `6.85°`
+- mean predictor RMSE across the 80 evaluated simulation windows is `8.80°`
+- mean motion-match knee RMSE across those windows is `7.93°`
+- using the corrected paper outcome `excess instability AUC = pred_auc - ref_auc`, raw predictor RMSE is weakly negative and non-significant (`rho = -0.166`, `p = 0.140`)
+- after controlling for motion-match knee and thigh errors, the partial Spearman estimate is `rho = -0.022`, `p = 0.851`
 
 Correlation figures:
 - raw RMSE vs excess instability: [raw_rmse_vs_excess_instability.png](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/gt_correlation/raw_rmse_vs_excess_instability.png)
 - partial / residualized RMSE vs excess instability: [partial_rmse_vs_excess_instability.png](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/gt_correlation/partial_rmse_vs_excess_instability.png)
 - motion-match controls vs excess instability: [match_controls_vs_excess_instability.png](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/gt_correlation/match_controls_vs_excess_instability.png)
+
+Paper-native figure set:
+- figure manifest: [figure_manifest.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/paper_native/figure_manifest.json)
+- figure captions: [captions.md](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/paper_native/captions.md)
+- Figure 1, pipeline overview: [fig1_pipeline_overview.png](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/paper_native/fig1_pipeline_overview.png)
+- Figure 2, fold-level prediction distribution: [fig2_prediction_distribution.png](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/paper_native/fig2_prediction_distribution.png)
+- Figure 3, paired simulation outcomes: [fig3_simulation_outcomes.png](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/paper_native/fig3_simulation_outcomes.png)
+- Figure 4, correlation and confounding: [fig4_correlation_confounding.png](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/paper_native/fig4_correlation_confounding.png)
+- Figure 5, representative rollout: [fig5_representative_rollout.png](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/paper_native/fig5_representative_rollout.png)
 
 The main paper statistic uses:
 - predictor: `model.pred_vs_gt_knee_flex_rmse_deg`
@@ -390,6 +397,12 @@ python split_to_samples.py
 ```
 
 - before expecting the simulator to use the new model
+
+To regenerate the full paper figure set from the finalized native-rate run:
+
+```bash
+python analysis/make_paper_figures.py
+```
 
 ### Disk Setup
 
@@ -475,8 +488,9 @@ This section is the current repo-faithful summary to give another writing model.
 
 Important:
 - the code path described below is the current native-rate `200 Hz` implementation
-- the exact benchmark numbers quoted below are still from the most recent historical pre-native-rate run
-- if you are writing a final paper from the current code, rerun the checklist above and replace those historical values
+- the exact benchmark numbers quoted below are from the current native-rate benchmark
+- the canonical training run is `checkpoints/tst_20260405_173725_all`
+- the canonical simulation/statistics run is `artifacts/phys_eval_v2/runs/20260405_230549`
 
 ### Current Study Framing
 
@@ -531,14 +545,14 @@ Important:
 ### Evaluation Design
 
 - Training benchmark:
-  - subject-holdout GT run stored in [metrics_summary.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/gt_full_subject_holdout/all/metrics_summary.json)
-  - most recent historical `ALL` result: `test_rmse = 8.96°`, `test_seq_rmse = 8.96°`
+  - subject-holdout GT run stored in [metrics_summary.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/checkpoints/tst_20260405_173725_all/metrics_summary.json)
+  - current native-rate `ALL` result: mean `test_rmse = 7.84°`, mean `test_seq_rmse = 7.88°`
 - Simulation benchmark:
-  - run stored in [summary.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/phys_eval_v2/runs/20260405_164303/summary.json)
+  - run stored in [summary.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/phys_eval_v2/runs/20260405_230549/summary.json)
   - `80` successful GT held-out windows
   - fixed seed `42`
-  - model checkpoint source: `artifacts/gt_full_subject_holdout/all/fold_01/reg_best.pt`
-  - exact-pool matcher benchmark stored in [gt_pool_match_grid_80_resampled.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/gt_pool_match_grid_80_resampled.json)
+  - model checkpoint source: `checkpoints/tst_20260405_173725_all/fold_*/reg_best.pt`
+  - aggregate simulation metrics stored in [summary_metrics_native.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/phys_eval_v2/runs/20260405_230549/summary_metrics_native.json)
 - Statistical analysis:
   - predictor: `model.pred_vs_gt_knee_flex_rmse_deg`
   - outcome: `sim.excess.instability_auc_delta`
@@ -557,16 +571,21 @@ Important:
 ### Current Main Results
 
 - Training:
-  - historical held-out test RMSE: `8.96°`
+  - mean held-out test RMSE: `7.84°`
+  - median held-out test RMSE: `6.85°`
+  - mean held-out MAE: `6.11°`
 - 80-window simulation batch:
-  - mean predictor RMSE: `8.63°`
-  - historical exact-pool motion-match mean knee RMSE: `9.47°`
-  - raw predictor-error vs excess instability: `rho = -0.038`, `p = 0.740`
+  - mean predictor RMSE: `8.80°`
+  - mean motion-match knee RMSE: `7.93°`
+  - median motion-match knee RMSE: `5.86°`
+  - mean reference simulated knee RMSE: `12.09°`
+  - mean predicted simulated knee RMSE: `9.60°`
+  - raw predictor-error vs excess instability: `rho = -0.166`, `p = 0.140`
   - partial Spearman after motion-match controls:
-    - `rho = 0.169`
-    - `p = 0.140`
+    - `rho = -0.022`
+    - `p = 0.851`
 - Interpretation:
-  - the model can achieve sub-`10°` held-out prediction error on the historical GT benchmark
+  - the model achieves sub-`10°` held-out prediction error on the current native-rate GT benchmark
   - however, in the current simulation study, prediction RMSE does not show a statistically significant independent association with excess instability once motion-matching quality is controlled for
   - the instability heuristic itself should not be interpreted as a literal fall probability
 
@@ -581,4 +600,4 @@ Important:
 - Do not describe the current repo as using the earlier custom-data transformer pipeline unless you are explicitly writing historical background.
 - The current Word draft still reflects that older path and should be revised before submission.
 - The public GT data used here may not be identical to the full corpus described in the external paper, so avoid claiming exact reproduction of that paper's benchmark unless you verify the dataset parity directly.
-- The latest published benchmark artifacts in this repo were produced before the native-rate switch. After changing the code to native `200 Hz` windows, retrain and rerun simulation/statistics before using new results in the paper.
+- The scalar `predicted_fall_risk` is a heuristic instability score, not a calibrated fall probability; in the paper, describe it that way and report excess instability AUC relative to `REF` as the primary outcome.

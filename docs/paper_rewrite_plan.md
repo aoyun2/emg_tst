@@ -6,8 +6,9 @@ Use this together with the `Paper Handoff` section in [README.md](/C:/Users/aaro
 
 Important:
 - the methodology below should follow the current native-rate `200 Hz` code path
-- the specific benchmark numbers listed here are from the most recent historical pre-native-rate run
-- if you want final publication numbers from the current code, rerun the pipeline first and replace those values
+- the benchmark numbers listed here are from the current native-rate publication run
+- the canonical training run is `checkpoints/tst_20260405_173725_all`
+- the canonical simulation/statistics run is `artifacts/phys_eval_v2/runs/20260405_230549`
 
 ## Main Change
 
@@ -49,9 +50,10 @@ Use 4 parts:
    - partial Spearman correlation with motion-match controls
 
 3. Main results
-   - held-out test RMSE `8.96°`
+   - held-out test RMSE `7.84°`
    - 80 successful simulation windows
-   - raw RMSE vs excess instability approximately zero
+   - motion-match knee RMSE below `8°` on average
+   - raw RMSE vs excess instability non-significant
    - partial correlation after controls remains non-significant
 
 4. Interpretation
@@ -152,38 +154,37 @@ Replace the old custom-data / transformer subsections with:
    - Pearson correlation on residuals = partial Spearman via Frisch-Waugh-Lovell
    - justify the outcome as `PRED - REF` because the instability trace is heuristic and absolute `PRED` AUC inherits clip difficulty and reference bias
 
-### 2.x Historical Numbers To Replace After Rerun
+### 2.x Current Native-Rate Numbers
 
-Training result from [metrics_summary.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/gt_full_subject_holdout/all/metrics_summary.json):
-- `n_train = 88,298`
-- `n_val = 1,802`
-- `n_test = 9,010`
-- `best_val_rmse = 21.49°`
-- `test_rmse = 8.96°`
-- `test_seq_rmse = 8.96°`
-- `test_mae = 6.11°`
+Training result from [metrics_summary.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/checkpoints/tst_20260405_173725_all/metrics_summary.json):
+- `n_folds = 55`
+- mean `best_val_rmse = 6.05°`
+- mean `test_rmse = 7.84°`
+- median `test_rmse = 6.85°`
+- mean `test_seq_rmse = 7.88°`
+- mean `test_mae = 6.11°`
 
-Simulation result from [summary.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/phys_eval_v2/runs/20260405_164303/summary.json):
+Simulation result from [summary_metrics_native.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/phys_eval_v2/runs/20260405_230549/summary_metrics_native.json):
 - `80` successful trials
 - fixed seed `42`
-- mean predictor RMSE across simulation windows: `8.63°`
-- mean reference balance-risk AUC: `0.858`
-- mean predicted balance-risk AUC: `1.040`
-- mean reference simulated knee RMSE: `9.99°`
-- mean predicted simulated knee RMSE: `9.56°`
+- mean predictor RMSE across simulation windows: `8.80°`
+- mean motion-match knee RMSE: `7.93°`
+- median motion-match knee RMSE: `5.86°`
+- mean reference instability AUC: `0.821`
+- mean predicted instability AUC: `1.030`
+- mean excess instability AUC: `0.208`
+- mean reference simulated knee RMSE: `12.09°`
+- mean predicted simulated knee RMSE: `9.60°`
 
-Exact-pool motion-matching benchmark from [gt_pool_match_grid_80_resampled.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/gt_pool_match_grid_80_resampled.json):
-- best publication-default mean knee match RMSE: `9.47°`
-
-Correlation result from [partial_spearman_summary.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/phys_eval_v2/runs/20260405_164303/analysis/partial_spearman_summary.json):
+Correlation result from [partial_spearman_summary.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/phys_eval_v2/runs/20260405_230549/analysis/partial_spearman_summary.json):
 - `n = 80`
-- partial Spearman on excess instability `rho = 0.169`
-- `p = 0.140`
+- partial Spearman on excess instability `rho = -0.022`
+- `p = 0.851`
 
-Raw and control correlations from [paper_plot_stats_excess.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/phys_eval_v2/runs/20260405_164303/analysis/paper_plot_stats_excess.json):
-- raw RMSE vs excess instability: `rho = -0.038`, `p = 0.740`
-- match knee error vs excess instability: `rho = -0.340`, `p = 0.0020`
-- match thigh error vs excess instability: `rho = -0.358`, `p = 0.0011`
+Raw and control correlations from [paper_plot_stats_excess.json](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/artifacts/phys_eval_v2/runs/20260405_230549/analysis/paper_plot_stats_excess.json):
+- raw RMSE vs excess instability: `rho = -0.166`, `p = 0.140`
+- match knee error vs excess instability: `rho = -0.258`, `p = 0.0207`
+- match thigh error vs excess instability: `rho = -0.232`, `p = 0.0383`
 
 ## Recommended Results Section
 
@@ -193,12 +194,12 @@ Use this structure:
 
 Key points:
 - the CNN-BiLSTM achieved sub-10° held-out RMSE on the GT subject-holdout benchmark
-- report the exact `8.96°` test RMSE and `6.11°` MAE
+- report the exact mean `7.84°` test RMSE and `6.11°` MAE
 - note that this establishes a model accurate enough for the planned simulation benchmark
 
 Suggested sentence:
 
-`On the current Georgia Tech subject-holdout benchmark, the CNN-BiLSTM achieved a held-out test RMSE of 8.96° and MAE of 6.11°, indicating sub-10° knee-angle prediction accuracy on the implemented dataset split.`
+`On the current Georgia Tech subject-holdout benchmark, the CNN-BiLSTM achieved a mean held-out test RMSE of 7.84° and MAE of 6.11°, indicating sub-10° knee-angle prediction accuracy on the implemented dataset split.`
 
 ### 3.2 Simulation Outcomes
 
@@ -209,22 +210,23 @@ Key points:
 
 Suggested sentence:
 
-`Across the 80-window simulation run, the model-conditioned rollout had slightly lower mean simulated knee RMSE than the reference rollout (9.56° vs. 9.99°), yet its mean heuristic instability AUC was higher (1.040 vs. 0.858), indicating that improved local knee tracking did not automatically translate into lower simulated instability.`
+`Across the 80-window simulation run, the model-conditioned rollout had lower mean simulated knee RMSE than the reference rollout (9.60° vs. 12.09°), yet its mean heuristic instability AUC was higher (1.030 vs. 0.821), indicating that improved local knee tracking did not automatically translate into lower simulated instability.`
 
 ### 3.3 Correlation Results
 
 Key points:
-- raw RMSE-risk link is weakly positive
+- raw RMSE-risk link is weakly negative and non-significant
 - after controlling for motion-match quality, the association disappears
 
 Suggested paragraph:
 
-`Using excess instability AUC, defined as the model-conditioned instability AUC minus the reference instability AUC for the matched clip, raw prediction error showed no meaningful monotonic association with outcome (Spearman rho = -0.038, p = 0.740). After controlling for motion-match knee error and thigh-orientation error using a partial Spearman procedure based on the Frisch-Waugh-Lovell theorem, the association remained non-significant (rho = 0.169, p = 0.140).`
+`Using excess instability AUC, defined as the model-conditioned instability AUC minus the reference instability AUC for the matched clip, raw prediction error showed no meaningful monotonic association with outcome (Spearman rho = -0.166, p = 0.140). After controlling for motion-match knee error and thigh-orientation error using a partial Spearman procedure based on the Frisch-Waugh-Lovell theorem, the association remained non-significant (rho = -0.022, p = 0.851).`
 
 ## Recommended Discussion Section
 
 Main message:
 - sub-10° prediction error is achievable on the current GT benchmark
+- sub-10° motion matching is also achievable on the current GT benchmark
 - but prediction RMSE is not a significant predictor of excess instability in the present pipeline
 - the instability trace should be framed as a heuristic stability cost, not a literal fall probability
 
@@ -238,14 +240,23 @@ Suggested discussion claims:
 
 Use these files directly:
 
-1. Raw relationship
-   - [raw_rmse_vs_excess_instability.png](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/gt_correlation/raw_rmse_vs_excess_instability.png)
+1. Pipeline overview
+   - [fig1_pipeline_overview.png](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/paper_native/fig1_pipeline_overview.png)
 
-2. Partial / adjusted relationship
-   - [partial_rmse_vs_excess_instability.png](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/gt_correlation/partial_rmse_vs_excess_instability.png)
+2. Prediction performance distribution
+   - [fig2_prediction_distribution.png](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/paper_native/fig2_prediction_distribution.png)
 
-3. Motion-match confounders
-   - [match_controls_vs_excess_instability.png](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/gt_correlation/match_controls_vs_excess_instability.png)
+3. Paired simulation outcomes
+   - [fig3_simulation_outcomes.png](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/paper_native/fig3_simulation_outcomes.png)
+
+4. Correlation and confounding
+   - [fig4_correlation_confounding.png](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/paper_native/fig4_correlation_confounding.png)
+
+5. Representative rollout
+   - [fig5_representative_rollout.png](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/paper_native/fig5_representative_rollout.png)
+
+Caption notes for all five:
+- [captions.md](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/paper_native/captions.md)
 
 ## What To Delete From The Current Draft
 
@@ -271,5 +282,4 @@ Two caveats should stay explicit in the paper:
 
 1. The current repo benchmark uses the publicly accessible GT processed dataset integrated here, which may not be identical to the exact corpus used in the external GT paper.
 2. For the GT path, the repo stores a marker-derived `thigh_quat_wxyz`, but the current publication-default matcher is still scalar `thigh_knee_d` because it gave the best knee match RMSE on the exact 80-window held-out pool.
-3. Results generated before the native-rate switch came from the older 100 Hz model path. If you use the current 200 Hz code path for publication, regenerate the training and simulation numbers before reporting them.
-4. The scalar `predicted_fall_risk` in historical artifacts is a heuristic instability score, not a calibrated fall probability. For the paper, describe it accordingly and prefer the excess instability outcome relative to `REF`.
+3. The scalar `predicted_fall_risk` in the saved artifacts is a heuristic instability score, not a calibrated fall probability. For the paper, describe it accordingly and prefer the excess instability outcome relative to `REF`.
