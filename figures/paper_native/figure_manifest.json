@@ -9,13 +9,13 @@
   "training_run_dir": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\checkpoints\\tst_20260405_173725_all",
   "simulation_run_dir": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\artifacts\\phys_eval_v2\\runs\\20260405_230549",
   "representative_trial": {
-    "query_id": "rig_001312",
-    "file_name": "gt_data021.npy",
-    "pred_rmse_deg": 4.042461254823238,
-    "match_knee_rmse_deg": 3.2820338424088833,
-    "ref_knee_rmse_deg": 21.54618902031835,
-    "pred_knee_rmse_deg": 7.648131303778093,
-    "excess_instability_auc": 0.3953897490265274,
-    "compare_npz": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\artifacts\\phys_eval_v2\\runs\\20260405_230549\\evals\\43_rig_001312\\replay\\compare.npz"
+    "query_id": "rig_002185",
+    "file_name": "gt_data035.npy",
+    "pred_rmse_deg": 5.109463645290468,
+    "match_knee_rmse_deg": 4.653843450194614,
+    "ref_knee_rmse_deg": 15.162225012045997,
+    "pred_knee_rmse_deg": 4.855770012442781,
+    "excess_instability_auc": 0.5831853674501655,
+    "compare_npz": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\artifacts\\phys_eval_v2\\runs\\20260405_230549\\evals\\70_rig_002185\\replay\\compare.npz"
   }
 }
