@@ -1,22 +1,11 @@
 {
   "figure_paths": {
     "fig1": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig1_pipeline_overview.png",
-    "fig2": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig2_prediction_distribution.png",
-    "fig3": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig3_simulation_outcomes.png",
-    "fig4": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig4_correlation_confounding.png",
-    "fig5": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig5_representative_rollout.png",
-    "fig6": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig6_simulation_diagnostics.png"
+    "fig2": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig2_balance_metric.png",
+    "fig3": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig3_prediction_performance.png",
+    "fig4": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig4_simulation_outcomes.png",
+    "fig5": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig5_fwl_correlation.png"
   },
   "training_run_dir": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\checkpoints\\tst_20260405_173725_all",
-  "simulation_run_dir": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\artifacts\\phys_eval_v2\\runs\\20260405_230549",
-  "representative_trial": {
-    "query_id": "rig_002185",
-    "file_name": "gt_data035.npy",
-    "pred_rmse_deg": 5.109463645290468,
-    "match_knee_rmse_deg": 4.653843450194614,
-    "ref_knee_rmse_deg": 15.162225012045997,
-    "pred_knee_rmse_deg": 4.855770012442781,
-    "excess_instability_auc": 0.5831853674501655,
-    "compare_npz": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\artifacts\\phys_eval_v2\\runs\\20260405_230549\\evals\\70_rig_002185\\replay\\compare.npz"
-  }
+  "simulation_run_dir": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\artifacts\\phys_eval_v2\\runs\\20260405_230549"
 }

@@ -51,15 +51,13 @@ python -m analysis.make_paper_figures
 
 ![Figure 1: End-to-end evaluation pipeline](figures/paper_native/fig1_pipeline_overview.png)
 
-![Figure 2: Subject-holdout predictive performance](figures/paper_native/fig2_prediction_distribution.png)
+![Figure 2: XCoM balance-risk metric](figures/paper_native/fig2_balance_metric.png)
 
-![Figure 3: Physical simulation outcomes](figures/paper_native/fig3_simulation_outcomes.png)
+![Figure 3: Model prediction performance](figures/paper_native/fig3_prediction_performance.png)
 
-![Figure 4: Partial Spearman correlation analysis](figures/paper_native/fig4_correlation_confounding.png)
+![Figure 4: Simulation instability outcomes](figures/paper_native/fig4_simulation_outcomes.png)
 
-![Figure 5: Representative trial deep-dive](figures/paper_native/fig5_representative_rollout.png)
-
-![Figure 6: Simulation diagnostic plots](figures/paper_native/fig6_simulation_diagnostics.png)
+![Figure 5: FWL residualization and partial Spearman correlation](figures/paper_native/fig5_fwl_correlation.png)
 
 Figure captions: [figures/paper_native/captions.md](figures/paper_native/captions.md)
 
