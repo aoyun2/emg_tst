@@ -4,7 +4,7 @@ Publication-ready figure generation for the CNN-BiLSTM prosthetic simulation pap
 Run with:
     python -m analysis.make_paper_figures
 
-Produces figures/paper_native/fig1_*.png through fig5_*.png and captions.md.
+Produces figures/paper_native/fig1_*.png through fig6_*.png and captions.md.
 """
 from __future__ import annotations
 
@@ -112,7 +112,12 @@ def load_simulation_results() -> tuple[dict[str, Any], pd.DataFrame]:
                 "ref_instability_auc": result["sim"]["ref"]["instability_auc"],
                 "pred_instability_auc": result["sim"]["pred"]["instability_auc"],
                 "excess_instability_auc": result["sim"]["excess"]["instability_auc_delta"],
+                "ref_balance_loss_step": result["sim"]["ref"]["balance_loss_step"],
+                "pred_balance_loss_step": result["sim"]["pred"]["balance_loss_step"],
                 "compare_npz": result["artifacts"]["compare_npz"],
+                "motion_match_plot": result["artifacts"]["motion_match_plot"],
+                "simulation_knee_plot": result["artifacts"]["simulation_knee_plot"],
+                "simulation_balance_plot": result["artifacts"]["simulation_balance_plot"],
             }
         )
     return summary, pd.DataFrame(rows)
@@ -148,9 +153,10 @@ def _annotate(ax: plt.Axes, text: str, xy: tuple, xytext: tuple | None = None,
     )
 
 
-def _panel_label(ax: plt.Axes, label: str, x: float = -0.12, y: float = 1.05) -> None:
+def _corner(ax: plt.Axes, label: str, x: float = -0.14, y: float = 1.05) -> None:
+    """Bold panel letter in axes-fraction coords (top-left corner)."""
     ax.text(x, y, label, transform=ax.transAxes,
-            fontsize=12, fontweight="bold", color=C["ink"], va="top")
+            fontsize=13, fontweight="bold", color=C["ink"], va="top", ha="left")
 
 
 def _best_fit(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -172,16 +178,18 @@ def draw_pipeline_figure() -> str:
     ax.axis("off")
 
     # ── stage definitions ────────────────────────────────────────────────
+    # NOTE: use only ASCII characters in card text — Unicode deg/arrow/times
+    # render incorrectly on some matplotlib backends.
     stages = [
         {
             "x": 0.03, "w": 0.20,
             "color": C["neutral"],
             "title": "① Georgia Tech\nDataset",
             "lines": [
-                "55 subjects · normal walking",
+                "55 subjects, normal walk",
                 "4 EMG channels (200 Hz)",
                 "6-axis IMU (accel + gyro)",
-                "Marker knee angle (°)",
+                "Marker knee angle (deg)",
                 "400-sample windows (2.0 s)",
             ],
         },
@@ -190,11 +198,11 @@ def draw_pipeline_figure() -> str:
             "color": C["pred"],
             "title": "② CNN-BiLSTM\nRegressor",
             "lines": [
-                "Conv1d(10→32, k=5) × 2",
+                "Conv1d(10->32, k=5) x2",
                 "BiLSTM(64 hidden, 2 layers)",
-                "Last-step regression",
+                "Last-step regression head",
                 "LOFO cross-validation",
-                "Mean test RMSE: 7.84°",
+                "Mean test RMSE: 7.84 deg",
             ],
         },
         {
@@ -205,7 +213,7 @@ def draw_pipeline_figure() -> str:
                 "MoCapAct expert bank",
                 "Thigh + knee pose query",
                 "Nearest-snippet retrieval",
-                "Mean match error: 7.93°",
+                "Mean match error: 7.93 deg",
                 "80 retained trials",
             ],
         },
@@ -262,13 +270,14 @@ def draw_pipeline_figure() -> str:
             fontsize=8.5, fontweight="bold",
             color="white", zorder=4, linespacing=1.3,
         )
-        # body lines
+        # body lines — clip text to card width using transform
         for i, line in enumerate(st["lines"]):
             ax.text(
-                x + 0.012, box_y0 + box_h - 0.23 - i * 0.088,
+                x + 0.010, box_y0 + box_h - 0.23 - i * 0.086,
                 f"• {line}",
                 ha="left", va="top",
-                fontsize=7.5, color=C["ink"], zorder=4,
+                fontsize=7.0, color=C["ink"], zorder=4,
+                clip_on=True,
             )
 
     # ── arrows ──────────────────────────────────────────────────────────
@@ -297,8 +306,8 @@ def draw_pipeline_figure() -> str:
     )
     ax.text(
         0.50, 0.112,
-        "Primary predictor: model pred-vs-GT knee RMSE (deg)  ·  "
-        "Primary outcome: excess instability AUC = PRED − REF",
+        "Primary predictor: model pred-vs-GT knee RMSE (deg)  |  "
+        "Primary outcome: excess instability AUC = PRED - REF",
         ha="center", va="top",
         fontsize=7.5, color=C["muted"], style="italic",
     )
@@ -350,17 +359,17 @@ def draw_prediction_figure(train_df: pd.DataFrame) -> str:
 
     # thresholds
     ax.axhline(10.0, color=C["warm"], lw=1.3, ls="--", zorder=3)
-    ax.text(0.28, 10.2, "10° threshold", fontsize=7.5, color=C["warm"],
+    ax.text(0.28, 10.2, "10 deg threshold", fontsize=7.5, color=C["warm"],
             transform=ax.get_yaxis_transform())
     ax.axhline(8.0, color=C["good"], lw=1.1, ls=":", zorder=3)
-    ax.text(0.28, 8.2, "8° target", fontsize=7.5, color=C["good"],
+    ax.text(0.28, 8.2, "8 deg target", fontsize=7.5, color=C["good"],
             transform=ax.get_yaxis_transform())
 
     # stats annotation
     stats_txt = (
-        f"Mean = {mean_r:.1f}°\n"
-        f"Median = {med_r:.1f}°\n"
-        f"SD = {std_r:.1f}°\n"
+        f"Mean = {mean_r:.1f} deg\n"
+        f"Median = {med_r:.1f} deg\n"
+        f"SD = {std_r:.1f} deg\n"
         f"N = {n} folds"
     )
     ax.text(0.97, 0.97, stats_txt, transform=ax.transAxes,
@@ -371,10 +380,11 @@ def draw_prediction_figure(train_df: pd.DataFrame) -> str:
     ax.set_xlim(-0.45, 0.45)
     ax.set_xticks([0])
     ax.set_xticklabels([f"N={n} subject folds"], fontsize=8)
-    ax.set_ylabel("Held-out test RMSE (°)", fontsize=9)
-    ax.set_title("(A)  Held-out RMSE distribution", fontsize=9.5, fontweight="bold", pad=6)
+    ax.set_ylabel("Held-out test RMSE (deg)", fontsize=9)
+    ax.set_title("Held-out RMSE distribution", fontsize=9.5, fontweight="bold", pad=6,
+                 loc="left")
     _grid(ax, "y")
-    _panel_label(ax, "A")
+    _corner(ax, "A")
 
     # ── Panel B: ECDF ───────────────────────────────────────────────────
     ax = axes[1]
@@ -387,23 +397,23 @@ def draw_prediction_figure(train_df: pd.DataFrame) -> str:
     ax.axvline(10.0, color=C["warm"], lw=1.3, ls="--")
     ax.axhline(pct_sub10, color=C["warm"], lw=0.9, ls=":")
     ax.text(10.3, pct_sub10 - 4,
-            f"{pct_sub10:.0f}% < 10°", fontsize=7.5, color=C["warm"])
+            f"{pct_sub10:.0f}% < 10 deg", fontsize=7.5, color=C["warm"])
 
     ax.axvline(8.0, color=C["good"], lw=1.1, ls=":")
     ax.axhline(pct_sub8, color=C["good"], lw=0.9, ls=":")
     ax.text(8.3, pct_sub8 - 4,
-            f"{pct_sub8:.0f}% < 8°", fontsize=7.5, color=C["good"])
+            f"{pct_sub8:.0f}% < 8 deg", fontsize=7.5, color=C["good"])
 
     ax.axvline(mean_r, color=C["pred"], lw=1.0, ls="-", alpha=0.5)
 
-    ax.set_xlabel("Held-out test RMSE (°)", fontsize=9)
+    ax.set_xlabel("Held-out test RMSE (deg)", fontsize=9)
     ax.set_ylabel("Cumulative percentage of folds (%)", fontsize=9)
-    ax.set_title("(B)  Empirical CDF of held-out RMSE", fontsize=9.5,
-                 fontweight="bold", pad=6)
+    ax.set_title("Empirical CDF of held-out RMSE", fontsize=9.5,
+                 fontweight="bold", pad=6, loc="left")
     ax.set_ylim(0, 102)
     ax.yaxis.set_major_formatter(ticker.FormatStrFormatter("%g%%"))
     _grid(ax)
-    _panel_label(ax, "B")
+    _corner(ax, "B")
 
     fig.suptitle(
         "Figure 2.  Subject-holdout predictive performance (55-fold LOFO cross-validation)",
@@ -420,55 +430,46 @@ def draw_prediction_figure(train_df: pd.DataFrame) -> str:
 # ---------------------------------------------------------------------------
 
 def draw_simulation_figure(sim_df: pd.DataFrame) -> str:
-    ref_k = sim_df["ref_knee_rmse"].to_numpy()
-    pred_k = sim_df["pred_knee_rmse"].to_numpy()
     ref_auc = sim_df["ref_instability_auc"].to_numpy()
     pred_auc = sim_df["pred_instability_auc"].to_numpy()
     excess = sim_df["excess_instability_auc"].to_numpy()
     n = len(excess)
 
+    # Balance-risk threshold crossing counts (balance_loss_step > 0 means crossing)
+    ref_cross = int((sim_df["ref_balance_loss_step"] > 0).sum())
+    pred_cross = int((sim_df["pred_balance_loss_step"] > 0).sum())
+
     # Wilcoxon tests
-    _stat_knee, p_knee = stats.wilcoxon(pred_k, ref_k, alternative="less")
     _stat_exc, p_exc = stats.wilcoxon(excess, alternative="greater")
 
     def _p_str(p: float) -> str:
         return "p < 0.001" if p < 0.001 else f"p = {p:.3f}"
 
     fig = plt.figure(figsize=(7.5, 4.0))
-    gs = gridspec.GridSpec(1, 3, figure=fig, wspace=0.48,
-                           left=0.08, right=0.97, bottom=0.14, top=0.82)
+    gs = gridspec.GridSpec(1, 3, figure=fig, wspace=0.50,
+                           left=0.09, right=0.97, bottom=0.14, top=0.82)
     ax0 = fig.add_subplot(gs[0])
     ax1 = fig.add_subplot(gs[1])
     ax2 = fig.add_subplot(gs[2])
 
-    def _corner(ax: plt.Axes, letter: str) -> None:
-        ax.text(-0.14, 1.0, letter, transform=ax.transAxes,
-                fontsize=13, fontweight="bold", va="top", ha="left",
-                color=C["ink"])
-
-    # ── Panel A: REF vs PRED knee RMSE scatter ──────────────────────────
+    # ── Panel A: Balance-risk threshold crossing rate bar chart ──────────
+    # (REF 40% vs PRED 80%) — this is the primary binary instability finding
     ax = ax0
-    lim = max(ref_k.max(), pred_k.max()) * 1.06
-    ax.plot([0, lim], [0, lim], color=C["muted"], lw=1.0, ls="--", zorder=1)
-    ax.scatter(ref_k, pred_k, s=18, color=C["pred"], alpha=0.65,
-               edgecolors="white", linewidth=0.4, zorder=3)
-    ax.fill_between([0, lim], [0, 0], [0, lim], alpha=0.06, color=C["good"],
-                    zorder=0)
-    frac_below = (pred_k < ref_k).mean()
-    ax.text(
-        0.04, 0.97,
-        f"{frac_below*100:.0f}% of trials:\nPRED < REF\n{_p_str(p_knee)}",
-        transform=ax.transAxes, fontsize=7.5, va="top", ha="left",
-        color=C["good"],
-        bbox=dict(boxstyle="round,pad=0.25", facecolor="#f0fdf4",
-                  edgecolor="#bbf7d0", linewidth=0.8),
-    )
-    ax.set_xlabel("REF knee RMSE (°)", fontsize=9)
-    ax.set_ylabel("PRED knee RMSE (°)", fontsize=9)
-    ax.set_title("Knee tracking", fontsize=9.5, fontweight="bold", pad=4)
-    ax.set_xlim(0, lim)
-    ax.set_ylim(0, lim)
-    _grid(ax)
+    labels = ["REF", "PRED"]
+    counts = [ref_cross, pred_cross]
+    pcts = [ref_cross / n * 100, pred_cross / n * 100]
+    colors = [C["ref"], C["warm"]]
+    bars = ax.bar(labels, counts, color=colors, width=0.5, edgecolor=C["ink"],
+                  linewidth=0.8, zorder=3)
+    for bar, pct, cnt in zip(bars, pcts, counts):
+        ax.text(bar.get_x() + bar.get_width() / 2, cnt + 0.8,
+                f"{pct:.0f}%\n({cnt}/{n})",
+                ha="center", va="bottom", fontsize=8, color=C["ink"])
+    ax.set_ylim(0, n * 1.18)
+    ax.set_ylabel("Trials with threshold crossing", fontsize=9)
+    ax.set_title("Balance-risk crossings", fontsize=9.5, fontweight="bold", pad=4,
+                 loc="left")
+    _grid(ax, "y")
     _corner(ax, "A")
 
     # ── Panel B: instability AUC — paired violin comparison ──────────────
@@ -511,7 +512,8 @@ def draw_simulation_figure(sim_df: pd.DataFrame) -> str:
         fontsize=8,
     )
     ax.set_ylabel("Instability AUC", fontsize=9)
-    ax.set_title("Instability AUC", fontsize=9.5, fontweight="bold", pad=4)
+    ax.set_title("Instability AUC", fontsize=9.5, fontweight="bold", pad=4,
+                 loc="left")
     _grid(ax, "y")
     _corner(ax, "B")
 
@@ -532,15 +534,16 @@ def draw_simulation_figure(sim_df: pd.DataFrame) -> str:
         bbox=dict(boxstyle="round,pad=0.25", facecolor="#fff1f2",
                   edgecolor="#fecdd3", linewidth=0.8),
     )
-    ax.set_xlabel("Excess AUC (PRED − REF)", fontsize=9)
+    ax.set_xlabel("Excess AUC (PRED - REF)", fontsize=9)
     ax.set_ylabel("Trial count", fontsize=9)
-    ax.set_title("Excess instability AUC", fontsize=9.5, fontweight="bold", pad=4)
+    ax.set_title("Excess instability AUC", fontsize=9.5, fontweight="bold", pad=4,
+                 loc="left")
     ax.legend(fontsize=7.5, loc="upper left")
     _grid(ax, "y")
     _corner(ax, "C")
 
     fig.suptitle(
-        "Figure 3.  PRED improves knee tracking (A) but significantly increases instability (B, C)",
+        "Figure 3.  Right-knee override significantly increases simulated instability (A-C)",
         fontsize=10, fontweight="bold", y=1.01,
     )
     out = OUT_DIR / "fig3_simulation_outcomes.png"
@@ -568,20 +571,19 @@ def draw_correlation_figure(trials_df: pd.DataFrame,
 
     def _p_label(r: float, p: float) -> str:
         p_str = "< 0.001" if p < 0.001 else f"= {p:.3f}"
-        return f"ρ = {r:.3f},  p {p_str}"
+        return f"rho = {r:.3f},  p {p_str}"
 
     fig = plt.figure(figsize=(7.5, 3.1))
-    # Reserve left margin for colorbar; use GridSpec with explicit left margin
     gs = gridspec.GridSpec(1, 3, figure=fig, wspace=0.52,
-                           left=0.08, right=0.97, bottom=0.17, top=0.80)
+                           left=0.08, right=0.97, bottom=0.17, top=0.75)
     axes = [fig.add_subplot(gs[i]) for i in range(3)]
 
     panel_specs = [
-        (x_raw, y_raw, x_match, "A   Raw association",
-         "Model knee RMSE (°)", "Excess instability AUC", rho_raw, p_raw),
-        (x_match, y_raw, None, "B   Motion-match confound",
-         "Motion-match knee RMSE (°)", "Excess instability AUC", rho_match, p_match),
-        (x_res, y_res, None, "C   Partial (FWL residualized)",
+        (x_raw, y_raw, x_match, "Raw association",
+         "Model knee RMSE (deg)", "Excess instability AUC", rho_raw, p_raw),
+        (x_match, y_raw, None, "Motion-match confound",
+         "Motion-match knee RMSE (deg)", "Excess instability AUC", rho_match, p_match),
+        (x_res, y_res, None, "Partial (FWL residualized)",
          "Residualized rank\n(model RMSE)",
          "Residualized rank\n(excess instability)", rho_part, p_part),
     ]
@@ -593,9 +595,9 @@ def draw_correlation_figure(trials_df: pd.DataFrame,
                             s=22, alpha=0.85, edgecolors="white",
                             linewidth=0.3, zorder=3, vmin=0)
             # place colorbar above panel A
-            cax = ax.inset_axes([0.0, 1.06, 1.0, 0.07])
+            cax = ax.inset_axes([0.0, 1.08, 1.0, 0.07])
             cb = fig.colorbar(sc, cax=cax, orientation="horizontal")
-            cb.set_label("Match RMSE (°)", fontsize=7, labelpad=1)
+            cb.set_label("Match RMSE (deg)", fontsize=7, labelpad=1)
             cb.ax.tick_params(labelsize=6)
         elif idx == 1:
             ax.scatter(xdata, ydata, color=C["neutral"], s=22,
@@ -610,18 +612,19 @@ def draw_correlation_figure(trials_df: pd.DataFrame,
 
         ax.set_xlabel(xlabel, fontsize=8)
         ax.set_ylabel(ylabel, fontsize=8)
-        ax.set_title(title, fontsize=9.5, fontweight="bold", pad=12, loc="left")
+        ax.set_title(title, fontsize=9.5, fontweight="bold", pad=4, loc="left")
         ax.text(0.97, 0.97, _p_label(rho_s, p_s),
                 transform=ax.transAxes, fontsize=7.5,
                 va="top", ha="right", color=C["ink"],
                 bbox=dict(boxstyle="round,pad=0.25", facecolor="#f9fafb",
                           edgecolor=C["grid"], linewidth=0.7))
         _grid(ax)
+        _corner(ax, ["A", "B", "C"][idx])
 
     fig.suptitle(
-        "Figure 4.  Motion-match quality confounds the RMSE–instability association;\n"
-        "after FWL residualization, partial ρ ≈ 0  (p = 0.851)",
-        fontsize=9.5, fontweight="bold", y=1.02,
+        "Figure 4.  Motion-match quality confounds the RMSE-instability association;\n"
+        "after FWL residualization, partial rho ~ 0  (p = 0.851)",
+        fontsize=9.5, fontweight="bold", y=1.10,
     )
     out = OUT_DIR / "fig4_correlation_confounding.png"
     fig.savefig(out)
@@ -634,17 +637,14 @@ def draw_correlation_figure(trials_df: pd.DataFrame,
 # ---------------------------------------------------------------------------
 
 def pick_representative_trial(sim_df: pd.DataFrame) -> pd.Series:
+    # Select a trial where PRED increases instability AND model RMSE is near median
     subset = sim_df[
-        (sim_df["pred_knee_rmse"] < sim_df["ref_knee_rmse"])
-        & (sim_df["excess_instability_auc"] > 0)
-        & (sim_df["pred_rmse"] < sim_df["pred_rmse"].median())
+        (sim_df["excess_instability_auc"] > 0.2)
+        & (sim_df["pred_rmse"] < sim_df["pred_rmse"].median() * 1.1)
     ].copy()
     if subset.empty:
         subset = sim_df.copy()
-    subset["score"] = (
-        (subset["ref_knee_rmse"] - subset["pred_knee_rmse"]) / subset["ref_knee_rmse"]
-        + subset["excess_instability_auc"]
-    )
+    subset["score"] = subset["excess_instability_auc"]
     return subset.sort_values("score", ascending=False).iloc[0]
 
 
@@ -674,11 +674,11 @@ def draw_rollout_figure(trial: pd.Series) -> tuple[str, dict[str, Any]]:
     # ── Panel A: knee tracking ───────────────────────────────────────────
     ax = axes[0]
     ax.plot(t_q, data["knee_good_query_deg"], color=C["ink"], lw=2.2,
-            label="GT target trajectory", zorder=4)
+            label="Expert target (matched clip)", zorder=4)
     ax.plot(t_act, data["knee_ref_actual_deg"], color=C["ref"], lw=1.8,
-            ls="--", label=f"REF actual  (RMSE = {knee_ref_rmse:.1f}°)", zorder=3)
+            ls="--", label=f"REF actual  (RMSE = {knee_ref_rmse:.1f} deg)", zorder=3)
     ax.plot(t_act, data["knee_good_actual_deg"], color=C["pred"], lw=1.8,
-            label=f"PRED actual (RMSE = {knee_pred_rmse:.1f}°)", zorder=3)
+            label=f"PRED actual (RMSE = {knee_pred_rmse:.1f} deg)", zorder=3)
     # shade difference
     ax.fill_between(
         t_act,
@@ -686,14 +686,14 @@ def draw_rollout_figure(trial: pd.Series) -> tuple[str, dict[str, Any]]:
         data["knee_good_actual_deg"],
         alpha=0.12, color=C["pred"],
     )
-    ax.set_ylabel("Knee angle (°)", fontsize=9)
+    ax.set_ylabel("Knee angle (deg)", fontsize=9)
     ax.set_title(
-        f"(A)  Knee tracking — trial {trial['query_id']}",
-        fontsize=9.5, fontweight="bold", pad=5,
+        f"Knee tracking — trial {trial['query_id']}",
+        fontsize=9.5, fontweight="bold", pad=5, loc="left",
     )
     ax.legend(loc="upper right", fontsize=8)
     _grid(ax, "y")
-    _panel_label(ax, "A")
+    _corner(ax, "A")
 
     # ── Panel B: instability trace ───────────────────────────────────────
     ax = axes[1]
@@ -702,31 +702,29 @@ def draw_rollout_figure(trial: pd.Series) -> tuple[str, dict[str, Any]]:
     ax.fill_between(t_pt, data["predicted_fall_risk_trace_good"],
                     alpha=0.15, color=C["warm"])
     ax.plot(t_rt, data["predicted_fall_risk_trace_ref"], color=C["ref"], lw=1.8,
-            label=f"REF instability trace  (AUC = {ref_auc:.3f})", zorder=3)
+            label=f"REF instability  (AUC = {ref_auc:.3f})", zorder=3)
     ax.plot(t_pt, data["predicted_fall_risk_trace_good"], color=C["warm"], lw=1.8,
-            label=f"PRED instability trace (AUC = {pred_auc:.3f})", zorder=3)
+            label=f"PRED instability (AUC = {pred_auc:.3f})", zorder=3)
     ax.set_xlabel("Time (s)", fontsize=9)
     ax.set_ylabel("Instability score", fontsize=9)
     ax.set_title(
-        f"(B)  Balance-risk trace — excess AUC = {trial['excess_instability_auc']:.3f}",
-        fontsize=9.5, fontweight="bold", pad=5,
+        f"Balance-risk trace — excess AUC = {trial['excess_instability_auc']:.3f}",
+        fontsize=9.5, fontweight="bold", pad=5, loc="left",
     )
     ax.legend(loc="upper right", fontsize=8)
     ax.set_ylim(-0.02, 1.12)
     _grid(ax, "y")
-    _panel_label(ax, "B")
+    _corner(ax, "B")
 
     fig.suptitle(
-        "Figure 5.  Representative trial: PRED improves knee tracking yet increases instability",
+        "Figure 5.  Representative trial: PRED increases instability despite lower joint-tracking error",
         fontsize=10, fontweight="bold", y=1.015,
     )
 
     caption_txt = (
-        f"query={trial['query_id']}  ·  file={trial['file_name']}  ·  "
-        f"model pred RMSE={trial['pred_rmse']:.1f}°  ·  "
-        f"match RMSE={trial['match_knee_rmse']:.1f}°  ·  "
-        f"REF knee={trial['ref_knee_rmse']:.1f}°  ·  "
-        f"PRED knee={trial['pred_knee_rmse']:.1f}°  ·  "
+        f"query={trial['query_id']}  |  file={trial['file_name']}  |  "
+        f"model RMSE={trial['pred_rmse']:.1f} deg  |  "
+        f"match RMSE={trial['match_knee_rmse']:.1f} deg  |  "
         f"excess AUC={trial['excess_instability_auc']:.3f}"
     )
     fig.text(0.5, 0.005, caption_txt, ha="center", va="bottom",
@@ -747,6 +745,48 @@ def draw_rollout_figure(trial: pd.Series) -> tuple[str, dict[str, Any]]:
         "compare_npz": str(npz_path),
     }
     return str(out), meta
+
+
+# ---------------------------------------------------------------------------
+# Figure 6 — Simulation artifact panels (motion matching + knee + balance)
+# ---------------------------------------------------------------------------
+
+def draw_artifact_figure(trial: pd.Series) -> str:
+    """Composite figure of the three auto-generated simulation plot PNGs
+    for the representative trial."""
+    import matplotlib.image as mpimg
+
+    mm_path = REPO_ROOT / trial["motion_match_plot"]
+    knee_path = REPO_ROOT / trial["simulation_knee_plot"]
+    bal_path = REPO_ROOT / trial["simulation_balance_plot"]
+
+    fig, axes = plt.subplots(1, 3, figsize=(10.5, 3.5))
+    fig.subplots_adjust(left=0.03, right=0.97, bottom=0.08, top=0.82,
+                        wspace=0.08)
+
+    titles = [
+        "Motion-match alignment",
+        "Simulated knee tracking",
+        "Balance-risk trace",
+    ]
+    paths = [mm_path, knee_path, bal_path]
+
+    for ax, img_path, title, letter in zip(axes, paths, titles, "ABC"):
+        img = mpimg.imread(str(img_path))
+        ax.imshow(img, aspect="auto", interpolation="lanczos")
+        ax.axis("off")
+        ax.set_title(title, fontsize=9.5, fontweight="bold", pad=4, loc="left")
+        _corner(ax, letter, x=-0.01, y=1.06)
+
+    fig.suptitle(
+        f"Figure 6.  Simulation diagnostic plots — representative trial {trial['query_id']}",
+        fontsize=10, fontweight="bold", y=1.00,
+    )
+
+    out = OUT_DIR / "fig6_simulation_diagnostics.png"
+    fig.savefig(out)
+    plt.close(fig)
+    return str(out)
 
 
 # ---------------------------------------------------------------------------
@@ -772,11 +812,11 @@ measurement unit (IMU, 6-axis) signals from 55 Georgia Tech biomechanics trials
 are preprocessed and windowed into 400-sample (2.0 s) segments. A CNN-BiLSTM
 regressor predicts the right-knee included angle from each window; its outputs are
 evaluated via 55-fold leave-one-file-out (LOFO) cross-validation, yielding a mean
-held-out RMSE of 7.84°. For each held-out window, the predicted knee trajectory is
+held-out RMSE of 7.84 deg. For each held-out window, the predicted knee trajectory is
 used to query a MoCapAct motion bank; the nearest matching snippet is then replayed
-twice in a MuJoCo humanoid—once unmodified (REF) and once with the right-knee joint
+twice in a MuJoCo humanoid — once unmodified (REF) and once with the right-knee joint
 forced to the PRED trajectory. The primary outcome is the area-under-the-curve
-difference in a balance-risk heuristic (excess instability AUC = PRED − REF).
+difference in a balance-risk heuristic (excess instability AUC = PRED - REF).
 
 ---
 
@@ -785,24 +825,23 @@ difference in a balance-risk heuristic (excess instability AUC = PRED − REF).
 
 **Caption:** Distribution of held-out subject-fold RMSE values across 55 folds of
 LOFO cross-validation. (A) Violin and strip plot showing individual fold errors; the
-white circle marks the median (6.85°). The dashed and dotted reference lines
-correspond to the 10° and 8° thresholds discussed in the literature. (B) Empirical
+white circle marks the median (6.85 deg). The dashed and dotted reference lines
+correspond to the 10 deg and 8 deg thresholds discussed in the literature. (B) Empirical
 cumulative distribution function of the same values, showing that 83.6% of folds
-fall below 10° and 67.3% fall below 8°. Mean RMSE = 7.84° ± 4.33° (SD).
+fall below 10 deg and 67.3% fall below 8 deg. Mean RMSE = 7.84 deg ± 4.33 deg (SD).
 
 ---
 
 ## Figure 3 — Physical simulation outcomes
 **File:** `{Path(figure_paths['fig3']).relative_to(REPO_ROOT)}`
 
-**Caption:** Simulation outcomes across 80 retained trials. (A) Scatter plot of REF
-versus PRED simulated knee RMSE; points below the identity line indicate trials where
-PRED improved knee tracking (71.3% of trials; Wilcoxon signed-rank, p < 0.001).
+**Caption:** Simulation outcomes across 80 retained trials. (A) Balance-risk threshold
+crossing rates: 40% of REF trials (32/80) versus 80% of PRED trials (64/80) exceeded
+the instability threshold, indicating that the knee override doubled the crossing rate.
 (B) Paired violin comparison of instability AUC for the REF and PRED conditions;
 thin connecting lines show within-trial changes. (C) Histogram of excess instability
-AUC (PRED − REF); 95.0% of trials show positive excess (Wilcoxon one-sided, p < 0.001),
-indicating that the knee override consistently increases simulated instability even
-when it improves knee tracking.
+AUC (PRED - REF); 95% of trials show positive excess (Wilcoxon one-sided, p < 0.001),
+indicating that the knee override consistently increases simulated instability.
 
 ---
 
@@ -811,12 +850,12 @@ when it improves knee tracking.
 
 **Caption:** Association between prediction error and simulated instability. (A) Raw
 Spearman scatter of model knee RMSE versus excess instability AUC, coloured by
-motion-match quality; the association is negative but non-significant (ρ = −0.166,
-p = 0.140). (B) The motion-match knee RMSE—a nuisance covariate—explains more
-variance in excess instability than the model RMSE does. (C) After Frisch–Waugh–
-Lovell (FWL) residualization on both motion-match controls, the partial Spearman
-correlation is near zero (ρ = −0.022, p = 0.851, df = 76), indicating that
-prediction accuracy per se does not drive the observed instability.
+motion-match quality; the association is negative but non-significant (rho = -0.166,
+p = 0.140). (B) The motion-match knee RMSE — a nuisance covariate — explains more
+variance in excess instability than the model RMSE does (rho = -0.258, p = 0.021).
+(C) After Frisch-Waugh-Lovell (FWL) residualization on both motion-match controls,
+the partial Spearman correlation is near zero (rho = -0.022, p = 0.851, df = 76),
+indicating that prediction accuracy per se does not drive the observed instability.
 
 ---
 
@@ -824,14 +863,30 @@ prediction accuracy per se does not drive the observed instability.
 **File:** `{Path(figure_paths['fig5']).relative_to(REPO_ROOT)}`
 
 **Caption:** Deep-dive into representative trial {rm['query_id']} (source file:
-{rm['file_name']}). (A) Knee-angle time series showing the ground-truth target
-(black), the unmodified expert-policy tracking (REF, grey dashed,
-RMSE = {rm['ref_knee_rmse_deg']:.1f}°), and the CNN-BiLSTM-overridden tracking
-(PRED, blue, RMSE = {rm['pred_knee_rmse_deg']:.1f}°). PRED achieves substantially
-lower joint-tracking error. (B) Corresponding balance-risk traces for REF and PRED;
-despite the improved knee tracking, the PRED rollout accumulates higher integrated
-instability (excess AUC = {rm['excess_instability_auc']:.3f}), illustrating why
-joint-angle accuracy alone is insufficient as a prosthetic evaluation criterion.
+{rm['file_name']}; model RMSE = {rm['pred_rmse_deg']:.1f} deg;
+match RMSE = {rm['match_knee_rmse_deg']:.1f} deg).
+(A) Knee-angle time series showing the expert-policy target from the matched MoCapAct
+clip (black), the unmodified humanoid tracking (REF, grey dashed,
+RMSE = {rm['ref_knee_rmse_deg']:.1f} deg vs clip), and the CNN-BiLSTM-overridden tracking
+(PRED, blue, RMSE = {rm['pred_knee_rmse_deg']:.1f} deg vs clip). Both RMSE values
+are measured against the same matched clip trajectory; PRED is lower because the PD
+controller directly targets that clip, not because it better reconstructs real-world
+gait. (B) Corresponding balance-risk traces; despite nominally lower clip-tracking
+error, the PRED rollout accumulates higher integrated instability
+(excess AUC = {rm['excess_instability_auc']:.3f}), illustrating that joint-angle
+accuracy against a clip is insufficient as a prosthetic evaluation criterion.
+
+---
+
+## Figure 6 — Simulation diagnostics
+**File:** `{Path(figure_paths['fig6']).relative_to(REPO_ROOT)}`
+
+**Caption:** Auto-generated diagnostic panels for representative trial {rm['query_id']}.
+(A) Motion-match alignment: predicted knee trajectory (blue) overlaid on the top
+MoCapAct candidate, confirming a close initial pose match before rollout. (B) Simulated
+knee-angle tracking for REF and PRED conditions throughout the 2.01 s trial window.
+(C) Balance-risk trace per timestep; the PRED condition accumulates risk earlier and
+at higher magnitude, consistent with the excess instability AUC reported in Figure 5.
 """
     out = OUT_DIR / "captions.md"
     out.write_text(text, encoding="utf-8")
@@ -851,26 +906,30 @@ def main() -> None:
     trials_df = load_partial_trials()
     partial_summary = load_partial_summary()
 
-    print("Generating Figure 1 — pipeline overview …")
+    print("Generating Figure 1 — pipeline overview ...")
     fig1 = draw_pipeline_figure()
 
-    print("Generating Figure 2 — prediction distribution …")
+    print("Generating Figure 2 — prediction distribution ...")
     fig2 = draw_prediction_figure(train_df)
 
-    print("Generating Figure 3 — simulation outcomes …")
+    print("Generating Figure 3 — simulation outcomes ...")
     fig3 = draw_simulation_figure(sim_df)
 
-    print("Generating Figure 4 — correlation analysis …")
+    print("Generating Figure 4 — correlation analysis ...")
     fig4 = draw_correlation_figure(trials_df, partial_summary)
 
-    print("Generating Figure 5 — representative rollout …")
+    print("Generating Figure 5 — representative rollout ...")
     representative = pick_representative_trial(sim_df)
     fig5, rep_meta = draw_rollout_figure(representative)
+
+    print("Generating Figure 6 — simulation diagnostics ...")
+    fig6 = draw_artifact_figure(representative)
 
     manifest = {
         "figure_paths": {
             "fig1": fig1, "fig2": fig2,
-            "fig3": fig3, "fig4": fig4, "fig5": fig5,
+            "fig3": fig3, "fig4": fig4,
+            "fig5": fig5, "fig6": fig6,
         },
         "training_run_dir": str(TRAIN_RUN_DIR),
         "simulation_run_dir": str(SIM_RUN_DIR),

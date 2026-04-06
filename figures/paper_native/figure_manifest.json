@@ -4,7 +4,8 @@
     "fig2": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig2_prediction_distribution.png",
     "fig3": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig3_simulation_outcomes.png",
     "fig4": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig4_correlation_confounding.png",
-    "fig5": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig5_representative_rollout.png"
+    "fig5": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig5_representative_rollout.png",
+    "fig6": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig6_simulation_diagnostics.png"
   },
   "training_run_dir": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\checkpoints\\tst_20260405_173725_all",
   "simulation_run_dir": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\artifacts\\phys_eval_v2\\runs\\20260405_230549",

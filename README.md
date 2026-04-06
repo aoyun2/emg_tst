@@ -59,6 +59,8 @@ python -m analysis.make_paper_figures
 
 ![Figure 5: Representative trial deep-dive](figures/paper_native/fig5_representative_rollout.png)
 
+![Figure 6: Simulation diagnostic plots](figures/paper_native/fig6_simulation_diagnostics.png)
+
 Figure captions: [figures/paper_native/captions.md](figures/paper_native/captions.md)
 
 ---
@@ -79,16 +81,16 @@ Simulation run: [artifacts/phys_eval_v2/runs/20260405_230549/summary.json](artif
 | Metric | Value |
 |--------|-------|
 | Trials | 80 |
-| Mean model pred RMSE | 8.80° |
-| Mean motion-match knee RMSE | 7.93° |
-| Mean REF simulated knee RMSE | 12.09° |
-| Mean PRED simulated knee RMSE | 9.60° |
+| Mean model pred RMSE (vs GT wearable) | 8.80° |
+| Mean motion-match knee RMSE (CNN pred vs clip) | 7.93° |
 | Balance-risk threshold crossings — REF | 40% (32/80) |
 | Balance-risk threshold crossings — PRED | 80% (64/80) |
 | Excess instability AUC > 0 | 95% of trials |
 | Mean excess instability AUC | 0.208 |
 | Raw Spearman ρ (model RMSE vs excess AUC) | −0.166, p = 0.140 |
 | Partial Spearman ρ (after FWL controls) | −0.022, p = 0.851 |
+
+Note: `ref_knee_rmse` and `pred_knee_rmse` in the raw results are measured against the matched clip target and are **not** a valid performance comparison — PRED is lower by construction (PD controller directly targets the CNN prediction, which was selected to match the clip). These columns are not used in any paper claims.
 
 ---
 
