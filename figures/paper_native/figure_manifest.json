@@ -1,11 +1,11 @@
 {
   "figure_paths": {
-    "fig1": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig1_pipeline_overview.png",
-    "fig2": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig2_balance_metric.png",
+    "fig1": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig1_pipeline.png",
+    "fig2": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig2_representative_trial.png",
     "fig3": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig3_prediction_performance.png",
-    "fig4": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig4_simulation_outcomes.png",
+    "fig4": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig4_simulation_instability.png",
     "fig5": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig5_fwl_correlation.png"
   },
-  "training_run_dir": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\checkpoints\\tst_20260405_173725_all",
-  "simulation_run_dir": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\artifacts\\phys_eval_v2\\runs\\20260405_230549"
+  "training_run": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\checkpoints\\tst_20260405_173725_all",
+  "sim_run": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\artifacts\\phys_eval_v2\\runs\\20260405_230549"
 }
