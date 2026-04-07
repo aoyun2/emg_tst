@@ -1,13 +1,10 @@
 """
 Publication figures for the CNN-BiLSTM prosthetic knee paper.
 
-All figures are purely data-driven — no programmatic diagram drawing.
-Concepts (XCoM, FWL) are explained via paper text + captions, not drawn boxes.
-
 Run:
     python -m analysis.make_paper_figures
 
-Outputs: figures/paper_native/fig1–fig5_*.png  +  captions.md
+Outputs: figures/paper_native/fig1–fig5_*.png + captions.md
 """
 from __future__ import annotations
 
@@ -21,7 +18,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
 import pandas as pd
-from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
+from matplotlib.patches import Circle, FancyArrowPatch, FancyBboxPatch
 from scipy import stats
 
 # ---------------------------------------------------------------------------
@@ -29,7 +26,7 @@ from scipy import stats
 # ---------------------------------------------------------------------------
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TRAIN_RUN = REPO_ROOT / "checkpoints" / "tst_20260405_173725_all"
-SIM_RUN   = REPO_ROOT / "artifacts"   / "phys_eval_v2" / "runs" / "20260405_230549"
+SIM_RUN   = REPO_ROOT / "artifacts"   / "phys_eval_v2" / "runs" / "20260406_205003"
 OUT_DIR   = REPO_ROOT / "figures"     / "paper_native"
 
 # ---------------------------------------------------------------------------
@@ -151,79 +148,90 @@ def _rho_str(rho: float, p: float) -> str:
 # ---------------------------------------------------------------------------
 
 def fig1_pipeline() -> str:
-    fig = plt.figure(figsize=(7.2, 3.6))
+    fig = plt.figure(figsize=(10.2, 2.9))
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.axis("off")
 
+    ax.text(
+        0.03, 0.92,
+        "Figure 1. Evaluation pipeline used in the native-rate benchmark",
+        ha="left", va="top", fontsize=11, fontweight="bold", color=INK
+    )
+    ax.text(
+        0.03, 0.85,
+        "Data → preprocessing → CNN-BiLSTM prediction → motion matching → paired MuJoCo rollouts → excess-instability analysis",
+        ha="left", va="top", fontsize=8.6, color=NEUT_COL
+    )
+
     stages = [
-        {"x": 0.02, "w": 0.21, "color": MOD_COL,
-         "title": "Georgia Tech\nDataset",
-         "lines": ["55 subjects, normal walk",
-                   "4 thigh EMG channels",
-                   "6-axis IMU (200 Hz)",
-                   "Optical knee angle"]},
-        {"x": 0.27, "w": 0.21, "color": "#8e44ad",
-         "title": "CNN-BiLSTM\nRegressor",
-         "lines": ["Conv1d x2 + BiLSTM x2",
-                   "400-sample window",
-                   "Predicts knee angle",
-                   "55-fold LOFO CV"]},
-        {"x": 0.52, "w": 0.21, "color": GOOD_COL,
-         "title": "Motion\nMatching",
-         "lines": ["MoCapAct expert bank",
-                   "Query: knee + thigh pose",
-                   "Nearest clip retrieval",
-                   "80 trials retained"]},
-        {"x": 0.77, "w": 0.21, "color": PRED_COL,
-         "title": "MuJoCo Paired\nRollouts",
-         "lines": ["REF: policy unmodified",
-                   "PRED: knee overridden",
-                   "XCoM instability AUC",
-                   "Partial Spearman test"]},
+        ("1", "Georgia Tech data", ["55 subjects", "4 EMG + 6 thigh IMU", "knee-angle label"]),
+        ("2", "Preprocessing", ["EMG: 20 Hz high-pass", "rectify + 5 Hz low-pass", "native 200 Hz windows"]),
+        ("3", "CNN-BiLSTM", ["400-sample window", "55-fold LOFO", "predict 10 ms ahead"]),
+        ("4", "Motion matching", ["MoCapAct bank", "thigh_knee_d score", "local refine radius 30"]),
+        ("5", "Simulation + stats", ["REF vs PRED rollout", "excess instability AUC", "partial Spearman"]),
     ]
 
-    y0, h = 0.10, 0.78
-    for st in stages:
-        x, w = st["x"], st["w"]
-        ax.add_patch(FancyBboxPatch((x + 0.004, y0 - 0.006), w, h,
-            boxstyle="round,pad=0.012", facecolor="#cccccc",
-            edgecolor="none", zorder=1))
-        ax.add_patch(FancyBboxPatch((x, y0), w, h,
-            boxstyle="round,pad=0.012", facecolor=BG,
-            edgecolor=st["color"], linewidth=1.5, zorder=2))
-        ax.add_patch(FancyBboxPatch((x, y0 + h - 0.20), w, 0.20,
-            boxstyle="round,pad=0.012", facecolor=st["color"],
-            edgecolor="none", zorder=3))
-        ax.text(x + w / 2, y0 + h - 0.10, st["title"],
-                ha="center", va="center", fontsize=9,
-                fontweight="bold", color="white",
-                zorder=4, linespacing=1.35)
-        for i, line in enumerate(st["lines"]):
-            ax.text(x + 0.013, y0 + h - 0.245 - i * 0.117,
-                    "\u2022 " + line,
-                    ha="left", va="top",
-                    fontsize=7.8, color=INK, zorder=4)
+    xs = np.linspace(0.08, 0.92, len(stages))
+    box_w = 0.155
+    box_h = 0.42
+    y = 0.27
 
-    for i in range(3):
-        x0 = stages[i]["x"] + stages[i]["w"]
-        x1 = stages[i + 1]["x"]
-        my = y0 + h * 0.50
-        ax.add_patch(FancyArrowPatch(
-            (x0 + 0.004, my), (x1 - 0.004, my),
-            arrowstyle="-|>", mutation_scale=13,
-            linewidth=1.6, color=NEUT_COL, zorder=5))
+    ax.plot([xs[0], xs[-1]], [y + box_h + 0.09, y + box_h + 0.09], color=GRID_C, linewidth=2.0, zorder=1)
 
-    ax.text(0.50, 0.96,
-            "Figure 1.  End-to-end evaluation pipeline",
-            ha="center", va="top",
-            fontsize=11, fontweight="bold", color=INK)
-    ax.text(0.50, 0.077,
-            "Primary outcome: excess instability AUC = PRED - REF  |  "
-            "Primary predictor: model RMSE vs GT wearable data",
-            ha="center", va="top",
-            fontsize=7.8, color=NEUT_COL, style="italic")
+    for i, (x, stage) in enumerate(zip(xs, stages)):
+        num, title, lines = stage
+
+        if i < len(stages) - 1:
+            x0 = x + box_w / 2 + 0.015
+            x1 = xs[i + 1] - box_w / 2 - 0.015
+            ax.add_patch(
+                FancyArrowPatch(
+                    (x0, y + box_h + 0.09),
+                    (x1, y + box_h + 0.09),
+                    arrowstyle="-|>",
+                    mutation_scale=12,
+                    linewidth=1.4,
+                    color=NEUT_COL,
+                    zorder=2,
+                )
+            )
+
+        ax.add_patch(
+            Circle((x, y + box_h + 0.09), 0.028, facecolor=MOD_COL, edgecolor="white", linewidth=1.2, zorder=3)
+        )
+        ax.text(x, y + box_h + 0.09, num, ha="center", va="center", fontsize=8.4, color="white", fontweight="bold", zorder=4)
+
+        ax.add_patch(
+            FancyBboxPatch(
+                (x - box_w / 2, y),
+                box_w,
+                box_h,
+                boxstyle="round,pad=0.012,rounding_size=0.02",
+                facecolor=BG,
+                edgecolor=GRID_C,
+                linewidth=1.1,
+                zorder=2,
+            )
+        )
+        ax.text(x - box_w / 2 + 0.015, y + box_h - 0.07, title, ha="left", va="top", fontsize=9.2, fontweight="bold", color=INK)
+        for j, line in enumerate(lines):
+            ax.text(
+                x - box_w / 2 + 0.018,
+                y + box_h - 0.145 - j * 0.095,
+                "\u2022 " + line,
+                ha="left",
+                va="top",
+                fontsize=7.8,
+                color=INK,
+            )
+
+    ax.text(
+        0.03, 0.08,
+        "Primary predictor: model pred-vs-GT knee RMSE. Primary outcome: excess instability AUC = PRED - REF.",
+        ha="left", va="bottom", fontsize=8.0, color=NEUT_COL
+    )
 
     out = OUT_DIR / "fig1_pipeline.png"
     fig.savefig(out)
@@ -263,7 +271,7 @@ def fig2_representative_trial(sim_df: pd.DataFrame,
     ax1.plot(t, xp, color=PRED_COL, lw=2.0, label="PRED", zorder=3)
     ax1.set_xlabel("Time (s)")
     ax1.set_ylabel("XCoM margin (m)")
-    ax1.set_title("XCoM margin over time", fontweight="bold",
+    ax1.set_title("XCoM margin", fontweight="bold",
                   pad=5, loc="left")
     ax1.legend(loc="lower left", fontsize=8)
     _grid(ax1, "y")
@@ -279,22 +287,22 @@ def fig2_representative_trial(sim_df: pd.DataFrame,
     ax2.set_xlabel("Time (s)")
     ax2.set_ylabel("Instability score r(t)")
     ax2.set_ylim(-0.03, 1.10)
-    ax2.set_title("Per-step instability score + AUC", fontweight="bold",
+    ax2.set_title("Instability trace", fontweight="bold",
                   pad=5, loc="left")
     ax2.legend(loc="upper left", fontsize=8)
     ax2.text(0.98, 0.05,
              f"Excess AUC = {row['excess_auc']:.3f}",
              transform=ax2.transAxes, ha="right", va="bottom",
-             fontsize=8.5, color=PRED_COL, fontweight="bold",
-             bbox=dict(boxstyle="round,pad=0.3",
-                       facecolor="#fff0ee", edgecolor="#f0a090", lw=0.8))
+             fontsize=8.0, color=INK,
+             bbox=dict(boxstyle="round,pad=0.28",
+                       facecolor="#f7f7f7", edgecolor=GRID_C, lw=0.8))
     _grid(ax2, "y")
     _panel(ax2, "B")
 
     fig.suptitle(
-        f"Figure 2.  Representative trial ({row['query_id']}): "
-        f"REF stays stable, PRED destabilises",
+        "Figure 2. Example trial used to illustrate excess-instability scoring",
         fontsize=10, fontweight="bold", y=1.02)
+    fig.text(0.98, 0.99, row["query_id"], ha="right", va="top", fontsize=8, color=NEUT_COL)
 
     out = OUT_DIR / "fig2_representative_trial.png"
     fig.savefig(out)
@@ -352,7 +360,7 @@ def fig3_prediction(train_df: pd.DataFrame) -> str:
 
     _grid(ax, "x")
     ax.set_title(
-        "Figure 3.  Held-out RMSE across 55 LOFO subject folds",
+        "Figure 3. Held-out prediction error across 55 subject folds",
         fontsize=10, fontweight="bold", pad=7)
 
     out = OUT_DIR / "fig3_prediction_performance.png"
@@ -415,11 +423,11 @@ def fig4_simulation(sim_df: pd.DataFrame) -> str:
                 zorder=5, label=f"Mean = {excess.mean():.3f}")
 
     ax2.text(0.97, 0.97,
-             f"{pct_pos:.0f}% > 0\n{p_str}",
+             f"{pct_pos:.0f}% of trials > 0\nWilcoxon {p_str}",
              transform=ax2.transAxes, ha="right", va="top",
-             fontsize=8.5, color=PRED_COL, fontweight="bold",
-             bbox=dict(boxstyle="round,pad=0.3",
-                       facecolor="#fff0ee", edgecolor="#f0a090", lw=0.8))
+             fontsize=7.8, color=INK,
+             bbox=dict(boxstyle="round,pad=0.28",
+                       facecolor="#f7f7f7", edgecolor=GRID_C, lw=0.8))
 
     ax2.set_xlabel("Excess AUC  (PRED - REF)")
     ax2.set_ylabel("Trial count")
@@ -430,7 +438,7 @@ def fig4_simulation(sim_df: pd.DataFrame) -> str:
     _panel(ax2, "B")
 
     fig.suptitle(
-        f"Figure 4.  PRED override consistently increases instability  (N = {n})",
+        f"Figure 4. Paired simulation outcomes across {n} held-out windows",
         fontsize=10, fontweight="bold", y=1.01)
 
     out = OUT_DIR / "fig4_simulation_instability.png"
@@ -472,12 +480,12 @@ def fig5_correlation(trials_df: pd.DataFrame,
         (axes[1], x_match, y_raw,  None,
          "Match RMSE (deg)",
          "Excess instability AUC",
-         "B", "Motion-match confound",
+         "B", "Motion-match association",
          rho_match, p_match),
         (axes[2], x_res,   y_res,  None,
          "Residualized model RMSE",
          "Residualized excess AUC",
-         "C", "After FWL (partial rho)",
+         "C", "After FWL residualization",
          rho_part, p_part),
     ]
 
@@ -520,8 +528,7 @@ def fig5_correlation(trials_df: pd.DataFrame,
         _panel(ax, letter)
 
     fig.suptitle(
-        "Figure 5.  Partial Spearman (FWL): model RMSE has no independent "
-        "association with instability once match quality is controlled",
+        "Figure 5. Raw and partial associations between model error and excess instability",
         fontsize=9.5, fontweight="bold", y=1.07)
 
     out = OUT_DIR / "fig5_fwl_correlation.png"
@@ -534,7 +541,11 @@ def fig5_correlation(trials_df: pd.DataFrame,
 # Captions
 # ---------------------------------------------------------------------------
 
-def _write_captions(paths: dict) -> str:
+def _write_captions(paths: dict, sim_df: pd.DataFrame, partial_sum: dict) -> str:
+    pct_pos = float((sim_df["excess_auc"] > 0).mean() * 100.0)
+    mean_excess = float(sim_df["excess_auc"].mean())
+    rho_raw, p_raw = stats.spearmanr(sim_df["pred_rmse"], sim_df["excess_auc"])
+    rho_match, p_match = stats.spearmanr(sim_df["match_knee_rmse"], sim_df["excess_auc"])
     text = f"""# Paper Figure Captions
 
 ---
@@ -543,23 +554,21 @@ def _write_captions(paths: dict) -> str:
 **File:** `{Path(paths['fig1']).relative_to(REPO_ROOT)}`
 
 End-to-end evaluation pipeline. EMG (4 channels) and IMU (6-axis) signals from 55
-Georgia Tech subjects are windowed and fed to a CNN-BiLSTM regressor evaluated by
-55-fold LOFO cross-validation. Each prediction drives a motion-matching query into
-the MoCapAct expert library; the retrieved clip is replayed twice in MuJoCo — once
-unmodified (REF) and once with the right knee overridden by the CNN prediction (PRED).
-Primary outcome: excess instability AUC = PRED - REF.
+Georgia Tech subjects are preprocessed on the native 200 Hz timebase and fed to a
+CNN-BiLSTM regressor evaluated by 55-fold LOFO cross-validation. Each prediction
+drives a motion-matching query into the MoCapAct expert library; the retrieved clip
+is replayed twice in MuJoCo — once unmodified (REF) and once with the right knee
+overridden by the CNN prediction (PRED). Primary outcome: excess instability AUC = PRED - REF.
 
 ---
 
 ## Figure 2 — Representative trial
 **File:** `{Path(paths['fig2']).relative_to(REPO_ROOT)}`
 
-One simulation trial (rig_001884) illustrating the instability outcome. (A) XCoM
+One simulation trial used to illustrate how the instability outcome is computed. (A) XCoM
 margin over 2.01 s; the dashed line marks the base-of-support boundary
-(margin = 0 m). REF oscillates mildly; PRED drives the XCoM persistently outside
-the BoS (minimum -1.55 m), indicating mechanically unstable gait per Hof et al.
-(2005). (B) Per-step instability score r(t) with AUC regions shaded; integrating
-PRED - REF gives the excess AUC reported in the results.
+(margin = 0 m). (B) Per-step instability score r(t) with AUC regions shaded;
+integrating PRED - REF gives the excess AUC reported in the results.
 
 ---
 
@@ -576,9 +585,8 @@ mark the mean (7.84 deg, dashed) and median (6.85 deg, dotted).
 **File:** `{Path(paths['fig4']).relative_to(REPO_ROOT)}`
 
 Simulation outcomes across 80 trials. (A) Paired scatter of REF vs PRED instability
-AUC; points above the diagonal (95% of trials) indicate the override increased
-integrated balance risk. (B) Histogram of excess AUC (PRED - REF); 95% of values
-are positive (Wilcoxon, p < 0.001, mean = 0.208).
+AUC. (B) Histogram of excess AUC (PRED - REF); most values are positive and the
+mean excess AUC is {mean_excess:.3f}.
 
 ---
 
@@ -588,10 +596,9 @@ are positive (Wilcoxon, p < 0.001, mean = 0.208).
 Partial Spearman analysis via Frisch-Waugh-Lovell (FWL) residualization: regress
 predictor X (model RMSE) and outcome Y (excess AUC) separately on controls Z
 (match quality), then compute Spearman r of residuals. (A) Raw scatter coloured by
-match RMSE: rho = -0.166, p = 0.140. (B) Match RMSE is a stronger predictor
-(rho = -0.258, p = 0.021) — the dominant confound. (C) After FWL residualization
-the partial rho collapses to -0.022 (p = 0.851, df = 76): model accuracy carries
-no independent association with instability.
+match RMSE: rho = {rho_raw:.3f}, p = {p_raw:.3f}. (B) Match RMSE is a stronger predictor
+(rho = {rho_match:.3f}, p = {p_match:.3f}). (C) After FWL residualization the partial rho is
+{float(partial_sum['rho_partial_spearman']):.3f} (p = {float(partial_sum['p_value_two_sided']):.3f}, df = {int(partial_sum['degrees_of_freedom'])}).
 """
     out = OUT_DIR / "captions.md"
     out.write_text(text, encoding="utf-8")
@@ -633,7 +640,7 @@ def main() -> None:
                     "sim_run":      str(SIM_RUN)}, indent=2),
         encoding="utf-8")
 
-    caps = _write_captions(paths)
+    caps = _write_captions(paths, sim, psum)
     print(f"\nDone.  {OUT_DIR}")
     print(f"Captions: {caps}")
     for k, v in paths.items():

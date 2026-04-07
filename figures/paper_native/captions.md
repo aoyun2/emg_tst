@@ -6,23 +6,21 @@
 **File:** `figures\paper_native\fig1_pipeline.png`
 
 End-to-end evaluation pipeline. EMG (4 channels) and IMU (6-axis) signals from 55
-Georgia Tech subjects are windowed and fed to a CNN-BiLSTM regressor evaluated by
-55-fold LOFO cross-validation. Each prediction drives a motion-matching query into
-the MoCapAct expert library; the retrieved clip is replayed twice in MuJoCo — once
-unmodified (REF) and once with the right knee overridden by the CNN prediction (PRED).
-Primary outcome: excess instability AUC = PRED - REF.
+Georgia Tech subjects are preprocessed on the native 200 Hz timebase and fed to a
+CNN-BiLSTM regressor evaluated by 55-fold LOFO cross-validation. Each prediction
+drives a motion-matching query into the MoCapAct expert library; the retrieved clip
+is replayed twice in MuJoCo — once unmodified (REF) and once with the right knee
+overridden by the CNN prediction (PRED). Primary outcome: excess instability AUC = PRED - REF.
 
 ---
 
 ## Figure 2 — Representative trial
 **File:** `figures\paper_native\fig2_representative_trial.png`
 
-One simulation trial (rig_001884) illustrating the instability outcome. (A) XCoM
+One simulation trial used to illustrate how the instability outcome is computed. (A) XCoM
 margin over 2.01 s; the dashed line marks the base-of-support boundary
-(margin = 0 m). REF oscillates mildly; PRED drives the XCoM persistently outside
-the BoS (minimum -1.55 m), indicating mechanically unstable gait per Hof et al.
-(2005). (B) Per-step instability score r(t) with AUC regions shaded; integrating
-PRED - REF gives the excess AUC reported in the results.
+(margin = 0 m). (B) Per-step instability score r(t) with AUC regions shaded;
+integrating PRED - REF gives the excess AUC reported in the results.
 
 ---
 
@@ -39,9 +37,8 @@ mark the mean (7.84 deg, dashed) and median (6.85 deg, dotted).
 **File:** `figures\paper_native\fig4_simulation_instability.png`
 
 Simulation outcomes across 80 trials. (A) Paired scatter of REF vs PRED instability
-AUC; points above the diagonal (95% of trials) indicate the override increased
-integrated balance risk. (B) Histogram of excess AUC (PRED - REF); 95% of values
-are positive (Wilcoxon, p < 0.001, mean = 0.208).
+AUC. (B) Histogram of excess AUC (PRED - REF); most values are positive and the
+mean excess AUC is 0.200.
 
 ---
 
@@ -51,7 +48,6 @@ are positive (Wilcoxon, p < 0.001, mean = 0.208).
 Partial Spearman analysis via Frisch-Waugh-Lovell (FWL) residualization: regress
 predictor X (model RMSE) and outcome Y (excess AUC) separately on controls Z
 (match quality), then compute Spearman r of residuals. (A) Raw scatter coloured by
-match RMSE: rho = -0.166, p = 0.140. (B) Match RMSE is a stronger predictor
-(rho = -0.258, p = 0.021) — the dominant confound. (C) After FWL residualization
-the partial rho collapses to -0.022 (p = 0.851, df = 76): model accuracy carries
-no independent association with instability.
+match RMSE: rho = -0.168, p = 0.136. (B) Match RMSE is a stronger predictor
+(rho = -0.267, p = 0.017). (C) After FWL residualization the partial rho is
+-0.019 (p = 0.867, df = 76).

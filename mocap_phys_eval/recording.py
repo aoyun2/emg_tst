@@ -735,11 +735,10 @@ def record_compare_rollout(
         if done_any or fell_ref_hard or fell_good_hard or fell_bad_hard:
             break
 
-    # Predict stability ("fall risk") from balance traces.
+    # Predict heuristic instability from balance traces.
     #
-    # We avoid root-height based heuristics (crouching/kneeling should be OK) and use:
-    # - uprightness (cos tilt)
-    # - XCoM support margin (signed distance to support polygon)
+    # We avoid root-height heuristics (crouching/kneeling should be OK) and use
+    # only the XCoM support margin (signed distance to the support polygon).
     com_margin_ref = np.asarray(bal_ref.get("margin_trace", [])[: len(upright_ref)], dtype=np.float32)
     com_margin_good = np.asarray(bal_good.get("margin_trace", [])[: len(upright_good)], dtype=np.float32)
     com_margin_bad = np.asarray(bal_bad.get("margin_trace", [])[: len(upright_bad)], dtype=np.float32)
@@ -756,7 +755,6 @@ def record_compare_rollout(
 
     risk_ref, likely_ref, risk_trace_ref = predict_fall_risk_from_traces(
         fell=fell_ref,
-        upright=np.asarray(upright_ref, dtype=np.float32),
         com_margin_m=com_margin_ref,
         xcom_margin_m=xcom_margin_ref,
         had_contact=had_contact_ref,
@@ -764,7 +762,6 @@ def record_compare_rollout(
     )
     risk_good, likely_good, risk_trace_good = predict_fall_risk_from_traces(
         fell=fell_good,
-        upright=np.asarray(upright_good, dtype=np.float32),
         com_margin_m=com_margin_good,
         xcom_margin_m=xcom_margin_good,
         had_contact=had_contact_good,
@@ -772,7 +769,6 @@ def record_compare_rollout(
     )
     risk_bad, likely_bad, risk_trace_bad = predict_fall_risk_from_traces(
         fell=fell_bad,
-        upright=np.asarray(upright_bad, dtype=np.float32),
         com_margin_m=com_margin_bad,
         xcom_margin_m=xcom_margin_bad,
         had_contact=had_contact_bad,
@@ -781,9 +777,9 @@ def record_compare_rollout(
 
     # "Balance loss" step is the first time we consider the walker unstable, even if it
     # hasn't fully fallen within the short evaluation window.
-    balance_loss_step_ref = detect_balance_loss_step(risk_trace=risk_trace_ref, upright=np.asarray(upright_ref, dtype=np.float32))
-    balance_loss_step_good = detect_balance_loss_step(risk_trace=risk_trace_good, upright=np.asarray(upright_good, dtype=np.float32))
-    balance_loss_step_bad = detect_balance_loss_step(risk_trace=risk_trace_bad, upright=np.asarray(upright_bad, dtype=np.float32))
+    balance_loss_step_ref = detect_balance_loss_step(risk_trace=risk_trace_ref)
+    balance_loss_step_good = detect_balance_loss_step(risk_trace=risk_trace_good)
+    balance_loss_step_bad = detect_balance_loss_step(risk_trace=risk_trace_bad)
 
     # Stack.
     arr = np.stack(frames, axis=0).astype(np.uint8)

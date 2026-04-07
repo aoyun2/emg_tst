@@ -244,9 +244,6 @@ def plot_balance_traces(
             xcom_margin_ref_m.size,
             xcom_margin_good_m.size,
             xcom_margin_bad_m.size,
-            upright_ref.size,
-            upright_good.size,
-            upright_bad.size,
             risk_trace_ref.size,
             risk_trace_good.size,
             risk_trace_bad.size,
@@ -254,7 +251,7 @@ def plot_balance_traces(
     )
     t = np.arange(n, dtype=np.float32) / float(sample_hz)
 
-    fig, axes = plt.subplots(3, 1, figsize=(11.5, 8.2), sharex=True)
+    fig, axes = plt.subplots(2, 1, figsize=(11.5, 6.6), sharex=True)
 
     axes[0].plot(t, xcom_margin_ref_m[:n], color="0.2", lw=1.8, label=f"REF (risk={risk_ref:.2f})")
     axes[0].plot(t, xcom_margin_good_m[:n], color="#d55e00", lw=1.8, label=f"PRED (risk={risk_good:.2f})")
@@ -264,23 +261,15 @@ def plot_balance_traces(
     axes[0].grid(True, alpha=0.25)
     axes[0].legend(loc="upper right")
 
-    axes[1].plot(t, upright_ref[:n], color="0.2", lw=1.8, label=f"REF (bal_loss_step={balance_loss_step_ref})")
-    axes[1].plot(t, upright_good[:n], color="#d55e00", lw=1.8, label=f"PRED (bal_loss_step={balance_loss_step_good})")
-    axes[1].plot(t, upright_bad[:n], color="#0072b2", lw=1.8, label=f"BAD (bal_loss_step={balance_loss_step_bad})")
-    axes[1].axhline(0.40, color="0.6", lw=1.0, ls="--")
-    axes[1].set_ylabel("Uprightness (cos tilt)")
+    axes[1].plot(t, risk_trace_ref[:n], color="0.2", lw=1.8, label=f"REF (bal_loss_step={balance_loss_step_ref})")
+    axes[1].plot(t, risk_trace_good[:n], color="#d55e00", lw=1.8, label=f"PRED (bal_loss_step={balance_loss_step_good})")
+    axes[1].plot(t, risk_trace_bad[:n], color="#0072b2", lw=1.8, label=f"BAD (bal_loss_step={balance_loss_step_bad})")
+    axes[1].axhline(0.70, color="0.6", lw=1.0, ls="--")
+    axes[1].axhline(0.90, color="0.6", lw=1.0, ls=":")
+    axes[1].set_ylabel("Instability trace")
+    axes[1].set_xlabel("Time (s)")
     axes[1].grid(True, alpha=0.25)
     axes[1].legend(loc="upper right")
-
-    axes[2].plot(t, risk_trace_ref[:n], color="0.2", lw=1.8, label="REF risk_now")
-    axes[2].plot(t, risk_trace_good[:n], color="#d55e00", lw=1.8, label="PRED risk_now")
-    axes[2].plot(t, risk_trace_bad[:n], color="#0072b2", lw=1.8, label="BAD risk_now")
-    axes[2].axhline(0.70, color="0.6", lw=1.0, ls="--")
-    axes[2].axhline(0.90, color="0.6", lw=1.0, ls=":")
-    axes[2].set_ylabel("Predicted risk")
-    axes[2].set_xlabel("Time (s)")
-    axes[2].grid(True, alpha=0.25)
-    axes[2].legend(loc="upper right")
 
     fig.suptitle(title)
     return _save(fig, out_path)

@@ -1273,7 +1273,7 @@ def _evaluate_query_window(
         risk_ref=float(np.asarray(rr["predicted_fall_risk_ref"]).reshape(())),
         risk_good=float(np.asarray(rr["predicted_fall_risk_good"]).reshape(())),
         risk_bad=float(np.asarray(rr["predicted_fall_risk_bad"]).reshape(())),
-        title="Simulation Balance Signals (COM margin, uprightness) + predicted fall risk",
+        title="Simulation Balance Signals (XCoM margin) + heuristic instability trace",
     )
 
     ctrl_pol_good = np.asarray(rr.get("ctrl_knee_good_policy", np.zeros((0,), dtype=np.float32)), dtype=np.float32)
