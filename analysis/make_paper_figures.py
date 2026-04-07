@@ -19,6 +19,7 @@ import matplotlib.ticker as mticker
 import numpy as np
 import pandas as pd
 from matplotlib.patches import Circle, FancyArrowPatch, FancyBboxPatch
+from PIL import Image
 from scipy import stats
 
 # ---------------------------------------------------------------------------
@@ -305,6 +306,58 @@ def fig2_representative_trial(sim_df: pd.DataFrame,
     fig.text(0.98, 0.99, row["query_id"], ha="right", va="top", fontsize=8, color=NEUT_COL)
 
     out = OUT_DIR / "fig2_representative_trial.png"
+    fig.savefig(out)
+    plt.close()
+    return str(out)
+
+
+# ---------------------------------------------------------------------------
+# Figure 2b / 6 — Representative replay frames
+# ---------------------------------------------------------------------------
+
+def fig6_simulation_frames(sim_df: pd.DataFrame,
+                           trial_idx: int = 75) -> str:
+    row = sim_df.iloc[trial_idx]
+    gif_path = Path(os.path.normpath(str(row["compare_npz"]))).with_suffix(".gif")
+    if not gif_path.exists():
+        raise FileNotFoundError(f"Replay GIF not found: {gif_path}")
+
+    gif = Image.open(gif_path)
+    n_frames = int(getattr(gif, "n_frames", 1))
+    picks = [0, max(0, n_frames // 3), max(0, (2 * n_frames) // 3), max(0, n_frames - 1)]
+    labels = ["Start", "Early", "Mid", "Late"]
+
+    fig, axes = plt.subplots(1, 4, figsize=(10.4, 2.9), gridspec_kw={"wspace": 0.03})
+    for ax, fi, lab in zip(axes, picks, labels):
+        gif.seek(int(fi))
+        frame = np.asarray(gif.convert("RGB"))
+        ax.imshow(frame)
+        ax.set_title(lab, fontsize=8.5, pad=4, loc="left", fontweight="bold")
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_edgecolor(GRID_C)
+            spine.set_linewidth(0.8)
+
+    fig.suptitle(
+        "Figure 6. Example simulation frames from one representative replay",
+        fontsize=10,
+        fontweight="bold",
+        y=0.98,
+    )
+    fig.text(
+        0.99, 0.965,
+        f"{row['query_id']}  |  REF / PRED replay frames",
+        ha="right", va="top", fontsize=8, color=NEUT_COL
+    )
+    fig.text(
+        0.01, 0.01,
+        "Frames sampled from the saved compare.gif artifact. Use this figure only as a qualitative visual aid; "
+        "quantitative claims come from the trace and AUC figures.",
+        ha="left", va="bottom", fontsize=7.4, color=NEUT_COL
+    )
+
+    out = OUT_DIR / "fig6_simulation_frames.png"
     fig.savefig(out)
     plt.close()
     return str(out)
@@ -599,6 +652,16 @@ predictor X (model RMSE) and outcome Y (excess AUC) separately on controls Z
 match RMSE: rho = {rho_raw:.3f}, p = {p_raw:.3f}. (B) Match RMSE is a stronger predictor
 (rho = {rho_match:.3f}, p = {p_match:.3f}). (C) After FWL residualization the partial rho is
 {float(partial_sum['rho_partial_spearman']):.3f} (p = {float(partial_sum['p_value_two_sided']):.3f}, df = {int(partial_sum['degrees_of_freedom'])}).
+
+---
+
+## Figure 6 — Example replay frames
+**File:** `{Path(paths['fig6']).relative_to(REPO_ROOT)}`
+
+Four frames sampled from one representative saved replay GIF. This panel is purely
+qualitative and is included to show what the REF/PRED simulation artifacts look
+like visually; the paper's quantitative conclusions should rely on Figures 2, 4,
+and 5 rather than on single-frame visual inspection.
 """
     out = OUT_DIR / "captions.md"
     out.write_text(text, encoding="utf-8")
@@ -633,7 +696,10 @@ def main() -> None:
     print("Figure 5 — FWL correlation ...")
     f5 = fig5_correlation(trials, psum)
 
-    paths = {"fig1": f1, "fig2": f2, "fig3": f3, "fig4": f4, "fig5": f5}
+    print("Figure 6 — simulation frames ...")
+    f6 = fig6_simulation_frames(sim, trial_idx=75)
+
+    paths = {"fig1": f1, "fig2": f2, "fig3": f3, "fig4": f4, "fig5": f5, "fig6": f6}
     (OUT_DIR / "figure_manifest.json").write_text(
         json.dumps({"figure_paths": paths,
                     "training_run": str(TRAIN_RUN),

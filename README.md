@@ -59,6 +59,8 @@ python -m analysis.make_paper_figures
 
 ![Figure 5: FWL residualization and partial Spearman correlation](figures/paper_native/fig5_fwl_correlation.png)
 
+![Figure 6: Example replay frames](figures/paper_native/fig6_simulation_frames.png)
+
 Figure captions: [figures/paper_native/captions.md](figures/paper_native/captions.md)
 
 ---

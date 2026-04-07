@@ -256,7 +256,10 @@ Use these files directly:
 5. Correlation and confounding
    - [fig5_fwl_correlation.png](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/paper_native/fig5_fwl_correlation.png)
 
-Caption notes for all five:
+6. Example replay frames
+   - [fig6_simulation_frames.png](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/paper_native/fig6_simulation_frames.png)
+
+Caption notes for all six:
 - [captions.md](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/paper_native/captions.md)
 
 ## What To Delete From The Current Draft

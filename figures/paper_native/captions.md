@@ -51,3 +51,13 @@ predictor X (model RMSE) and outcome Y (excess AUC) separately on controls Z
 match RMSE: rho = -0.168, p = 0.136. (B) Match RMSE is a stronger predictor
 (rho = -0.267, p = 0.017). (C) After FWL residualization the partial rho is
 -0.019 (p = 0.867, df = 76).
+
+---
+
+## Figure 6 — Example replay frames
+**File:** `figures\paper_native\fig6_simulation_frames.png`
+
+Four frames sampled from one representative saved replay GIF. This panel is purely
+qualitative and is included to show what the REF/PRED simulation artifacts look
+like visually; the paper's quantitative conclusions should rely on Figures 2, 4,
+and 5 rather than on single-frame visual inspection.
