@@ -1,6 +1,6 @@
 ﻿# Paper Rewrite Plan
 
-This file is a repo-faithful rewrite guide for replacing the current transformer/custom-data draft in [Research Paper â€” Aaron (3).docx](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/Research%20Paper%20%E2%80%94%20Aaron%20%283%29.docx) with the current Georgia Tech + CNN-BiLSTM + MuJoCo pipeline.
+This file is a repo-faithful rewrite guide for replacing the current transformer/custom-data draft in [Research Paper - Aaron (3).docx](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/Research%20Paper%20%E2%80%94%20Aaron%20%283%29.docx) with the current Georgia Tech + CNN-BiLSTM + MuJoCo pipeline.
 
 Use this together with the `Paper Handoff` section in [README.md](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/README.md).
 
@@ -50,9 +50,9 @@ Use 4 parts:
    - partial Spearman correlation with motion-match controls
 
 3. Main results
-   - held-out test RMSE `7.84Â°`
+   - held-out test RMSE `7.84 deg`
    - 80 successful simulation windows
-   - motion-match knee RMSE below `8Â°` on average
+   - motion-match knee RMSE below `8 deg` on average
    - raw RMSE vs excess instability non-significant
    - partial correlation after controls remains non-significant
 
@@ -211,7 +211,7 @@ Key points:
 
 Suggested sentence:
 
-`Across the 80-window simulation run, the model-conditioned rollout had lower mean simulated knee RMSE than the reference rollout (9.60Â° vs. 12.09Â°), yet its mean heuristic instability AUC was higher (1.019 vs. 0.819), indicating that improved local knee tracking did not automatically translate into lower simulated instability.`
+`Across the 80-window simulation run, the model-conditioned rollout had lower mean simulated knee RMSE than the reference rollout (9.60 deg vs. 12.09 deg), yet its mean heuristic instability AUC was higher (1.019 vs. 0.819), indicating that improved local knee tracking did not automatically translate into lower simulated instability.`
 
 ### 3.3 Correlation Results
 
@@ -226,8 +226,8 @@ Suggested paragraph:
 ## Recommended Discussion Section
 
 Main message:
-- sub-10Â° prediction error is achievable on the current GT benchmark
-- sub-10Â° motion matching is also achievable on the current GT benchmark
+- sub-10 deg prediction error is achievable on the current GT benchmark
+- sub-10 deg motion matching is also achievable on the current GT benchmark
 - but prediction RMSE is not a significant predictor of excess instability in the present pipeline
 - the instability trace should be framed as a heuristic stability cost, not a literal fall probability
 
@@ -241,7 +241,7 @@ Suggested discussion claims:
 
 Use these files directly:
 
-1. Pipeline overview
+1. Integrated pipeline and model architecture
    - [fig1_pipeline.png](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/paper_native/fig1_pipeline.png)
 
 2. Representative instability trial
@@ -259,7 +259,10 @@ Use these files directly:
 6. Example replay frames
    - [fig6_simulation_frames.png](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/paper_native/fig6_simulation_frames.png)
 
-Caption notes for all six:
+7. Motion-matching process
+   - [fig7_motion_matching.png](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/paper_native/fig7_motion_matching.png)
+
+Caption notes for all seven:
 - [captions.md](/C:/Users/aaron/OneDrive/Documents/GitHub/emg_tst/figures/paper_native/captions.md)
 
 ## What To Delete From The Current Draft

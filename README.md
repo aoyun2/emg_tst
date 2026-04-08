@@ -2,7 +2,7 @@
 
 Real-time knee-angle prediction from thigh EMG and IMU, evaluated inside MoCapAct physics simulation.
 
-**Current pipeline:** Georgia Tech biomechanics dataset â†’ CNN-BiLSTM regressor â†’ motion matching â†’ MuJoCo REF/PRED rollouts â†’ partial Spearman analysis.
+**Current pipeline:** Georgia Tech biomechanics dataset -> CNN-BiLSTM regressor -> motion matching -> MuJoCo REF/PRED rollouts -> partial Spearman analysis.
 
 Instability note: the simulation produces an XCoM-margin-only per-step instability trace, not a calibrated fall probability. The paper outcome is excess instability AUC = `PRED - REF`, not absolute `PRED` AUC alone.
 
@@ -49,7 +49,7 @@ python -m analysis.make_paper_figures
 
 ## Paper Figures
 
-![Figure 1: End-to-end evaluation pipeline](figures/paper_native/fig1_pipeline.png)
+![Figure 1: Integrated pipeline and model architecture](figures/paper_native/fig1_pipeline.png)
 
 ![Figure 2: Representative instability trial](figures/paper_native/fig2_representative_trial.png)
 
@@ -61,6 +61,8 @@ python -m analysis.make_paper_figures
 
 ![Figure 6: Example replay frames](figures/paper_native/fig6_simulation_frames.png)
 
+![Figure 7: Motion matching process](figures/paper_native/fig7_motion_matching.png)
+
 Figure captions: [figures/paper_native/captions.md](figures/paper_native/captions.md)
 
 ---
@@ -71,18 +73,18 @@ Training run: [checkpoints/tst_20260405_173725_all/metrics_summary.json](checkpo
 
 | Metric | Value |
 |--------|-------|
-| Mean held-out test RMSE | 7.84Â° |
-| Median held-out test RMSE | 6.85Â° |
-| Mean held-out MAE | 6.11Â° |
-| Folds below 10Â° | 83.6% |
+| Mean held-out test RMSE | 7.84 deg |
+| Median held-out test RMSE | 6.85 deg |
+| Mean held-out MAE | 6.11 deg |
+| Folds below 10 deg | 83.6% |
 
 Simulation run: [artifacts/phys_eval_v2/runs/20260406_205003/summary.json](artifacts/phys_eval_v2/runs/20260406_205003/summary.json)
 
 | Metric | Value |
 |--------|-------|
 | Trials | 80 |
-| Mean model pred RMSE (vs GT wearable) | 8.80Â° |
-| Mean motion-match knee RMSE (CNN pred vs clip) | 7.93Â° |
+| Mean model pred RMSE (vs GT wearable) | 8.80 deg |
+| Mean motion-match knee RMSE (CNN pred vs clip) | 7.93 deg |
 | Mean REF instability AUC | 0.819 |
 | Mean PRED instability AUC | 1.019 |
 | Mean excess instability AUC | 0.200 |
@@ -90,7 +92,7 @@ Simulation run: [artifacts/phys_eval_v2/runs/20260406_205003/summary.json](artif
 | Raw Spearman rho (model RMSE vs excess AUC) | -0.168, p = 0.136 |
 | Partial Spearman rho (after FWL controls) | -0.019, p = 0.867 |
 
-Note: `ref_knee_rmse` and `pred_knee_rmse` in the raw results are measured against the matched clip target and are **not** a valid performance comparison â€” PRED is lower by construction (PD controller directly targets the CNN prediction, which was selected to match the clip). These columns are not used in any paper claims.
+Note: `ref_knee_rmse` and `pred_knee_rmse` in the raw results are measured against the matched clip target and are **not** a valid performance comparison - PRED is lower by construction (PD controller directly targets the CNN prediction, which was selected to match the clip). These columns are not used in any paper claims.
 
 ---
 
@@ -102,9 +104,9 @@ Per 200 Hz timestep, the model receives 10 features:
 
 | # | Channel | Type |
 |---|---------|------|
-| 0â€“3 | RRF, RBF, RVL, RMGAS | EMG envelope (high-pass â†’ rectify â†’ low-pass) |
-| 4â€“6 | RAThigh_ACC{X,Y,Z} | Thigh accelerometer |
-| 7â€“9 | RAThigh_GYRO{X,Y,Z} | Thigh gyroscope |
+| 0-3 | RRF, RBF, RVL, RMGAS | EMG envelope (high-pass -> rectify -> low-pass) |
+| 4-6 | RAThigh_ACC{X,Y,Z} | Thigh accelerometer |
+| 7-9 | RAThigh_GYRO{X,Y,Z} | Thigh gyroscope |
 
 ### EMG Preprocessing
 
@@ -113,12 +115,12 @@ Per 200 Hz timestep, the model receives 10 features:
 3. Moving-average low-pass at 5 Hz (linear envelope)
 4. Resample to 200 Hz by timestamp-aligned linear interpolation
 
-Raw EMG: 2000 Hz â†’ envelope: 200 Hz. IMU and knee angle: native 200 Hz.
+Raw EMG: 2000 Hz -> envelope: 200 Hz. IMU and knee angle: native 200 Hz.
 
 ### Target
 
-Knee included angle: 0Â° = fully flexed, 180Â° = fully extended.
-Derived from GT `knee_angle_r` as `knee_included_deg = 180 âˆ’ clip(âˆ’knee_angle_r, 0, 180)`.
+Knee included angle: `0 deg` = fully flexed, `180 deg` = fully extended.
+Derived from GT `knee_angle_r` as `knee_included_deg = 180 - clip(-knee_angle_r, 0, 180)`.
 Normalised by dividing by 180. Label lookahead: 2 samples = 10 ms (`LABEL_SHIFT = 2`).
 
 ### Windowing
@@ -179,7 +181,7 @@ Main trainer: [emg_tst/run_experiment.py](emg_tst/run_experiment.py)
 | Samples/epoch | 8,192 |
 | Max epochs | 6 |
 | Early stopping patience | 2 |
-| Loss | Huber (Î´ = 5Â°) |
+| Loss | Huber (delta = 5 deg) |
 | Gradient clipping | 1.0 |
 
 Cross-validation: leave-one-file-out (LOFO). One additional file held out per fold for validation. Best checkpoint saved on validation RMSE improvement.
@@ -243,10 +245,10 @@ The evaluator:
 2. Maps each window to its correct fold checkpoint via `cv_manifest.json`
 3. Runs rolling causal inference to produce a predicted knee trajectory
 4. Motion-matches into the MoCapAct expert bank (`thigh_knee_d` matcher, `knee_weight=1.0`)
-5. Runs paired MuJoCo rollouts â€” `REF` (unmodified expert) and `PRED` (right-knee override)
+5. Runs paired MuJoCo rollouts - `REF` (unmodified expert) and `PRED` (right-knee override)
 6. Computes XCoM-based instability AUC at each step
 
-Paper-mode defaults: seed 42, replacement sampling until 80 successful trials, match RMSE cutoff 25Â°.
+Paper-mode defaults: seed 42, replacement sampling until 80 successful trials, match RMSE cutoff 25 deg.
 
 Run the partial Spearman correlation analysis:
 ```bash

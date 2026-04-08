@@ -5,7 +5,8 @@
     "fig3": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig3_prediction_performance.png",
     "fig4": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig4_simulation_instability.png",
     "fig5": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig5_fwl_correlation.png",
-    "fig6": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig6_simulation_frames.png"
+    "fig6": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig6_simulation_frames.png",
+    "fig7": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\figures\\paper_native\\fig7_motion_matching.png"
   },
   "training_run": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\checkpoints\\tst_20260405_173725_all",
   "sim_run": "C:\\Users\\aaron\\OneDrive\\Documents\\GitHub\\emg_tst\\artifacts\\phys_eval_v2\\runs\\20260406_205003"
