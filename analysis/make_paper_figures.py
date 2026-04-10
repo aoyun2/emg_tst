@@ -16,7 +16,7 @@ from matplotlib.ticker import MaxNLocator
 import networkx as nx
 import numpy as np
 import pandas as pd
-from matplotlib.patches import FancyArrowPatch, FancyBboxPatch, Rectangle
+from matplotlib.patches import Circle, FancyArrowPatch, FancyBboxPatch, Polygon, Rectangle
 from PIL import Image
 from scipy import stats
 import torch
@@ -206,30 +206,75 @@ def _prediction_thumb_image() -> np.ndarray:
         legend=False,
         draw_volume=True,
         one_dim_orientation="z",
-        spacing=18,
-        padding=14,
+        spacing=14,
+        padding=10,
         shade_step=12,
-        scale_xy=1.0,
-        scale_z=0.16,
+        scale_xy=0.92,
+        scale_z=0.14,
         background_fill="white",
     )
     arr = np.asarray(img.convert("RGB"))
     return _trim_white(arr)
 
 
+def _motion_match_thumb(ax: plt.Axes, sim_df: pd.DataFrame, trial_idx: int = 75) -> None:
+    eval_dir, summary_path, query_path = _eval_trial_paths(sim_df, trial_idx)
+    summary = json.loads(summary_path.read_text())
+    match = summary["match"]
+    query = np.load(query_path, allow_pickle=True)
+    bank = np.load(BANK_PATH, allow_pickle=True)
+
+    snippet_ids = list(bank["snippet_id"])
+    bank_idx = snippet_ids.index(match["snippet_id"])
+    start = int(match["start_step_in_snip"])
+    length = int(match["L"])
+
+    ref_thigh = np.asarray(bank["thigh_pitch_deg"][bank_idx], dtype=float)[start : start + length]
+    ref_knee = np.asarray(bank["knee_deg"][bank_idx], dtype=float)[start : start + length]
+    q_thigh = np.asarray(query["thigh_pitch_deg"], dtype=float)
+    q_knee = np.asarray(query["knee_included_deg"], dtype=float)
+
+    x_src = np.arange(q_thigh.size, dtype=float)
+    x_dst = np.linspace(0.0, float(q_thigh.size - 1), num=length)
+    q_thigh_r = np.interp(x_dst, x_src, q_thigh)
+    q_knee_r = np.interp(x_dst, x_src, q_knee)
+    t = np.arange(length, dtype=float) / 33.0
+
+    ax_top = ax.inset_axes([0.04, 0.52, 0.92, 0.40])
+    ax_bot = ax.inset_axes([0.04, 0.08, 0.92, 0.32])
+    for a in (ax_top, ax_bot):
+        a.spines["top"].set_visible(False)
+        a.spines["right"].set_visible(False)
+        a.spines["left"].set_color("#b9c0c9")
+        a.spines["bottom"].set_color("#b9c0c9")
+        a.tick_params(labelsize=4.8, length=1.8, pad=1.0)
+        a.grid(True, axis="both", color=GRID, linewidth=0.45)
+        a.set_axisbelow(True)
+    ax_top.plot(t, ref_thigh, color=REF_COL, linewidth=0.9, label="ref")
+    ax_top.plot(t, q_thigh_r, color=PRED_COL, linewidth=0.9, label="query")
+    ax_top.set_ylabel("Thigh", fontsize=4.8)
+    ax_top.set_xticklabels([])
+    ax_top.legend(loc="upper right", fontsize=4.4, frameon=False, handlelength=1.8)
+    ax_bot.plot(t, ref_knee, color=REF_COL, linewidth=0.9)
+    ax_bot.plot(t, q_knee_r, color=PRED_COL, linewidth=0.9)
+    ax_bot.set_ylabel("Knee", fontsize=4.8)
+    ax_bot.set_xlabel("Matched time (s)", fontsize=4.8)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+
 def _physics_thumb(ax: plt.Axes, sim_df: pd.DataFrame, trial_idx: int = 75) -> None:
-    row = sim_df.iloc[trial_idx]
-    gif_path = Path(os.path.normpath(str(row["compare_npz"]))).with_suffix(".gif")
-    gif = Image.open(gif_path)
-    gif.seek(max(0, int(getattr(gif, "n_frames", 1)) // 2))
-    frame = np.asarray(gif.convert("RGB"))
+    d = _load_npz(sim_df, trial_idx)
+    frames = np.asarray(d["frames"])
+    frame = frames[max(0, int(frames.shape[0] // 2))]
     ax.imshow(frame, aspect="auto")
     ax.set_xticks([])
     ax.set_yticks([])
     for spine in ax.spines.values():
         spine.set_visible(False)
     inset = ax.inset_axes([0.05, 0.06, 0.90, 0.24])
-    d = _load_npz(sim_df, trial_idx)
     dt = float(d["dt"])
     t = np.arange(len(d["balance_xcom_margin_ref_m"])) * dt
     inset.axhline(0.0, color="#9aa3ad", linewidth=0.7)
@@ -324,72 +369,206 @@ def fig1_pipeline() -> str:
     eval_dir, _, _ = _eval_trial_paths(sim, 75)
     motion_plot = np.asarray(Image.open(eval_dir / "plots" / "motion_match.png").convert("RGB"))
     motion_crop = motion_plot[int(motion_plot.shape[0] * 0.09) : int(motion_plot.shape[0] * 0.58), :, :]
-    arch_thumb = _prediction_thumb_image()
-
-    fig = plt.figure(figsize=(13.2, 4.45))
+    d = _load_npz(sim, 75)
+    dt = float(d["dt"])
+    pred = np.asarray(d["knee_good_query_deg"], dtype=float)
+    realized = np.asarray(d["knee_good_actual_deg"], dtype=float)
+    n_trace = min(len(pred), len(realized))
+    pred = pred[:n_trace]
+    realized = realized[:n_trace]
+    t = np.arange(n_trace) * dt
+    fig = plt.figure(figsize=(15.6, 4.7))
     gs = fig.add_gridspec(
-        2,
+        1,
         4,
+        width_ratios=[0.95, 1.35, 1.38, 1.05],
         left=0.035,
         right=0.985,
-        top=0.93,
-        bottom=0.10,
-        height_ratios=[0.16, 0.84],
-        width_ratios=[0.92, 1.45, 0.88, 0.95],
-        hspace=0.04,
-        wspace=0.14,
+        top=0.90,
+        bottom=0.14,
+        wspace=0.35,
     )
-    head_axes = [fig.add_subplot(gs[0, i]) for i in range(4)]
-    ax_inputs = fig.add_subplot(gs[1, 0])
-    ax_model = fig.add_subplot(gs[1, 1])
-    ax_match = fig.add_subplot(gs[1, 2])
-    ax_sim = fig.add_subplot(gs[1, 3])
 
-    titles = ["Wearable inputs", "Conv-BiLSTM architecture", "Motion matching", "Physics evaluation"]
-    subtitles = [
-        "4 EMG channels + thigh IMU",
-        "400 timesteps x 10 channels to knee angle at t + 10 ms",
-        "nearest reference retrieval",
-        "paired REF and PRED rollout",
-    ]
+    ax_in = fig.add_subplot(gs[0, 0])
+    ax_arch = fig.add_subplot(gs[0, 1])
+    gs_pred_match = gs[0, 2].subgridspec(2, 1, height_ratios=[0.44, 0.56], hspace=0.18)
+    ax_out = fig.add_subplot(gs_pred_match[0, 0])
+    ax_match = fig.add_subplot(gs_pred_match[1, 0])
+    ax_sim = fig.add_subplot(gs[0, 3])
 
-    for hax, title, subtitle in zip(head_axes, titles, subtitles):
-        hax.axis("off")
-        hax.text(0.0, 0.76, title, ha="left", va="center", fontsize=10.0, fontweight="bold", color=INK)
-        hax.text(0.0, 0.08, subtitle, ha="left", va="bottom", fontsize=7.4, color=MUTED)
+    rec = _gt_demo_record()
+    emg = np.asarray(rec["raw_emg_channels"], dtype=float)[:, :4000]
+    kernel = np.ones(40, dtype=float) / 40.0
+    colors = ["#2d6ea2", "#4a8fc6", "#73addb", "#9fcaea"]
+    t_raw = np.arange(emg.shape[1]) / 2000.0
+    offsets = [2.85, 1.95, 1.05, 0.15]
+    for idx, ch in enumerate(emg):
+        z = np.convolve(np.abs(ch), kernel, mode="same")
+        z = (z - np.percentile(z, 5)) / max(1e-6, np.percentile(z, 95) - np.percentile(z, 5))
+        ax_in.plot(t_raw, np.clip(z, 0.0, 1.0) * 0.65 + offsets[idx], color=colors[idx], linewidth=1.0)
+    ax_in.set_xlim(0, 2.0)
+    ax_in.set_ylim(-0.1, 3.8)
+    ax_in.set_xticks([])
+    ax_in.set_yticks([])
+    for spine in ax_in.spines.values():
+        spine.set_color("#c9cfd8")
+        spine.set_linewidth(1.0)
+    ax_in.text(0.00, 1.05, "Wearable input window", transform=ax_in.transAxes, ha="left", va="bottom", fontsize=10.0, fontweight="bold", color=INK)
+    ax_in.text(0.00, 0.995, "4 EMG envelopes + 6 thigh-IMU channels", transform=ax_in.transAxes, ha="left", va="top", fontsize=7.2, color=MUTED)
+    ax_in.text(0.00, -0.07, "[400 × 10]", transform=ax_in.transAxes, ha="left", va="top", fontsize=7.2, color=MUTED)
 
-    for ax in (ax_inputs, ax_model, ax_match, ax_sim):
-        ax.set_xticks([])
-        ax.set_yticks([])
-        for spine in ax.spines.values():
-            spine.set_edgecolor("#c9cfd8")
-            spine.set_linewidth(1.0)
+    arch_img = _prediction_thumb_image()
+    ax_arch.imshow(arch_img, aspect="auto")
+    ax_arch.set_xticks([])
+    ax_arch.set_yticks([])
+    for spine in ax_arch.spines.values():
+        spine.set_color("#c9cfd8")
+        spine.set_linewidth(1.0)
+    ax_arch.text(0.00, 1.05, "CNN-BiLSTM prediction model", transform=ax_arch.transAxes, ha="left", va="bottom", fontsize=10.0, fontweight="bold", color=INK)
+    ax_arch.text(0.00, 0.995, "Conv1d → Conv1d → BiLSTM → MLP", transform=ax_arch.transAxes, ha="left", va="top", fontsize=7.2, color=MUTED)
+    ax_arch.text(0.00, -0.07, "[400 × 32] → [400 × 32] → [400 × 128] → [128 → 64 → 1]", transform=ax_arch.transAxes, ha="left", va="top", fontsize=7.0, color=MUTED)
 
-    _gt_emg_thumb(ax_inputs)
-    ax_model.imshow(arch_thumb, aspect="auto")
-    ax_model.text(0.02, 0.03, "Conv1d x2  ->  BiLSTM x2  ->  MLP", transform=ax_model.transAxes, ha="left", va="bottom", fontsize=7.0, color=MUTED)
+    ax_out.plot(t, pred, color=PRED_COL, linewidth=1.25, label="predicted target")
+    ax_out.plot(t, realized, color=REF_COL, linewidth=1.0, linestyle="--", label="realized knee")
+    ax_out.set_xlim(float(t[0]), float(t[-1]))
+    ax_out.yaxis.set_major_locator(MaxNLocator(nbins=4))
+    ax_out.xaxis.set_major_locator(MaxNLocator(nbins=4))
+    ax_out.tick_params(axis="both", labelsize=7)
+    ax_out.set_xlabel("Time (s)", fontsize=7.2)
+    ax_out.set_ylabel("Knee angle (deg)", fontsize=7.2)
+    ax_out.legend(loc="upper right", fontsize=6.2, frameon=False)
+    _grid(ax_out, "both")
+    ax_out.text(0.00, 1.08, "Predicted knee trajectory", transform=ax_out.transAxes, ha="left", va="bottom", fontsize=9.8, fontweight="bold", color=INK)
+    ax_out.text(0.00, 1.01, "Forecast used as the query target", transform=ax_out.transAxes, ha="left", va="top", fontsize=7.1, color=MUTED)
+
     ax_match.imshow(motion_crop, aspect="auto")
-    _physics_thumb(ax_sim, sim, 75)
+    ax_match.set_xticks([])
+    ax_match.set_yticks([])
+    for spine in ax_match.spines.values():
+        spine.set_color("#c9cfd8")
+        spine.set_linewidth(1.0)
+    ax_match.text(0.00, 1.08, "Motion matching", transform=ax_match.transAxes, ha="left", va="bottom", fontsize=9.8, fontweight="bold", color=INK)
+    ax_match.text(0.00, 1.01, "Closest MoCapAct clip selected before simulation", transform=ax_match.transAxes, ha="left", va="top", fontsize=7.1, color=MUTED)
 
-    panel_axes = [ax_inputs, ax_model, ax_match, ax_sim]
-    for a0, a1 in zip(panel_axes[:-1], panel_axes[1:]):
-        p0 = a0.get_position()
-        p1 = a1.get_position()
-        y_arrow = p0.y0 + p0.height * 0.50
+    _physics_thumb(ax_sim, sim, 75)
+    ax_sim.text(0.00, 1.05, "Paired physics evaluation", transform=ax_sim.transAxes, ha="left", va="bottom", fontsize=10.0, fontweight="bold", color=INK)
+    ax_sim.text(0.00, 0.995, "REF vs PRED scored with excess XCoM instability AUC", transform=ax_sim.transAxes, ha="left", va="top", fontsize=7.1, color=MUTED)
+
+    def _fig_arrow(ax_from: plt.Axes, ax_to: plt.Axes, y_frac_from: float = 0.5, y_frac_to: float = 0.5) -> None:
+        bb0 = ax_from.get_position()
+        bb1 = ax_to.get_position()
+        x0 = bb0.x1 + 0.010
+        x1 = bb1.x0 - 0.010
+        y0 = bb0.y0 + bb0.height * y_frac_from
+        y1 = bb1.y0 + bb1.height * y_frac_to
         fig.add_artist(
             FancyArrowPatch(
-                (p0.x1 + 0.008, y_arrow),
-                (p1.x0 - 0.008, y_arrow),
+                (x0, y0),
+                (x1, y1),
                 transform=fig.transFigure,
                 arrowstyle="-|>",
-                mutation_scale=15,
-                linewidth=1.3,
+                mutation_scale=14,
+                linewidth=1.25,
                 color="#8f99a5",
             )
         )
 
+    _fig_arrow(ax_in, ax_arch, 0.46, 0.46)
+    _fig_arrow(ax_arch, ax_out, 0.46, 0.46)
+    _fig_arrow(ax_out, ax_match, 0.42, 0.50)
+    _fig_arrow(ax_match, ax_sim, 0.50, 0.50)
+
     out = OUT_DIR / "fig1_pipeline.png"
-    fig.savefig(out, dpi=300, bbox_inches="tight", pad_inches=0.03)
+    fig.savefig(out, dpi=300, bbox_inches=None, pad_inches=0.05)
+    plt.close(fig)
+    return str(out)
+
+
+def fig1_pipeline_clean() -> str:
+    """Clean 5-card pipeline schematic — single axis, no embedded images."""
+    CARD_BG = ["#dbeafe", "#ede9fe", "#d1fae5", "#fef9c3", "#fee2e2"]
+    CARD_BORDER = ["#93c5fd", "#a78bfa", "#6ee7b7", "#fcd34d", "#fca5a5"]
+    TITLES = [
+        "1  Wearable input",
+        "2  CNN-BiLSTM",
+        "3  Rolling forecast",
+        "4  Motion matching",
+        "5  Physics evaluation",
+    ]
+    CONTENT = [
+        ["4 EMG envelopes", "3-axis accel + gyro", "400 samples (2.0 s)", "200 Hz sampling"],
+        ["Conv1d x2 (k=5, 32 ch)", "Bi-LSTM x2 (64 hidden)", "Linear readout", "~260 k parameters"],
+        ["Causal sliding window", "10 ms lookahead", "Predicted knee angle", "trajectory (deg)"],
+        ["Query MoCapAct bank", "Nearest clip by knee +", "thigh orientation", "match RMSE < 25 deg"],
+        ["REF: expert unmodified", "PRED: knee overridden", "Paired MuJoCo rollout", "-> Excess AUC"],
+    ]
+    XCS = [10.0, 30.0, 50.0, 70.0, 90.0]
+    HALF_W = 8.5
+    Y_BOT, Y_TOP = 3.0, 37.0
+    BOX_H = Y_TOP - Y_BOT
+    MID_Y = (Y_BOT + Y_TOP) / 2
+
+    fig, ax = plt.subplots(figsize=(13.0, 3.8))
+    ax.set_xlim(0, 100)
+    ax.set_ylim(0, 40)
+    ax.axis("off")
+
+    for i, (xc, title, lines, bg, border) in enumerate(
+        zip(XCS, TITLES, CONTENT, CARD_BG, CARD_BORDER)
+    ):
+        x = xc - HALF_W
+        w = 2 * HALF_W
+
+        # Card background
+        ax.add_patch(FancyBboxPatch(
+            (x, Y_BOT), w, BOX_H,
+            boxstyle="round,pad=0.5",
+            facecolor=bg, edgecolor=border,
+            linewidth=1.3, zorder=2,
+        ))
+
+        # Separator under title
+        sep_y = Y_TOP - 7.8
+        ax.plot([x + 1.0, x + w - 1.0], [sep_y, sep_y],
+                color=border, linewidth=0.9, zorder=3)
+
+        # Title (above separator)
+        ax.text(xc, Y_TOP - 1.2, title,
+                ha="center", va="top",
+                fontsize=8.8, fontweight="bold", color="#1e293b",
+                zorder=4)
+
+        # Content lines (below separator, evenly spaced)
+        body_top = sep_y - 2.5
+        n = len(lines)
+        body_h = sep_y - Y_BOT - 4.0
+        step = body_h / max(n, 1)
+        for j, line in enumerate(lines):
+            ax.text(xc, body_top - j * step, line,
+                    ha="center", va="top",
+                    fontsize=7.5, color="#334155",
+                    zorder=4)
+
+        # Arrow to next card
+        if i < len(XCS) - 1:
+            ax.annotate(
+                "",
+                xy=(xc + HALF_W + 2.6, MID_Y),
+                xytext=(xc + HALF_W + 0.4, MID_Y),
+                arrowprops=dict(
+                    arrowstyle="-|>", color="#64748b",
+                    lw=1.4, mutation_scale=14,
+                ),
+                zorder=5,
+            )
+
+    fig.suptitle(
+        "Figure 1.  End-to-end evaluation pipeline",
+        fontsize=10.5, fontweight="bold", y=0.98, color=INK,
+    )
+
+    out = OUT_DIR / "fig1_pipeline.png"
+    fig.savefig(out, dpi=300, bbox_inches="tight", pad_inches=0.10)
     plt.close(fig)
     return str(out)
 
@@ -471,78 +650,61 @@ def fig4_simulation(sim_df: pd.DataFrame) -> str:
     excess = sim_df["excess_auc"].to_numpy()
     rng = np.random.default_rng(42)
 
-    fig = plt.figure(figsize=(8.4, 3.55))
-    gs = fig.add_gridspec(1, 2, left=0.085, right=0.965, bottom=0.16, top=0.96, wspace=0.34, width_ratios=[1.18, 0.72])
-    ax1 = fig.add_subplot(gs[0, 0])
-    ax2 = fig.add_subplot(gs[0, 1])
+    fig = plt.figure(figsize=(9.4, 3.6))
+    gs = fig.add_gridspec(1, 3, left=0.075, right=0.975, bottom=0.18, top=0.95, wspace=0.24)
+    ax_ref = fig.add_subplot(gs[0, 0])
+    ax_pred = fig.add_subplot(gs[0, 1])
+    ax_ex = fig.add_subplot(gs[0, 2])
 
-    ax1.boxplot(
-        [ref_auc, pred_auc],
-        positions=[1, 2],
-        widths=0.34,
-        patch_artist=True,
-        showfliers=False,
-        boxprops=dict(facecolor=WHITE, edgecolor=INK, linewidth=1.0),
-        whiskerprops=dict(color=INK, linewidth=1.0),
-        capprops=dict(color=INK, linewidth=1.0),
-        medianprops=dict(color=INK, linewidth=1.2),
-    )
-    ax1.scatter(
-        1 + rng.uniform(-0.10, 0.10, size=ref_auc.size),
-        ref_auc,
-        s=18,
-        color=REF_COL,
-        edgecolors="white",
-        linewidth=0.25,
-        alpha=0.75,
-        zorder=3,
-    )
-    ax1.scatter(
-        2 + rng.uniform(-0.10, 0.10, size=pred_auc.size),
-        pred_auc,
-        s=18,
-        color=PRED_COL,
-        edgecolors="white",
-        linewidth=0.25,
-        alpha=0.75,
-        zorder=3,
-    )
-    ax1.set_xticks([1, 2])
-    ax1.set_xticklabels(["REF", "PRED"])
-    ax1.set_ylabel("Instability AUC")
-    ax1.set_xlim(0.55, 2.45)
-    _grid(ax1, "y")
+    def _single_box(
+        axp: plt.Axes,
+        data: np.ndarray,
+        xpos: float,
+        color: str,
+        label: str,
+        add_zero: bool = False,
+        box_width: float = 0.30,
+        jitter: float = 0.06,
+        x_pad: float = 0.42,
+    ) -> None:
+        axp.boxplot(
+            [data],
+            positions=[xpos],
+            widths=box_width,
+            patch_artist=True,
+            showfliers=False,
+            boxprops=dict(facecolor=WHITE, edgecolor=INK, linewidth=1.0),
+            whiskerprops=dict(color=INK, linewidth=1.0),
+            capprops=dict(color=INK, linewidth=1.0),
+            medianprops=dict(color=INK, linewidth=1.2),
+        )
+        axp.scatter(
+            xpos + rng.uniform(-jitter, jitter, size=data.size),
+            data,
+            s=18,
+            color=color,
+            edgecolors="white",
+            linewidth=0.25,
+            alpha=0.78,
+            zorder=3,
+        )
+        if add_zero:
+            axp.axhline(0, color=INK, linewidth=1.0, zorder=1)
+        axp.set_xticks([xpos])
+        axp.set_xticklabels([label])
+        axp.set_xlim(xpos - x_pad, xpos + x_pad)
+        _grid(axp, "y")
 
-    ax2.boxplot(
-        [excess],
-        positions=[1],
-        widths=0.18,
-        patch_artist=True,
-        showfliers=False,
-        boxprops=dict(facecolor=WHITE, edgecolor=INK, linewidth=1.0),
-        whiskerprops=dict(color=INK, linewidth=1.0),
-        capprops=dict(color=INK, linewidth=1.0),
-        medianprops=dict(color=INK, linewidth=1.2),
-    )
-    ax2.scatter(
-        1 + rng.uniform(-0.035, 0.035, size=excess.size),
-        excess,
-        s=16,
-        color=PRED_COL,
-        edgecolors="white",
-        linewidth=0.25,
-        alpha=0.8,
-        zorder=3,
-    )
-    ax2.axhline(0, color=INK, linewidth=1.0, zorder=1)
-    ax2.set_xticks([1])
-    ax2.set_xticklabels(["PRED - REF"])
-    ax2.set_ylabel("Excess instability AUC")
-    ax2.set_xlim(0.86, 1.14)
-    _grid(ax2, "y")
+    _single_box(ax_ref, ref_auc, 1.0, REF_COL, "REF")
+    _single_box(ax_pred, pred_auc, 1.0, PRED_COL, "PRED")
+    _single_box(ax_ex, excess, 1.0, PRED_COL, "PRED - REF", add_zero=True, box_width=0.24, jitter=0.045, x_pad=0.34)
+
+    ax_ref.set_ylabel("Instability AUC")
+    ax_pred.set_ylabel("Instability AUC")
+    ax_ex.set_ylabel("Excess AUC")
 
     out = OUT_DIR / "fig4_simulation_instability.png"
-    fig.savefig(out, dpi=300, bbox_inches="tight", pad_inches=0.03)
+    fig.savefig(out, dpi=300, bbox_inches="tight", pad_inches=0.08)
     plt.close(fig)
     return str(out)
 
@@ -830,7 +992,7 @@ def main() -> None:
     partial = _partial_summary()
 
     paths = {
-        "fig1": fig1_pipeline(),
+        "fig1": fig1_pipeline_clean(),
         "fig2": fig2_representative_trial(sim, trial_idx=75),
         "fig3": fig3_prediction(train),
         "fig4": fig4_simulation(sim),
