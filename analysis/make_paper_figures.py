@@ -585,124 +585,134 @@ def fig2_representative_trial(sim_df: pd.DataFrame, trial_idx: int = 75) -> str:
     risk_pred = d["predicted_fall_risk_trace_good"]
     excess = float(sim_df.iloc[trial_idx]["excess_auc"])
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8.6, 3.2), gridspec_kw={"wspace": 0.35})
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7.2, 3.0), gridspec_kw={"wspace": 0.42})
 
-    ax1.axhline(0, color="#9aa3ad", linewidth=1.0)
-    ax1.plot(t, xcom_ref, color=REF_COL, linewidth=1.9, label="REF")
-    ax1.plot(t, xcom_pred, color=PRED_COL, linewidth=1.9, label="PRED")
-    ax1.fill_between(t, xcom_ref, 0, where=(xcom_ref < 0), color=REF_COL, alpha=0.10)
-    ax1.fill_between(t, xcom_pred, 0, where=(xcom_pred < 0), color=PRED_COL, alpha=0.10)
-    ax1.set_xlabel("Time (s)")
-    ax1.set_ylabel("XCoM margin (m)")
-    ax1.legend(loc="lower left", fontsize=8)
+    # Panel A — XCoM margin
+    ax1.axhline(0, color="#9aa3ad", linewidth=0.8, linestyle="--", zorder=1)
+    ax1.fill_between(t, xcom_pred, 0, where=(xcom_pred < 0), color=PRED_COL, alpha=0.12, zorder=2)
+    ax1.plot(t, xcom_ref,  color=REF_COL,  linewidth=1.5, label="REF",  zorder=3)
+    ax1.plot(t, xcom_pred, color=PRED_COL, linewidth=1.5, label="PRED", zorder=4)
+    ax1.set_xlabel("Time (s)", fontsize=9)
+    ax1.set_ylabel("XCoM margin (m)", fontsize=9)
+    ax1.legend(loc="lower left", fontsize=8, frameon=False)
+    ax1.xaxis.set_major_locator(MaxNLocator(nbins=5))
+    ax1.yaxis.set_major_locator(MaxNLocator(nbins=5))
     _grid(ax1, "y")
+    ax1.text(-0.14, 1.03, "A", transform=ax1.transAxes, fontsize=10, fontweight="bold", va="top", color=INK)
 
-    ax2.plot(t, risk_ref, color=REF_COL, linewidth=1.9, label="REF")
-    ax2.plot(t, risk_pred, color=PRED_COL, linewidth=1.9, label="PRED")
-    ax2.fill_between(t, risk_ref, color=REF_COL, alpha=0.10)
-    ax2.fill_between(t, risk_pred, color=PRED_COL, alpha=0.10)
-    ax2.set_xlabel("Time (s)")
-    ax2.set_ylabel("Instability score")
-    ax2.set_ylim(-0.02, 1.05)
-    ax2.legend(loc="upper left", fontsize=8)
-    ax2.text(
-        0.98,
-        0.04,
-        f"Excess AUC = {excess:.3f}",
-        transform=ax2.transAxes,
-        ha="right",
-        va="bottom",
-        fontsize=8,
-        color=INK,
-    )
+    # Panel B — per-step risk score
+    ax2.fill_between(t, risk_pred, color=PRED_COL, alpha=0.12, zorder=2)
+    ax2.plot(t, risk_ref,  color=REF_COL,  linewidth=1.5, label="REF",  zorder=3)
+    ax2.plot(t, risk_pred, color=PRED_COL, linewidth=1.5, label="PRED", zorder=4)
+    ax2.set_xlabel("Time (s)", fontsize=9)
+    ax2.set_ylabel("Instability score", fontsize=9)
+    ax2.set_ylim(-0.02, 1.08)
+    ax2.legend(loc="upper left", fontsize=8, frameon=False)
+    ax2.text(0.97, 0.04, f"Excess AUC = {excess:.3f}",
+             transform=ax2.transAxes, ha="right", va="bottom", fontsize=8, color=INK)
+    ax2.xaxis.set_major_locator(MaxNLocator(nbins=5))
+    ax2.yaxis.set_major_locator(MaxNLocator(nbins=4))
     _grid(ax2, "y")
+    ax2.text(-0.14, 1.03, "B", transform=ax2.transAxes, fontsize=10, fontweight="bold", va="top", color=INK)
 
     out = OUT_DIR / "fig2_representative_trial.png"
-    fig.savefig(out)
+    fig.savefig(out, dpi=300, bbox_inches="tight", pad_inches=0.08)
     plt.close(fig)
     return str(out)
 
 
 def fig3_prediction(train_df: pd.DataFrame) -> str:
-    df = train_df.copy()
-    df = df.sort_values("test_rmse")
+    df = train_df.copy().sort_values("test_rmse")
     rmse = np.asarray(df["test_rmse"].to_numpy(), dtype=float)
     x = np.arange(1, rmse.size + 1, dtype=int)
+    mean_v = float(np.mean(rmse))
+    med_v = float(np.median(rmse))
 
-    fig, ax = plt.subplots(figsize=(7.6, 3.6))
-    ax.bar(x, rmse, width=0.78, color=BLUE_COL, edgecolor=WHITE, linewidth=0.35, alpha=0.88, zorder=3)
-    ax.axhline(10.0, color=PRED_COL, linewidth=1.3, zorder=5)
-    ax.set_xlabel("Held-out fold (sorted by RMSE)")
-    ax.set_ylabel("Test RMSE (deg)")
-    ax.set_xlim(0.5, float(rmse.size) + 0.5)
+    bar_colors = [PRED_COL if v > 10.0 else BLUE_COL for v in rmse]
+
+    fig, ax = plt.subplots(figsize=(5.5, 3.4))
+    ax.bar(x, rmse, width=0.82, color=bar_colors, edgecolor=WHITE, linewidth=0.2, alpha=0.88, zorder=3)
+    ax.axhline(mean_v, color="#475569", linewidth=1.0, linestyle="--", zorder=5)
+    ax.axhline(med_v,  color="#475569", linewidth=1.0, linestyle=":",  zorder=5)
+    ax.text(rmse.size - 0.5, mean_v + 0.4, f"Mean {mean_v:.1f}\u00b0",
+            ha="right", va="bottom", fontsize=7.5, color="#475569")
+    ax.text(rmse.size - 0.5, med_v - 0.4, f"Median {med_v:.1f}\u00b0",
+            ha="right", va="top", fontsize=7.5, color="#475569")
+    ax.set_xlabel("Held-out fold (sorted by RMSE)", fontsize=9)
+    ax.set_ylabel("Test RMSE (deg)", fontsize=9)
+    ax.set_xlim(0.2, float(rmse.size) + 0.8)
+    ax.set_ylim(0, None)
     ax.set_xticks([1, 10, 20, 30, 40, 50, 55])
-    _grid(ax, "both")
+    _grid(ax, "y")
+
+    # Compact legend for bar colors
+    from matplotlib.patches import Patch
+    ax.legend(
+        handles=[Patch(facecolor=BLUE_COL, alpha=0.88, label="RMSE \u2264 10\u00b0"),
+                 Patch(facecolor=PRED_COL, alpha=0.88, label="RMSE > 10\u00b0")],
+        loc="upper left", fontsize=7.5, frameon=False,
+    )
 
     out = OUT_DIR / "fig3_prediction_performance.png"
-    fig.savefig(out)
+    fig.savefig(out, dpi=300, bbox_inches="tight", pad_inches=0.08)
     plt.close(fig)
     return str(out)
 
 
 def fig4_simulation(sim_df: pd.DataFrame) -> str:
-    ref_auc = sim_df["ref_auc"].to_numpy()
+    ref_auc  = sim_df["ref_auc"].to_numpy()
     pred_auc = sim_df["pred_auc"].to_numpy()
-    excess = sim_df["excess_auc"].to_numpy()
+    excess   = sim_df["excess_auc"].to_numpy()
     rng = np.random.default_rng(42)
 
-    fig = plt.figure(figsize=(9.4, 3.6))
-    gs = fig.add_gridspec(1, 3, left=0.075, right=0.975, bottom=0.18, top=0.95, wspace=0.24)
-    ax_ref = fig.add_subplot(gs[0, 0])
-    ax_pred = fig.add_subplot(gs[0, 1])
-    ax_ex = fig.add_subplot(gs[0, 2])
+    fig, (ax_cmp, ax_ex) = plt.subplots(
+        1, 2, figsize=(7.0, 3.4),
+        gridspec_kw={"wspace": 0.44, "width_ratios": [1.1, 1.0]},
+    )
 
-    def _single_box(
-        axp: plt.Axes,
-        data: np.ndarray,
-        xpos: float,
-        color: str,
-        label: str,
-        add_zero: bool = False,
-        box_width: float = 0.30,
-        jitter: float = 0.06,
-        x_pad: float = 0.42,
-    ) -> None:
+    def _box(axp: plt.Axes, data: np.ndarray, xpos: float, col: str, jitter: float = 0.07) -> None:
         axp.boxplot(
-            [data],
-            positions=[xpos],
-            widths=box_width,
-            patch_artist=True,
-            showfliers=False,
-            boxprops=dict(facecolor=WHITE, edgecolor=INK, linewidth=1.0),
-            whiskerprops=dict(color=INK, linewidth=1.0),
-            capprops=dict(color=INK, linewidth=1.0),
-            medianprops=dict(color=INK, linewidth=1.2),
+            [data], positions=[xpos], widths=0.30,
+            patch_artist=True, showfliers=False,
+            boxprops=dict(facecolor=WHITE, edgecolor=INK, linewidth=0.9),
+            whiskerprops=dict(color=INK, linewidth=0.9),
+            capprops=dict(color=INK, linewidth=0.9),
+            medianprops=dict(color=col, linewidth=1.6),
         )
         axp.scatter(
             xpos + rng.uniform(-jitter, jitter, size=data.size),
-            data,
-            s=18,
-            color=color,
-            edgecolors="white",
-            linewidth=0.25,
-            alpha=0.78,
-            zorder=3,
+            data, s=14, color=col, edgecolors="white", linewidth=0.2, alpha=0.72, zorder=3,
         )
-        if add_zero:
-            axp.axhline(0, color="#94a3b8", linewidth=0.9, linestyle="--", zorder=1)
-        axp.set_xticks([xpos])
-        axp.set_xticklabels([label])
-        axp.set_xlim(xpos - x_pad, xpos + x_pad)
-        _grid(axp, "y")
-        axp.spines["bottom"].set_visible(False)
 
-    _single_box(ax_ref, ref_auc, 1.0, REF_COL, "REF")
-    _single_box(ax_pred, pred_auc, 1.0, PRED_COL, "PRED")
-    _single_box(ax_ex, excess, 1.0, PRED_COL, "PRED - REF", add_zero=True, box_width=0.24, jitter=0.045, x_pad=0.34)
+    # Panel A — REF vs PRED on shared y-axis
+    _box(ax_cmp, ref_auc,  1.0, REF_COL)
+    _box(ax_cmp, pred_auc, 2.0, PRED_COL)
+    ax_cmp.set_xticks([1.0, 2.0])
+    ax_cmp.set_xticklabels(["REF", "PRED"])
+    ax_cmp.set_xlim(0.5, 2.5)
+    ax_cmp.set_ylabel("Instability AUC", fontsize=9)
+    ax_cmp.yaxis.set_major_locator(MaxNLocator(nbins=5))
+    _grid(ax_cmp, "y")
+    ax_cmp.spines["bottom"].set_visible(False)
+    ax_cmp.text(-0.16, 1.03, "A", transform=ax_cmp.transAxes,
+                fontsize=10, fontweight="bold", va="top", color=INK)
 
-    ax_ref.set_ylabel("Instability AUC")
-    ax_pred.set_ylabel("Instability AUC")
-    ax_ex.set_ylabel("Excess AUC")
+    # Panel B — excess AUC
+    _box(ax_ex, excess, 1.0, PRED_COL, jitter=0.05)
+    ax_ex.axhline(0, color="#94a3b8", linewidth=0.9, linestyle="--", zorder=1)
+    ax_ex.set_xticks([1.0])
+    ax_ex.set_xticklabels(["PRED \u2212 REF"])
+    ax_ex.set_xlim(0.6, 1.4)
+    ax_ex.set_ylabel("Excess instability AUC", fontsize=9)
+    ax_ex.yaxis.set_major_locator(MaxNLocator(nbins=5))
+    n_pos = int(np.sum(excess > 0))
+    ax_ex.text(0.97, 0.97,
+               f"{100 * n_pos / len(excess):.0f}% > 0\nWilcoxon p < 0.001",
+               transform=ax_ex.transAxes, ha="right", va="top", fontsize=7.5, color=INK)
+    _grid(ax_ex, "y")
+    ax_ex.spines["bottom"].set_visible(False)
+    ax_ex.text(-0.20, 1.03, "B", transform=ax_ex.transAxes,
+               fontsize=10, fontweight="bold", va="top", color=INK)
 
     out = OUT_DIR / "fig4_simulation_instability.png"
     fig.savefig(out, dpi=300, bbox_inches="tight", pad_inches=0.08)
@@ -774,44 +784,45 @@ def fig8_model_architecture() -> str:
 
 
 def fig5_correlation(trials_df: pd.DataFrame, partial_sum: dict[str, Any]) -> str:
-    x_raw = trials_df["predictor_knee_rmse_deg"].to_numpy()
-    y_raw = trials_df["outcome_value"].to_numpy()
+    x_raw   = trials_df["predictor_knee_rmse_deg"].to_numpy()
+    y_raw   = trials_df["outcome_value"].to_numpy()
     x_match = trials_df["control_match_knee_rmse_deg"].to_numpy()
-    x_res = trials_df["residual_predictor"].to_numpy()
-    y_res = trials_df["residual_outcome"].to_numpy()
+    x_res   = trials_df["residual_predictor"].to_numpy()
+    y_res   = trials_df["residual_outcome"].to_numpy()
 
-    rho_raw, p_raw = stats.spearmanr(x_raw, y_raw)
-    rho_match, p_match = stats.spearmanr(x_match, y_raw)
+    rho_raw,   p_raw   = stats.spearmanr(x_raw,   y_raw)
+    rho_match, p_match = stats.spearmanr(x_match,  y_raw)
     rho_part = float(partial_sum["rho_partial_spearman"])
-    p_part = float(partial_sum["p_value_two_sided"])
+    p_part   = float(partial_sum["p_value_two_sided"])
 
-    fig, axes = plt.subplots(1, 3, figsize=(10.2, 3.6), gridspec_kw={"wspace": 0.35})
+    DOT = "#4a5568"   # same neutral slate for all three panels
+    LN  = PRED_COL    # regression line in paper accent colour
+
+    fig, axes = plt.subplots(1, 3, figsize=(9.6, 3.2), gridspec_kw={"wspace": 0.48})
 
     panels = [
-        (axes[0], x_raw, y_raw, BLUE_COL, "Model RMSE (deg)", "Excess instability AUC", rho_raw, p_raw),
-        (axes[1], x_match, y_raw, REF_COL, "Match RMSE (deg)", "Excess instability AUC", rho_match, p_match),
-        (axes[2], x_res, y_res, PRED_COL, "Residualized model RMSE", "Residualized excess AUC", rho_part, p_part),
+        (axes[0], x_raw,   y_raw, "Model RMSE (deg)",      "Excess instability AUC",    rho_raw,   p_raw,   "A"),
+        (axes[1], x_match, y_raw, "Match RMSE (deg)",       "Excess instability AUC",    rho_match, p_match, "B"),
+        (axes[2], x_res,   y_res, "Residualised model RMSE","Residualised excess AUC",   rho_part,  p_part,  "C"),
     ]
 
-    for ax, xd, yd, clr, xlab, ylab, rho, p in panels:
-        ax.scatter(xd, yd, s=24, color=clr, edgecolors="white", linewidth=0.35, alpha=0.82, zorder=3)
+    for ax, xd, yd, xlab, ylab, rho, p, lbl in panels:
+        ax.scatter(xd, yd, s=20, color=DOT, edgecolors="white", linewidth=0.25, alpha=0.78, zorder=3)
         m, b = np.polyfit(xd, yd, 1)
         xs = np.linspace(float(np.min(xd)), float(np.max(xd)), 200)
-        ax.plot(xs, m * xs + b, color=INK, linewidth=1.4)
-        ax.set_xlabel(xlab)
-        ax.set_ylabel(ylab)
-        ax.text(0.97, 0.96, _rho_text(float(rho), float(p)), transform=ax.transAxes, ha="right", va="top", fontsize=8, color=INK)
+        ax.plot(xs, m * xs + b, color=LN, linewidth=1.2, zorder=2)
+        ax.set_xlabel(xlab, fontsize=9)
+        ax.set_ylabel(ylab, fontsize=9)
+        ax.text(0.97, 0.97, _rho_text(float(rho), float(p)),
+                transform=ax.transAxes, ha="right", va="top", fontsize=7.5, color=INK)
         _grid(ax, "both")
         ax.xaxis.set_major_locator(MaxNLocator(nbins=5))
         ax.yaxis.set_major_locator(MaxNLocator(nbins=5))
-
-    # Keep physical panel sizes identical, and reduce the visual impression of
-    # unequal panels by trimming repeated long labels.
-    axes[1].set_ylabel("")
-    axes[2].set_ylabel("")
+        ax.text(-0.16, 1.03, lbl, transform=ax.transAxes,
+                fontsize=10, fontweight="bold", va="top", color=INK)
 
     out = OUT_DIR / "fig5_fwl_correlation.png"
-    fig.savefig(out)
+    fig.savefig(out, dpi=300, bbox_inches="tight", pad_inches=0.08)
     plt.close(fig)
     return str(out)
 
