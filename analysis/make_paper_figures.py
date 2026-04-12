@@ -689,11 +689,12 @@ def fig4_simulation(sim_df: pd.DataFrame) -> str:
             zorder=3,
         )
         if add_zero:
-            axp.axhline(0, color=INK, linewidth=1.0, zorder=1)
+            axp.axhline(0, color="#94a3b8", linewidth=0.9, linestyle="--", zorder=1)
         axp.set_xticks([xpos])
         axp.set_xticklabels([label])
         axp.set_xlim(xpos - x_pad, xpos + x_pad)
         _grid(axp, "y")
+        axp.spines["bottom"].set_visible(False)
 
     _single_box(ax_ref, ref_auc, 1.0, REF_COL, "REF")
     _single_box(ax_pred, pred_auc, 1.0, PRED_COL, "PRED")
