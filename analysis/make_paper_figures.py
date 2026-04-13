@@ -674,7 +674,7 @@ def fig4_simulation(sim_df: pd.DataFrame) -> str:
         gridspec_kw={"wspace": 0.44, "width_ratios": [1.1, 1.0]},
     )
 
-    def _box(axp: plt.Axes, data: np.ndarray, xpos: float, col: str, jitter: float = 0.12) -> None:
+    def _box(axp: plt.Axes, data: np.ndarray, xpos: float, col: str, jitter: float = 0.20) -> None:
         axp.boxplot(
             [data], positions=[xpos], widths=0.28,
             patch_artist=True, showfliers=False,
@@ -686,8 +686,8 @@ def fig4_simulation(sim_df: pd.DataFrame) -> str:
         )
         axp.scatter(
             xpos + rng.uniform(-jitter, jitter, size=data.size),
-            data, s=22, facecolors="none", edgecolors=col,
-            linewidth=0.8, alpha=0.80, zorder=3,
+            data, s=10, color=col, edgecolors="none",
+            alpha=0.70, zorder=3,
         )
 
     # Panel A — REF vs PRED on shared y-axis
@@ -705,7 +705,7 @@ def fig4_simulation(sim_df: pd.DataFrame) -> str:
                 bbox=dict(fc="white", ec="none", pad=1.0))
 
     # Panel B — excess AUC
-    _box(ax_ex, excess, 1.0, PRED_COL, jitter=0.10)
+    _box(ax_ex, excess, 1.0, PRED_COL, jitter=0.18)
     ax_ex.axhline(0, color="#94a3b8", linewidth=0.9, linestyle="--", zorder=1)
     ax_ex.set_xticks([1.0])
     ax_ex.set_xticklabels(["PRED \u2212 REF"])
