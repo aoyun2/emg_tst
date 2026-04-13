@@ -674,18 +674,20 @@ def fig4_simulation(sim_df: pd.DataFrame) -> str:
         gridspec_kw={"wspace": 0.44, "width_ratios": [1.1, 1.0]},
     )
 
-    def _box(axp: plt.Axes, data: np.ndarray, xpos: float, col: str, jitter: float = 0.07) -> None:
+    def _box(axp: plt.Axes, data: np.ndarray, xpos: float, col: str, jitter: float = 0.12) -> None:
         axp.boxplot(
-            [data], positions=[xpos], widths=0.30,
+            [data], positions=[xpos], widths=0.28,
             patch_artist=True, showfliers=False,
-            boxprops=dict(facecolor=WHITE, edgecolor=INK, linewidth=0.9),
-            whiskerprops=dict(color=INK, linewidth=0.9),
-            capprops=dict(color=INK, linewidth=0.9),
-            medianprops=dict(color=col, linewidth=1.6),
+            boxprops=dict(facecolor="none", edgecolor=INK, linewidth=1.0),
+            whiskerprops=dict(color=INK, linewidth=1.0),
+            capprops=dict(color=INK, linewidth=1.0),
+            medianprops=dict(color=col, linewidth=1.8),
+            zorder=4,
         )
         axp.scatter(
             xpos + rng.uniform(-jitter, jitter, size=data.size),
-            data, s=14, color=col, edgecolors="white", linewidth=0.2, alpha=0.72, zorder=3,
+            data, s=22, facecolors="none", edgecolors=col,
+            linewidth=0.8, alpha=0.80, zorder=3,
         )
 
     # Panel A — REF vs PRED on shared y-axis
@@ -693,20 +695,21 @@ def fig4_simulation(sim_df: pd.DataFrame) -> str:
     _box(ax_cmp, pred_auc, 2.0, PRED_COL)
     ax_cmp.set_xticks([1.0, 2.0])
     ax_cmp.set_xticklabels(["REF", "PRED"])
-    ax_cmp.set_xlim(0.5, 2.5)
+    ax_cmp.set_xlim(0.45, 2.55)
     ax_cmp.set_ylabel("Instability AUC", fontsize=9)
     ax_cmp.yaxis.set_major_locator(MaxNLocator(nbins=5))
     _grid(ax_cmp, "y")
     ax_cmp.spines["bottom"].set_visible(False)
-    ax_cmp.text(-0.16, 1.03, "A", transform=ax_cmp.transAxes,
-                fontsize=10, fontweight="bold", va="top", color=INK)
+    ax_cmp.text(0.03, 0.97, "A", transform=ax_cmp.transAxes,
+                fontsize=10, fontweight="bold", va="top", color=INK,
+                bbox=dict(fc="white", ec="none", pad=1.0))
 
     # Panel B — excess AUC
-    _box(ax_ex, excess, 1.0, PRED_COL, jitter=0.05)
+    _box(ax_ex, excess, 1.0, PRED_COL, jitter=0.10)
     ax_ex.axhline(0, color="#94a3b8", linewidth=0.9, linestyle="--", zorder=1)
     ax_ex.set_xticks([1.0])
     ax_ex.set_xticklabels(["PRED \u2212 REF"])
-    ax_ex.set_xlim(0.6, 1.4)
+    ax_ex.set_xlim(0.55, 1.45)
     ax_ex.set_ylabel("Excess instability AUC", fontsize=9)
     ax_ex.yaxis.set_major_locator(MaxNLocator(nbins=5))
     _grid(ax_ex, "y")
@@ -720,8 +723,9 @@ def fig4_simulation(sim_df: pd.DataFrame) -> str:
                f"{100 * n_pos / len(excess):.0f}% of trials > 0\nMean = {mean_ex:.3f}",
                transform=ax_ex.transAxes, ha="left", va="top", fontsize=7.5, color=INK,
                bbox=dict(fc="white", ec="none", pad=1.5))
-    ax_ex.text(-0.20, 1.03, "B", transform=ax_ex.transAxes,
-               fontsize=10, fontweight="bold", va="top", color=INK)
+    ax_ex.text(0.03, 0.03, "B", transform=ax_ex.transAxes,
+               fontsize=10, fontweight="bold", va="bottom", color=INK,
+               bbox=dict(fc="white", ec="none", pad=1.0))
 
     out = OUT_DIR / "fig4_simulation_instability.png"
     fig.savefig(out, dpi=300, bbox_inches="tight", pad_inches=0.08)
