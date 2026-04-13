@@ -608,8 +608,10 @@ def fig2_representative_trial(sim_df: pd.DataFrame, trial_idx: int = 75) -> str:
     ax2.set_ylabel("Instability score", fontsize=9)
     ax2.set_ylim(-0.02, 1.08)
     ax2.legend(loc="upper left", fontsize=8, frameon=False)
-    ax2.text(0.97, 0.04, f"Excess AUC = {excess:.3f}",
-             transform=ax2.transAxes, ha="right", va="bottom", fontsize=8, color=INK)
+    # Mid-right: gap between PRED (≈1) and REF (≈0) after t≈0.8 s is clear
+    ax2.text(0.97, 0.52, f"Excess AUC = {excess:.3f}",
+             transform=ax2.transAxes, ha="right", va="center", fontsize=8, color=INK,
+             bbox=dict(fc="white", ec="none", pad=1.5))
     ax2.xaxis.set_major_locator(MaxNLocator(nbins=5))
     ax2.yaxis.set_major_locator(MaxNLocator(nbins=4))
     _grid(ax2, "y")
@@ -634,10 +636,12 @@ def fig3_prediction(train_df: pd.DataFrame) -> str:
     ax.bar(x, rmse, width=0.82, color=bar_colors, edgecolor=WHITE, linewidth=0.2, alpha=0.88, zorder=3)
     ax.axhline(mean_v, color="#475569", linewidth=1.0, linestyle="--", zorder=5)
     ax.axhline(med_v,  color="#475569", linewidth=1.0, linestyle=":",  zorder=5)
-    ax.text(rmse.size - 0.5, mean_v + 0.4, f"Mean {mean_v:.1f}\u00b0",
-            ha="right", va="bottom", fontsize=7.5, color="#475569")
-    ax.text(rmse.size - 0.5, med_v - 0.4, f"Median {med_v:.1f}\u00b0",
-            ha="right", va="top", fontsize=7.5, color="#475569")
+    # Place labels on the left where bars are short (≈4°), well below the lines
+    _tb = dict(fc="white", ec="none", pad=1.5)
+    ax.text(2.5, mean_v + 0.45, f"Mean {mean_v:.1f}\u00b0",
+            ha="left", va="bottom", fontsize=7.5, color="#475569", bbox=_tb, zorder=6)
+    ax.text(2.5, med_v - 0.45, f"Median {med_v:.1f}\u00b0",
+            ha="left", va="top", fontsize=7.5, color="#475569", bbox=_tb, zorder=6)
     ax.set_xlabel("Held-out fold (sorted by RMSE)", fontsize=9)
     ax.set_ylabel("Test RMSE (deg)", fontsize=9)
     ax.set_xlim(0.2, float(rmse.size) + 0.8)
@@ -705,12 +709,16 @@ def fig4_simulation(sim_df: pd.DataFrame) -> str:
     ax_ex.set_xlim(0.6, 1.4)
     ax_ex.set_ylabel("Excess instability AUC", fontsize=9)
     ax_ex.yaxis.set_major_locator(MaxNLocator(nbins=5))
-    n_pos = int(np.sum(excess > 0))
-    ax_ex.text(0.97, 0.97,
-               f"{100 * n_pos / len(excess):.0f}% > 0\nWilcoxon p < 0.001",
-               transform=ax_ex.transAxes, ha="right", va="top", fontsize=7.5, color=INK)
     _grid(ax_ex, "y")
     ax_ex.spines["bottom"].set_visible(False)
+    # Extend ylim to give annotation headroom above the top whisker
+    _lo, _hi = ax_ex.get_ylim()
+    ax_ex.set_ylim(_lo, _hi + (_hi - _lo) * 0.22)
+    n_pos = int(np.sum(excess > 0))
+    ax_ex.text(0.04, 0.97,
+               f"{100 * n_pos / len(excess):.0f}% > 0\nWilcoxon p < 0.001",
+               transform=ax_ex.transAxes, ha="left", va="top", fontsize=7.5, color=INK,
+               bbox=dict(fc="white", ec="none", pad=1.5))
     ax_ex.text(-0.20, 1.03, "B", transform=ax_ex.transAxes,
                fontsize=10, fontweight="bold", va="top", color=INK)
 
@@ -814,7 +822,8 @@ def fig5_correlation(trials_df: pd.DataFrame, partial_sum: dict[str, Any]) -> st
         ax.set_xlabel(xlab, fontsize=9)
         ax.set_ylabel(ylab, fontsize=9)
         ax.text(0.97, 0.97, _rho_text(float(rho), float(p)),
-                transform=ax.transAxes, ha="right", va="top", fontsize=7.5, color=INK)
+                transform=ax.transAxes, ha="right", va="top", fontsize=7.5, color=INK,
+                bbox=dict(fc="white", ec="none", pad=1.5))
         _grid(ax, "both")
         ax.xaxis.set_major_locator(MaxNLocator(nbins=5))
         ax.yaxis.set_major_locator(MaxNLocator(nbins=5))
