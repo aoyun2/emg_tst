@@ -715,8 +715,9 @@ def fig4_simulation(sim_df: pd.DataFrame) -> str:
     _lo, _hi = ax_ex.get_ylim()
     ax_ex.set_ylim(_lo, _hi + (_hi - _lo) * 0.22)
     n_pos = int(np.sum(excess > 0))
+    mean_ex = float(np.mean(excess))
     ax_ex.text(0.04, 0.97,
-               f"{100 * n_pos / len(excess):.0f}% > 0\nWilcoxon p < 0.001",
+               f"{100 * n_pos / len(excess):.0f}% of trials > 0\nMean = {mean_ex:.3f}",
                transform=ax_ex.transAxes, ha="left", va="top", fontsize=7.5, color=INK,
                bbox=dict(fc="white", ec="none", pad=1.5))
     ax_ex.text(-0.20, 1.03, "B", transform=ax_ex.transAxes,
@@ -827,8 +828,9 @@ def fig5_correlation(trials_df: pd.DataFrame, partial_sum: dict[str, Any]) -> st
         _grid(ax, "both")
         ax.xaxis.set_major_locator(MaxNLocator(nbins=5))
         ax.yaxis.set_major_locator(MaxNLocator(nbins=5))
-        ax.text(-0.16, 1.03, lbl, transform=ax.transAxes,
-                fontsize=10, fontweight="bold", va="top", color=INK)
+        ax.text(0.03, 0.97, lbl, transform=ax.transAxes,
+                fontsize=10, fontweight="bold", va="top", color=INK,
+                bbox=dict(fc="white", ec="none", pad=1.0))
 
     out = OUT_DIR / "fig5_fwl_correlation.png"
     fig.savefig(out, dpi=300, bbox_inches="tight", pad_inches=0.08)
