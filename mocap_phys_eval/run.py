@@ -1461,27 +1461,27 @@ def main() -> None:
         if loaded is None:
             raise RuntimeError(
                 "Found samples_dataset.npy, but no trained LOFO `_all` run with fold checkpoints was found. "
-                "Run `python -m emg_tst.run_experiment` first so the evaluator can follow the paper protocol exactly."
+                "Run `python -m emg_tst.run_experiment` first so the evaluator can follow the benchmark protocol exactly."
             )
         training_run_dir, sample_to_fold = loaded
-        target_successes = int(max(1, int(getattr(cfg, "paper_eval_n_trials", 80))))
+        target_successes = int(max(1, int(getattr(cfg, "benchmark_eval_n_trials", 80))))
         queries = _load_rigtest_query_pool(
             cfg,
             samples_data=samples_data,
             sample_to_fold=sample_to_fold,
-            seed=int(getattr(cfg, "paper_eval_seed", 42)),
+            seed=int(getattr(cfg, "benchmark_eval_seed", 42)),
         )
-        query_mode = "rigtest_paper_lofo"
+        query_mode = "rigtest_benchmark_lofo"
         if len(queries) < target_successes and bool(cfg.allow_partial_coverage):
             target_successes = int(len(queries))
         if len(queries) < target_successes:
             raise RuntimeError(
-                f"Paper protocol requires {target_successes} successful held-out trials, but the held-out pool only "
+                f"Benchmark protocol requires {target_successes} successful held-out trials, but the held-out pool only "
                 f"contains {len(queries)} windows. Record/train on more files before running mocap_phys_eval."
             )
         print(
             f"[mocap_phys_eval] status: loaded latest compatible `_all` training run: {training_run_dir}  "
-            f"(candidate held-out windows={len(queries)} seed={int(getattr(cfg, 'paper_eval_seed', 42))})"
+            f"(candidate held-out windows={len(queries)} seed={int(getattr(cfg, 'benchmark_eval_seed', 42))})"
         )
     else:
         queries = _load_demo_query_windows(
@@ -1546,13 +1546,13 @@ def main() -> None:
             new_prefix = str(final_dir)
             for k, v in list(result.get("artifacts", {}).items()):
                 result["artifacts"][k] = str(v).replace(old_prefix, new_prefix)
-            result["paper_eval"] = {
+            result["benchmark_eval"] = {
                 "attempt_index": int(attempt_i),
                 "retained_index": int(success_i),
                 "target_successes": int(target_successes),
                 "sampling_seed": (
-                    int(getattr(cfg, "paper_eval_seed", 42))
-                    if query_mode == "rigtest_paper_lofo"
+                    int(getattr(cfg, "benchmark_eval_seed", 42))
+                    if query_mode == "rigtest_benchmark_lofo"
                     else None
                 ),
             }
@@ -1611,14 +1611,14 @@ def main() -> None:
         "run_dir": str(run_dir),
         "mode": str(query_mode),
         "protocol": {
-            "paper_exact": bool(query_mode == "rigtest_paper_lofo"),
+            "benchmark_exact": bool(query_mode == "rigtest_benchmark_lofo"),
             "target_successes": int(target_successes),
             "successful_trials": int(len(eval_results)),
             "attempted_trials": int(min(len(queries), len(eval_results) + len(failed_attempts))),
             "failed_trials": int(len(failed_attempts)),
             "sampling_seed": (
-                int(getattr(cfg, "paper_eval_seed", 42))
-                if query_mode == "rigtest_paper_lofo"
+                int(getattr(cfg, "benchmark_eval_seed", 42))
+                if query_mode == "rigtest_benchmark_lofo"
                 else None
             ),
             "training_run_dir": (None if training_run_dir is None else str(training_run_dir)),
@@ -1640,9 +1640,9 @@ def main() -> None:
     print(f"[mocap_phys_eval] wrote: {run_dir / 'summary.json'}")
     print(f"[mocap_phys_eval] latest replay: {out_root / 'latest_compare.npz'}")
 
-    if query_mode == "rigtest_paper_lofo" and len(eval_results) < target_successes:
+    if query_mode == "rigtest_benchmark_lofo" and len(eval_results) < target_successes:
         raise RuntimeError(
-            f"Paper protocol incomplete: obtained {len(eval_results)}/{target_successes} successful trials. "
+            f"Benchmark protocol incomplete: obtained {len(eval_results)}/{target_successes} successful trials. "
             f"See failures under {failures_root}."
         )
 

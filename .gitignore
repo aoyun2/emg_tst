@@ -10,3 +10,4 @@ checkpoints/
 samples_dataset.npy
 gt_dataset/
 gt_data*.npy
+data*.npy

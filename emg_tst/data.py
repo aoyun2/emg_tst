@@ -330,7 +330,7 @@ def load_recording(path: str | Path) -> Tuple[np.ndarray, np.ndarray, dict]:
             butter = None
             filtfilt = None
 
-        def _paper_preprocess_emg(raw: np.ndarray, raw_t: np.ndarray | None, t_out: np.ndarray) -> np.ndarray:
+        def _benchmark_preprocess_emg(raw: np.ndarray, raw_t: np.ndarray | None, t_out: np.ndarray) -> np.ndarray:
             x = np.asarray(raw, dtype=np.float64).reshape(-1)
             if x.size < 4:
                 return np.zeros((int(t_out.size),), dtype=np.float32)
@@ -410,7 +410,7 @@ def load_recording(path: str | Path) -> Tuple[np.ndarray, np.ndarray, dict]:
         raw_ts = None
         if "raw_emg_times" in d:
             raw_ts = np.asarray(d["raw_emg_times"], dtype=np.float64).reshape(-1) - float(t_offset)
-        emg_parts = [_paper_preprocess_emg(raw_emg[ch], raw_ts, np.asarray(imu_times, dtype=np.float64))[:, None] for ch in range(int(raw_emg.shape[0]))]
+        emg_parts = [_benchmark_preprocess_emg(raw_emg[ch], raw_ts, np.asarray(imu_times, dtype=np.float64))[:, None] for ch in range(int(raw_emg.shape[0]))]
         emg = np.concatenate(emg_parts, axis=1).astype(np.float32)
         X = np.concatenate([emg, thigh_imu], axis=1).astype(np.float32)
         meta = {
@@ -426,7 +426,7 @@ def load_recording(path: str | Path) -> Tuple[np.ndarray, np.ndarray, dict]:
             "thigh_n_features": int(thigh_imu.shape[1]),
             "has_thigh_quat": bool(thigh_quat is not None),
             "has_raw_emg": True,
-            "emg_feature_mode": "gt_paper_preprocessed",
+            "emg_feature_mode": "gt_benchmark_preprocessed",
             "n_emg_features_per_sensor": 1,
             "raw_window_samples": 0,
             "n_angular_velocity_features": 0,

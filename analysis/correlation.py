@@ -46,7 +46,7 @@ class PartialSpearmanResult:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Compute the paper's partial Spearman correlation from mocap_phys_eval artifacts."
+        description="Compute the benchmark partial Spearman correlation from mocap_phys_eval artifacts."
     )
     parser.add_argument(
         "--run-dir",
@@ -77,7 +77,7 @@ def _parse_args() -> argparse.Namespace:
         "--rollout",
         choices=("pred", "good", "bad"),
         default="pred",
-        help="Which override rollout to analyze for non-excess outcomes. The paper uses 'pred'.",
+        help="Which override rollout to analyze for non-excess outcomes. The benchmark default is 'pred'.",
     )
     parser.add_argument(
         "--output-dir",

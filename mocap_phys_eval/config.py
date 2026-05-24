@@ -63,11 +63,11 @@ class EvalConfig:
     # window duration stays aligned with the training path.
     window_hz: float = 200.0
     window_n: int = 400  # 2.0s at 200Hz
-    # Paper protocol on real rigtest data:
+    # Benchmark protocol on real rigtest data:
     # sample from the held-out LOFO pool with a fixed random seed and keep
     # replacing failed trials until this many successful evaluations are obtained.
-    paper_eval_n_trials: int = _env_int("MOCAP_PHYS_EVAL_N_TRIALS", 80)
-    paper_eval_seed: int = _env_int("MOCAP_PHYS_EVAL_SEED", 42)
+    benchmark_eval_n_trials: int = _env_int("MOCAP_PHYS_EVAL_N_TRIALS", 80)
+    benchmark_eval_seed: int = _env_int("MOCAP_PHYS_EVAL_SEED", 42)
     # Demo-only fallback window count when rigtest samples / trained folds are unavailable.
     demo_n_windows: int = 3
 
@@ -81,7 +81,7 @@ class EvalConfig:
     # Motion matching.
     match_top_k: int = 12
     match_local_refine_radius: int = 30
-    # Empirically best publication setting on the current 80-window GT held-out pool:
+    # Empirically best setting on the current 80-window GT held-out pool:
     # use scalar thigh pitch + knee dynamics for candidate scoring, with the score
     # driven entirely by knee RMSE. The GT marker-derived thigh quaternion is still
     # stored and available for diagnostics / alternative matching modes.
