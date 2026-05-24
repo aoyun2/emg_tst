@@ -165,7 +165,7 @@ The raw columns `ref_knee_rmse` and `pred_knee_rmse` in simulation artifacts sho
 
 ## MoCapAct Storage
 
-The MoCapAct expert bank is large. A non-OneDrive location is recommended:
+The MoCapAct expert bank is large. An external drive is recommended:
 
 ```powershell
 $env:MOCAPACT_MODELS_DIR = "D:\\mocapact_models"
