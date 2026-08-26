@@ -1,0 +1,25 @@
+# Prediction, statistics, and figures
+numpy>=2.3,<2.6
+scipy>=1.16,<1.17
+pandas>=3.0,<3.1
+matplotlib>=3.10,<3.11
+opencv-python>=4.12,<4.14
+torch>=2.1,<3
+
+# Physics and representative media
+mujoco==2.2.2
+pillow>=11,<13
+tqdm>=4.67,<5
+h5py>=3.14,<4
+dm-control>=1.0.7
+ml-collections>=1.1,<2
+cloudpickle>=2.2,<4
+imageio>=2.37,<3
+imageio-ffmpeg>=0.6,<1
+setuptools>=80,<82
+
+# MoCapAct policy loading
+stable-baselines3>=2.6,<3
+gymnasium>=1.2,<2
+shimmy>=2,<3
+mocapact

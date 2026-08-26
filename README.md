@@ -1,232 +1,154 @@
-# emg_tst
+# Physics-based evaluation of sEMG knee-angle regression
 
-`emg_tst` is a research codebase for knee-angle prediction from wearable signals and physics-based evaluation of those predictions. The current pipeline uses Georgia Tech lower-limb biomechanics recordings, trains a CNN-BiLSTM regressor on thigh EMG and IMU features, motion-matches held-out windows into MoCapAct, and compares paired MuJoCo rollouts.
+This repository contains the code and publication artifacts for **“Towards the
+Use of Simulated Environments to Evaluate sEMG-Based Prosthetic Knee-Angle
+Regression.”** The study asks whether an sEMG-related reduction in 100-ms
+knee-angle prediction error also reduces instability when the paired prediction
+errors are inserted into matched whole-body walking simulations.
 
-The central question is deliberately narrow: when a model has lower knee-angle RMSE, does that translate into lower excess instability in simulation?
+## Final result
 
-The current answer, for this benchmark, is no. The CNN-BiLSTM reaches sub-10 degree held-out error on most folds, but prediction RMSE has no meaningful independent association with excess instability after motion-match quality is controlled.
+The participant-calibrated residual-fusion predictor was developed with 30
+Gait120 participants and evaluated once in 90 separate participants.
 
-## Current Results
-
-Canonical training run:
-
-`checkpoints/tst_20260405_173725_all`
-
-Canonical simulation run:
-
-`artifacts/phys_eval_v2/runs/20260406_205003`
-
-| Measure | Value |
+| Result | Value |
 |---|---:|
-| Held-out folds | 55 |
-| Mean held-out test RMSE | 7.84 deg |
-| Median held-out test RMSE | 6.85 deg |
-| Mean held-out MAE | 6.11 deg |
-| Folds below 10 deg RMSE | 46 / 55 |
-| Simulation trials | 80 |
-| Mean model RMSE in simulation windows | 8.80 deg |
-| Mean motion-match knee RMSE | 7.93 deg |
-| Mean REF instability AUC | 0.819 |
-| Mean PRED instability AUC | 1.019 |
-| Mean excess instability AUC | 0.200 |
-| Raw Spearman rho, RMSE vs excess AUC | -0.168, p = 0.136 |
-| Partial Spearman rho after match controls | -0.019, p = 0.867 |
+| RMSE with residual fusion | 4.748° |
+| RMSE without sEMG | 5.093° |
+| Mean paired improvement | 0.345° |
+| 95% confidence interval | 0.252–0.438° |
+| Paired test | t(89) = 7.39, p = 7.50 × 10⁻¹¹ |
+| Participants improved | 70 / 90 |
 
-`excess instability AUC` is defined as `PRED - REF` for each matched clip. The instability trace is an XCoM-margin heuristic, not a calibrated fall probability.
+All 80 fixed level-walking windows were matched to stable MoCapAct references
+and evaluated at seven prediction-accuracy checkpoints (560 numerical
+simulations). The sEMG prediction improvement did not produce a detectable
+change in excess-instability AUC at the full-data checkpoint. A sharp physical
+deterioration was observed between the measured 13.41° and 16.29° RMSE
+checkpoints.
 
-## Reproducing the Benchmark
-
-Install dependencies:
-
-```bash
-pip install -r requirements_tst.txt
-```
-
-Convert the Georgia Tech normal-walk recordings if the local `gt_data*.npy` files need to be rebuilt:
-
-```bash
-python -c "from emg_tst.gt_dataset import ensure_normal_walk_recordings; ensure_normal_walk_recordings()"
-```
-
-Train the CNN-BiLSTM:
-
-```bash
-python -m emg_tst.run_experiment
-```
-
-Build the held-out query pool used by the simulator:
-
-```bash
-python split_to_samples.py
-```
-
-Run the paired physical evaluation:
-
-```powershell
-$env:EMG_TST_RUN_DIR = "checkpoints\\tst_20260405_173725_all"
-$env:MOCAP_PHYS_EVAL_ALLOW_PARTIAL = "1"
-$env:MOCAP_PHYS_EVAL_N_TRIALS = "80"
-python -m mocap_phys_eval.run
-```
-
-Run the partial Spearman analysis:
-
-```bash
-python -m analysis.correlation --run-dir artifacts/phys_eval_v2/runs/<run_id>
-```
-
-## Data and Features
-
-The benchmark path uses converted Georgia Tech normal-walk recordings named `gt_data000.npy` through `gt_data054.npy`.
-
-Each 200 Hz timestep contains 10 input features:
-
-| Columns | Signal |
-|---|---|
-| 0-3 | EMG envelopes: `RRF`, `RBF`, `RVL`, `RMGAS` |
-| 4-6 | Right anterior-thigh accelerometer: `X`, `Y`, `Z` |
-| 7-9 | Right anterior-thigh gyroscope: `X`, `Y`, `Z` |
-
-EMG preprocessing follows the benchmark implementation:
-
-1. High-pass filter at 20 Hz.
-2. Full-wave rectify.
-3. Low-pass filter at 5 Hz to form the linear envelope.
-4. Interpolate the envelope onto the native 200 Hz IMU and knee-angle timeline.
-
-The target is right-knee included angle:
-
-```text
-knee_included_deg = 180 - clip(-knee_angle_r, 0, 180)
-```
-
-The convention is `180 deg = full extension`; smaller values indicate more flexion. The target is divided by 180 during training.
-
-## Windowing
-
-| Setting | Value |
-|---|---:|
-| Input window | 400 samples |
-| Duration | 2.0 s at 200 Hz |
-| Forecast horizon | 2 samples |
-| Horizon duration | 10 ms |
-| Training window stride | 1 |
-| Samples per epoch | 8,192 |
-| Evaluation-pool stride | 60 |
-
-The simulator query pool is stored in `samples_dataset.npy`. It includes held-out windows, source file identity, start index, thigh pitch sequences, and marker-derived thigh quaternion sequences. The current benchmark uses scalar `thigh_knee_d` matching by default because it produced the best knee-match quality on the retained 80-window pool.
-
-## Model
-
-The main model is `CnnBiLstmLastStep` in `emg_tst/model.py`.
-
-```text
-Input: [B, 400, 10]
-Conv1d(10 -> 32, kernel=5, padding=2) + GELU
-Conv1d(32 -> 32, kernel=5, padding=2) + GELU + Dropout(0.10)
-BiLSTM(hidden=64, layers=2, bidirectional=True)
-Last timestep readout -> [B, 128]
-Linear(128 -> 64) + GELU + Dropout(0.10)
-Linear(64 -> 1)
-Output: knee included angle at t + 10 ms
-```
-
-Default training settings live in `emg_tst/run_experiment.py`.
-
-| Setting | Value |
-|---|---:|
-| Optimizer | Adam |
-| Learning rate | 1e-3 |
-| Weight decay | 1e-4 |
-| Batch size | 128 |
-| Max epochs | 6 |
-| Early stopping patience | 2 |
-| Loss | Huber |
-| Huber delta | 5 deg |
-| Gradient clipping | 1.0 |
-
-Training uses leave-one-file-out cross-validation. Each fold holds out one converted Georgia Tech recording for testing and one additional recording for validation. The best checkpoint is selected by validation RMSE.
-
-## Physical Evaluation
-
-The simulator evaluates held-out query windows only.
-
-For each retained window, the evaluator:
-
-1. Loads the correct fold checkpoint from the LOFO manifest.
-2. Runs rolling inference to produce the predicted knee trajectory.
-3. Motion-matches the query into the MoCapAct reference bank.
-4. Runs a `REF` rollout using the matched expert policy.
-5. Runs a paired `PRED` rollout with the right knee overridden by the model prediction.
-6. Computes XCoM-margin instability AUC for both rollouts.
-7. Records excess instability as `AUC_PRED - AUC_REF`.
-
-The raw columns `ref_knee_rmse` and `pred_knee_rmse` in simulation artifacts should not be used as a model-performance comparison. `PRED` is lower by construction because the PD controller directly targets the model prediction used during matching.
-
-## MoCapAct Storage
-
-The MoCapAct expert bank is large. An external drive is recommended:
-
-```powershell
-$env:MOCAPACT_MODELS_DIR = "D:\\mocapact_models"
-```
-
-Optional artifact redirect:
-
-```powershell
-$env:MOCAP_PHYS_EVAL_ARTIFACTS_DIR = "D:\\phys_eval_v2_artifacts"
-```
-
-One-time prefetch:
-
-```bash
-python -m mocap_phys_eval.prefetch
-```
-
-## Useful Commands
-
-Visualize predictions from a checkpoint:
-
-```bash
-python -m emg_tst.visualize
-```
-
-Plot dataset overview figures:
-
-```bash
-python plot_data.py
-```
-
-Run the learning-curve analysis:
-
-```bash
-python -m emg_tst.learning_curve
-```
-
-Replay a completed physical-evaluation run:
-
-```bash
-python -m mocap_phys_eval.replay
-```
-
-## Repository Map
+## Repository layout
 
 | Path | Purpose |
 |---|---|
-| `emg_tst/data.py` | EMG preprocessing, timestamp alignment, and recording loading |
-| `emg_tst/gt_dataset.py` | Georgia Tech dataset conversion |
-| `emg_tst/model.py` | CNN-BiLSTM and experimental model definitions |
-| `emg_tst/run_experiment.py` | LOFO training and evaluation |
-| `emg_tst/visualize.py` | Checkpoint prediction visualization |
-| `split_to_samples.py` | Held-out simulator query-pool construction |
-| `mocap_phys_eval/run.py` | Motion matching and paired MuJoCo evaluation |
-| `mocap_phys_eval/replay.py` | Saved rollout replay |
-| `analysis/correlation.py` | Partial Spearman / FWL residualization |
+| `emg_tst/gait120_data.py` | Native Gait120 MAT-file loading and causal sEMG processing |
+| `emg_tst/gait120_experiment.py` | Shared example construction, participant metrics, and fail-closed output utilities |
+| `emg_tst/preprocess_gait120.py` | Reproducible participant cache export |
+| `emg_tst/run_gait120_residual_fusion.py` | Development and untouched confirmation ablation |
+| `emg_tst/run_gait120_temporal_control.py` | 500-ms timing control |
+| `emg_tst/run_gait120_accuracy_path.py` | Seven fixed training-data checkpoints |
+| `emg_tst/prepare_gait120_physics_panel.py` | Fixed participant-balanced physics panel |
+| `mocap_phys_eval/run_gait120_level_walking_v4.py` | Definitive level-walking motion matching and MuJoCo evaluation |
+| `analysis/gait120_v4.py` | Frozen numerical physics audit and FWL analysis |
+| `analysis/gait120_conventional_paired_statistics.py` | Paired tests reported in the manuscript |
+| `analysis/gait120_submission_figures_original_style.py` | Publication figure generator |
+| `docs/EXPERIMENT_PROTOCOL.md` | Concise definitive protocol |
+| `final_submission/` | Verified PDF, editable Overleaf project, media, evidence, and submission bundle |
 
-## Platform Notes
+The older Georgia Tech acquisition and MoCapAct compatibility modules remain
+where the final implementation still uses them. They are not the predictor
+evaluated in the final paper.
 
-On Windows systems using AMD/DirectML, the CNN-BiLSTM may fall back to CPU because DirectML does not cleanly support the LSTM cell used here.
+## Data
+
+Raw datasets and the MoCapAct expert bank are intentionally not stored in Git.
+
+- [Gait120 dataset](https://doi.org/10.6084/m9.figshare.27677016)
+- [Gait120 article](https://doi.org/10.1038/s41597-025-05391-0)
+- [MoCapAct](https://microsoft.github.io/MoCapAct/)
+
+The final analysis uses only Gait120 level walking. Predictor inputs and targets
+are not interpolated or time-normalized. The matching search performs only the
+documented sampling-rate conversion needed to compare the 100-Hz Gait120 query
+with the 200-Hz MoCapAct reference grid.
+
+## Environment
+
+Create an isolated Python environment and install the project dependencies:
 
 ```bash
-pip install torch-directml
+python -m venv .venv
+python -m pip install -r requirements.txt
 ```
+
+MoCapAct and its pinned MuJoCo 2.2.2 backend may require a compatible Python
+environment separate from the prediction and plotting environment. Exact
+software and protocol records from the completed run are included in
+`final_submission/Additional_file_2_reproducibility_evidence.zip`.
+
+## Reproducing the prediction analysis
+
+After downloading Gait120, inspect the cache-export options:
+
+```bash
+python -m emg_tst.preprocess_gait120 --help
+```
+
+Run development first, then the untouched confirmation:
+
+```bash
+python -m emg_tst.run_gait120_residual_fusion --help
+```
+
+The timing control and accuracy path are separate entry points:
+
+```bash
+python -m emg_tst.run_gait120_temporal_control --help
+python -m emg_tst.run_gait120_accuracy_path --help
+```
+
+Each command writes a protocol before writing outcomes and stops on missing or
+incompatible inputs.
+
+## Reproducing the reported paired statistics
+
+Extract `Additional_file_2_reproducibility_evidence.zip`, then run:
+
+```bash
+python -m analysis.gait120_conventional_paired_statistics \
+  --evidence-dir path/to/extracted/evidence \
+  --output conventional_paired_statistics.json
+```
+
+The primary ablation uses a two-sided paired t-test on the 90 participant-level
+RMSE differences. Wilcoxon signed-rank and exact sign tests are emitted as
+sensitivity analyses.
+
+The complete physics audit uses explicit input directories rather than local
+machine defaults:
+
+```bash
+python -m analysis.gait120_v4 \
+  --run-dir path/to/completed/physics/run \
+  --confirmation-dir path/to/completed/confirmation/run \
+  --output-dir path/to/analysis/output
+```
+
+The figure generator likewise requires the extracted evidence, the eight
+representative recordings, and the two source-data images identified in its
+command-line help. No user-specific paths are embedded in the source.
+
+## Tests
+
+The repository’s lightweight deterministic tests do not download either
+dataset:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+## Publication files
+
+The final deliverables are under `final_submission/`:
+
+- `main.pdf` — visually checked 34-page manuscript
+- `Prosthetic_Regression_BMC_Overleaf.zip` — clean editable LaTeX project
+- `Additional_file_1_simulation_recordings.zip` — eight prospectively selected
+  representative MuJoCo recordings
+- `Additional_file_2_reproducibility_evidence.zip` — participant results,
+  complete 560-simulation summary, protocols, audits, and source snapshot
+- `Prosthetic_Regression_BMC_Submission_Bundle.zip` — complete journal package
+- `SHA256SUMS.txt` — integrity hashes
+
+The manuscript currently uses “Independent researcher, United States.” Add the
+preferred correspondence email and confirm the affiliation before submission.

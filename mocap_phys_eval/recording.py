@@ -39,6 +39,60 @@ class CompareRecordingPaths:
     gif_path: Path
 
 
+class _LegacyRenderer:
+    """Small RGB renderer adapter for MuJoCo 2.2.x.
+
+    ``mujoco.Renderer`` was added after the version pinned by MoCapAct.  This
+    adapter uses the equivalent public low-level rendering calls and affects
+    pixels only; the model, data, controller, and integration path are shared
+    with the recorded simulation.
+    """
+
+    def __init__(self, mujoco_module: Any, model: Any, height: int, width: int) -> None:
+        self._mujoco = mujoco_module
+        self._model = model
+        self._height = int(height)
+        self._width = int(width)
+        self._gl = mujoco_module.GLContext(self._width, self._height)
+        self._gl.make_current()
+        self._scene = mujoco_module.MjvScene(model, maxgeom=10000)
+        self._option = mujoco_module.MjvOption()
+        mujoco_module.mjv_defaultOption(self._option)
+        self._context = mujoco_module.MjrContext(
+            model, mujoco_module.mjtFontScale.mjFONTSCALE_150
+        )
+        mujoco_module.mjr_setBuffer(
+            mujoco_module.mjtFramebuffer.mjFB_OFFSCREEN, self._context
+        )
+        self._viewport = mujoco_module.MjrRect(0, 0, self._width, self._height)
+
+    def update_scene(self, data: Any, *, camera: Any) -> None:
+        self._gl.make_current()
+        self._mujoco.mjv_updateScene(
+            self._model,
+            data,
+            self._option,
+            None,
+            camera,
+            int(self._mujoco.mjtCatBit.mjCAT_ALL),
+            self._scene,
+        )
+
+    def render(self) -> np.ndarray:
+        self._gl.make_current()
+        self._mujoco.mjr_render(self._viewport, self._scene, self._context)
+        rgb = np.empty((self._height, self._width, 3), dtype=np.uint8)
+        self._mujoco.mjr_readPixels(rgb, None, self._viewport, self._context)
+        return np.flipud(rgb).copy()
+
+
+def _make_renderer(mujoco_module: Any, model: Any, height: int, width: int) -> Any:
+    renderer_type = getattr(mujoco_module, "Renderer", None)
+    if renderer_type is not None:
+        return renderer_type(model, int(height), int(width))
+    return _LegacyRenderer(mujoco_module, model, int(height), int(width))
+
+
 def _qpos_addr_for_actuator(physics: Any, actuator_name: str) -> int:
     m = physics.model
     aid = int(m.name2id(str(actuator_name), "actuator"))
@@ -78,6 +132,42 @@ def _ctrl_from_qpos(target_qpos: float, *, lower: float, upper: float) -> float:
 def _targets_qpos_rad(target_deg: np.ndarray, *, sign: float, offset_deg: float) -> np.ndarray:
     deg = np.asarray(target_deg, dtype=np.float64).reshape(-1)
     return np.deg2rad(float(sign) * deg + float(offset_deg)).astype(np.float64)
+
+
+def _moving_target_pd_commands(
+    target_qpos: np.ndarray,
+    *,
+    dt: float,
+    kp: float,
+    kd: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return position-servo commands equivalent to moving-target PD control.
+
+    The MuJoCo general actuator realizes ``kp * (q_cmd - q) - kd * qdot``.
+    For a moving target, setting ``q_cmd = q_des + (kd / kp) * qdot_des``
+    gives ``kp * (q_des - q) + kd * (qdot_des - qdot)``.  Desired velocity
+    is computed causally from the current and preceding target.  The first
+    evaluation step has no preceding target and therefore uses zero desired
+    velocity, avoiding an artificial handoff impulse.
+    """
+    target = np.asarray(target_qpos, dtype=np.float64).reshape(-1)
+    if target.size < 1:
+        raise ValueError("target_qpos must contain at least one value")
+    dt = float(dt)
+    kp = float(kp)
+    kd = float(kd)
+    if not math.isfinite(dt) or dt <= 0.0:
+        raise ValueError("dt must be finite and positive")
+    if not math.isfinite(kp) or kp <= 0.0:
+        raise ValueError("kp must be finite and positive")
+    if not math.isfinite(kd) or kd < 0.0:
+        raise ValueError("kd must be finite and nonnegative")
+
+    target_velocity = np.zeros_like(target)
+    if target.size > 1:
+        target_velocity[1:] = np.diff(target) / dt
+    command = target + (kd / kp) * target_velocity
+    return command, target_velocity
 
 
 def _retune_general_position_actuator_pd(
@@ -142,6 +232,11 @@ def record_compare_rollout(
     deterministic_policy: bool = True,
     seed: int = 0,
     run_bad: bool = True,
+    panel_labels: tuple[str, str, str] | None = None,
+    moving_target_pd: bool = False,
+    apply_good_override: bool = True,
+    render_media: bool = True,
+    prebuilt_envs: tuple[Any, Any, Any | None] | None = None,
 ) -> CompareRecordingPaths:
     """Record a (REF | PRED | BAD) compare rollout to a replayable NPZ and a quick GIF.
 
@@ -152,16 +247,23 @@ def record_compare_rollout(
     """
     out_npz_path = Path(out_npz_path).expanduser()
     out_npz_path.parent.mkdir(parents=True, exist_ok=True)
+    if not apply_good_override and run_bad:
+        raise ValueError("Reference capture cannot run a BAD override")
 
     try:
         import mujoco  # type: ignore
     except Exception as e:  # pragma: no cover
         raise RuntimeError("mujoco python package is required for recording.") from e
 
-    # Optional overlay text (nice-to-have).
-    try:
-        from PIL import Image, ImageDraw, ImageFont  # type: ignore
-    except Exception:  # pragma: no cover
+    # Optional overlay text is imported only for manuscript-media rollouts.
+    if render_media:
+        try:
+            from PIL import Image, ImageDraw, ImageFont  # type: ignore
+        except Exception:  # pragma: no cover
+            Image = None  # type: ignore[assignment]
+            ImageDraw = None  # type: ignore[assignment]
+            ImageFont = None  # type: ignore[assignment]
+    else:
         Image = None  # type: ignore[assignment]
         ImageDraw = None  # type: ignore[assignment]
         ImageFont = None  # type: ignore[assignment]
@@ -196,31 +298,56 @@ def record_compare_rollout(
     min_needed_end = int(eval_start_step + max(0, int(primary_steps) - 1) + int(max_ref_step))
     use_end_step = None if end_step is None else int(max(int(end_step), int(min_needed_end)))
 
-    env_ref = make_tracking_env(
-        clip_id=str(clip_id),
-        start_step=int(env_start_step),
-        end_step=use_end_step,
-        ref_steps=ref_steps_tuple,
-        seed=int(seed),
-    )
-    env_good = make_tracking_env(
-        clip_id=str(clip_id),
-        start_step=int(env_start_step),
-        end_step=use_end_step,
-        ref_steps=ref_steps_tuple,
-        seed=int(seed),
-    )
-    env_bad = (
-        make_tracking_env(
+    if prebuilt_envs is None:
+        env_ref = make_tracking_env(
             clip_id=str(clip_id),
             start_step=int(env_start_step),
             end_step=use_end_step,
             ref_steps=ref_steps_tuple,
             seed=int(seed),
         )
-        if run_bad
-        else None
-    )
+        env_good = make_tracking_env(
+            clip_id=str(clip_id),
+            start_step=int(env_start_step),
+            end_step=use_end_step,
+            ref_steps=ref_steps_tuple,
+            seed=int(seed),
+        )
+        env_bad = (
+            make_tracking_env(
+                clip_id=str(clip_id),
+                start_step=int(env_start_step),
+                end_step=use_end_step,
+                ref_steps=ref_steps_tuple,
+                seed=int(seed),
+            )
+            if run_bad
+            else None
+        )
+    else:
+        if len(prebuilt_envs) != 3:
+            raise ValueError("prebuilt_envs must contain REF, PRED, and optional BAD")
+        env_ref, env_good, supplied_bad = prebuilt_envs
+        if env_ref is None or env_good is None:
+            raise ValueError("Prebuilt REF and PRED environments are required")
+        if run_bad and supplied_bad is None:
+            raise ValueError("A prebuilt BAD environment is required when run_bad=True")
+        env_bad = supplied_bad if run_bad else None
+
+    # Reused environments receive the same RNG state as newly constructed ones
+    # before every reset. Batching therefore changes setup cost only.
+    for environment in (env_ref, env_good, env_bad):
+        if environment is None:
+            continue
+        try:
+            environment.seed(int(seed))
+        except Exception:
+            pass
+        try:
+            rs = np.random.RandomState(int(seed))
+            environment._env.random_state.set_state(rs.get_state())  # noqa: SLF001
+        except Exception:
+            pass
 
     reset_ref = env_ref.reset()
     reset_good = env_good.reset()
@@ -238,18 +365,23 @@ def record_compare_rollout(
     # - MoCapAct snippet experts (TIME_INDEX_OBSERVABLES) don't condition on reference features.
     #   Physical overrides should only affect the *walker*, not the ghost.
 
-    # Tint walkers/ghosts so REF/PRED/BAD are visually distinct.
-    active_envs = [env_ref, env_good] + ([env_bad] if env_bad is not None else [])
-    for env in active_envs:
-        tint_geoms_by_prefix(env._env.physics, prefix="ghost/", rgba=(0.85, 0.85, 0.85, 0.25))  # noqa: SLF001
-    tint_geoms_by_prefix(env_ref._env.physics, prefix="walker/", rgba=(0.35, 0.35, 0.35, 1.0))  # noqa: SLF001
-    tint_geoms_by_prefix(env_good._env.physics, prefix="walker/", rgba=(1.00, 0.55, 0.15, 1.0))  # noqa: SLF001
-    if env_bad is not None:
-        tint_geoms_by_prefix(env_bad._env.physics, prefix="walker/", rgba=(0.15, 0.65, 1.00, 1.0))  # noqa: SLF001
+    if panel_labels is None:
+        panel_labels = ("REF (no override)", "PRED (override)", "BAD (override)")
+    if len(panel_labels) != 3 or any(not str(label).strip() for label in panel_labels):
+        raise ValueError("panel_labels must contain three non-empty display labels")
 
-    highlight_overridden_leg(env_good._env.physics, override=override)  # noqa: SLF001
-    if env_bad is not None:
-        highlight_overridden_leg(env_bad._env.physics, override=override)  # noqa: SLF001
+    # Appearance changes are unnecessary for numerical-only rollouts.
+    if render_media:
+        active_envs = [env_ref, env_good] + ([env_bad] if env_bad is not None else [])
+        for env in active_envs:
+            tint_geoms_by_prefix(env._env.physics, prefix="ghost/", rgba=(0.85, 0.85, 0.85, 0.25))  # noqa: SLF001
+        tint_geoms_by_prefix(env_ref._env.physics, prefix="walker/", rgba=(0.35, 0.35, 0.35, 1.0))  # noqa: SLF001
+        tint_geoms_by_prefix(env_good._env.physics, prefix="walker/", rgba=(1.00, 0.55, 0.15, 1.0))  # noqa: SLF001
+        if env_bad is not None:
+            tint_geoms_by_prefix(env_bad._env.physics, prefix="walker/", rgba=(0.15, 0.65, 1.00, 1.0))  # noqa: SLF001
+        highlight_overridden_leg(env_good._env.physics, override=override)  # noqa: SLF001
+        if env_bad is not None:
+            highlight_overridden_leg(env_bad._env.physics, override=override)  # noqa: SLF001
 
     phys_ref = env_ref._env.physics  # noqa: SLF001
     phys_good = env_good._env.physics  # noqa: SLF001
@@ -266,6 +398,35 @@ def record_compare_rollout(
         if run_bad
         else None
     )
+
+    # The moving-target controller changes the actuator model after warmup.
+    # Snapshot untouched parameters once and restore them before every reused
+    # environment rollout.
+    def _restore_or_snapshot_actuator(environment: Any, physics: Any) -> None:
+        key = "_mocap_phys_eval_original_knee_actuator"
+        aid = int(physics.model.name2id(str(override.knee_actuator), "actuator"))
+        saved = getattr(environment, key, None)
+        if saved is None:
+            setattr(
+                environment,
+                key,
+                {
+                    "aid": aid,
+                    "gainprm": np.asarray(physics.model.actuator_gainprm[aid], dtype=np.float64).copy(),
+                    "biasprm": np.asarray(physics.model.actuator_biasprm[aid], dtype=np.float64).copy(),
+                    "forcerange": np.asarray(physics.model.actuator_forcerange[aid], dtype=np.float64).copy(),
+                },
+            )
+            return
+        if int(saved["aid"]) != aid:
+            raise RuntimeError("Prebuilt environment knee actuator changed")
+        physics.model.actuator_gainprm[aid] = np.asarray(saved["gainprm"], dtype=np.float64)
+        physics.model.actuator_biasprm[aid] = np.asarray(saved["biasprm"], dtype=np.float64)
+        physics.model.actuator_forcerange[aid] = np.asarray(saved["forcerange"], dtype=np.float64)
+
+    _restore_or_snapshot_actuator(env_good, phys_good)
+    if env_bad is not None and phys_bad is not None:
+        _restore_or_snapshot_actuator(env_bad, phys_bad)
 
     # Many CMU humanoid actuators use an internal first-order filter (actuator_dyntype=filter)
     # with tau ~ control_timestep. Overriding ctrl alone can introduce a full-step lag, which
@@ -291,9 +452,21 @@ def record_compare_rollout(
         knee_actnum_bad = 0
 
     # Renderers (one per panel so they can have independent cameras in interactive replay).
-    rend_ref = mujoco.Renderer(phys_ref.model.ptr, int(height), int(width))
-    rend_good = mujoco.Renderer(phys_good.model.ptr, int(height), int(width))
-    rend_bad = mujoco.Renderer(phys_bad.model.ptr, int(height), int(width)) if phys_bad is not None else None
+    rend_ref = (
+        _make_renderer(mujoco, phys_ref.model.ptr, int(height), int(width))
+        if render_media
+        else None
+    )
+    rend_good = (
+        _make_renderer(mujoco, phys_good.model.ptr, int(height), int(width))
+        if render_media
+        else None
+    )
+    rend_bad = (
+        _make_renderer(mujoco, phys_bad.model.ptr, int(height), int(width))
+        if render_media and phys_bad is not None
+        else None
+    )
 
     # Use MuJoCo's fixed camera if it exists; else default.
     def _cam_for(physics: Any) -> Any:
@@ -307,9 +480,9 @@ def record_compare_rollout(
             pass
         return cam
 
-    cam_ref = _cam_for(phys_ref)
-    cam_good = _cam_for(phys_good)
-    cam_bad = _cam_for(phys_bad) if phys_bad is not None else None
+    cam_ref = _cam_for(phys_ref) if render_media else None
+    cam_good = _cam_for(phys_good) if render_media else None
+    cam_bad = _cam_for(phys_bad) if render_media and phys_bad is not None else None
 
     try:
         dt = float(getattr(env_ref._env.task, "_control_timestep", 0.03))  # noqa: SLF001
@@ -317,6 +490,31 @@ def record_compare_rollout(
             dt = 0.03
     except Exception:
         dt = 0.03
+
+    if moving_target_pd:
+        knee_good_command_qpos, knee_good_target_velocity = _moving_target_pd_commands(
+            knee_good_qpos,
+            dt=dt,
+            kp=float(_PROSTHETIC_KNEE_KP),
+            kd=float(_PROSTHETIC_KNEE_KD),
+        )
+        if knee_bad_qpos is not None:
+            knee_bad_command_qpos, knee_bad_target_velocity = _moving_target_pd_commands(
+                knee_bad_qpos,
+                dt=dt,
+                kp=float(_PROSTHETIC_KNEE_KP),
+                kd=float(_PROSTHETIC_KNEE_KD),
+            )
+        else:
+            knee_bad_command_qpos = None
+            knee_bad_target_velocity = np.zeros((0,), dtype=np.float64)
+    else:
+        knee_good_command_qpos = knee_good_qpos.copy()
+        knee_good_target_velocity = np.zeros_like(knee_good_qpos)
+        knee_bad_command_qpos = knee_bad_qpos.copy() if knee_bad_qpos is not None else None
+        knee_bad_target_velocity = (
+            np.zeros_like(knee_bad_qpos) if knee_bad_qpos is not None else np.zeros((0,), dtype=np.float64)
+        )
 
     try:
         root_id_ref = int(phys_ref.model.name2id("walker/root", "body"))
@@ -542,13 +740,14 @@ def record_compare_rollout(
     #
     # IMPORTANT: do this *after* warmup so REF/PRED/BAD start the evaluation
     # window from comparable physical states.
-    _retune_general_position_actuator_pd(
-        phys_good,
-        actuator_name=str(override.knee_actuator),
-        kp=float(_PROSTHETIC_KNEE_KP),
-        kd=float(_PROSTHETIC_KNEE_KD),
-        force=float(_PROSTHETIC_KNEE_FORCE),
-    )
+    if apply_good_override:
+        _retune_general_position_actuator_pd(
+            phys_good,
+            actuator_name=str(override.knee_actuator),
+            kp=float(_PROSTHETIC_KNEE_KP),
+            kd=float(_PROSTHETIC_KNEE_KD),
+            force=float(_PROSTHETIC_KNEE_FORCE),
+        )
     if phys_bad is not None:
         _retune_general_position_actuator_pd(
             phys_bad,
@@ -594,11 +793,16 @@ def record_compare_rollout(
             knee_ctrl_good_policy.append(float("nan"))
 
         # Start from each env's policy action, then force the overridden knee actuator.
+        # In a reference-capture pass, GOOD deliberately remains an identical
+        # unmodified replay so no target controller can truncate the baseline.
         act_good = np.asarray(ag, dtype=np.float32).reshape(-1).copy()
 
-        kn_good_des = float(knee_good_qpos[min(t, int(knee_good_qpos.size) - 1)])
-        kn_good_ctrl = float(np.clip(_ctrl_from_qpos(kn_good_des, lower=knee_lo, upper=knee_hi), -1.0, 1.0))
-        act_good[knee_act_id] = kn_good_ctrl
+        if apply_good_override:
+            kn_good_cmd = float(knee_good_command_qpos[min(t, int(knee_good_command_qpos.size) - 1)])
+            kn_good_ctrl = float(np.clip(_ctrl_from_qpos(kn_good_cmd, lower=knee_lo, upper=knee_hi), -1.0, 1.0))
+            act_good[knee_act_id] = kn_good_ctrl
+        else:
+            kn_good_ctrl = float(act_good[knee_act_id])
 
         # Record applied controls (after overriding) + targets.
         knee_ctrl_good_applied.append(float(act_good[knee_act_id]))
@@ -606,7 +810,7 @@ def record_compare_rollout(
 
         # Also overwrite the actuator's activation state to avoid a 1-step lag from
         # internal filtering dynamics (common in the CMU humanoid position actuators).
-        if int(knee_actnum_good) > 0 and int(knee_actadr_good) >= 0:
+        if apply_good_override and int(knee_actnum_good) > 0 and int(knee_actadr_good) >= 0:
             try:
                 phys_good.data.act[int(knee_actadr_good) : int(knee_actadr_good) + int(knee_actnum_good)] = float(
                     act_good[knee_act_id]
@@ -672,8 +876,10 @@ def record_compare_rollout(
             except Exception:
                 knee_ctrl_bad_policy.append(float("nan"))
             act_bad = np.asarray(ab, dtype=np.float32).reshape(-1).copy()
-            kn_bad_des = float(knee_bad_qpos[min(t, int(knee_bad_qpos.size) - 1)])
-            kn_bad_ctrl = float(np.clip(_ctrl_from_qpos(kn_bad_des, lower=knee_lo, upper=knee_hi), -1.0, 1.0))
+            if knee_bad_command_qpos is None:
+                raise RuntimeError("Missing BAD moving-target PD command")
+            kn_bad_cmd = float(knee_bad_command_qpos[min(t, int(knee_bad_command_qpos.size) - 1)])
+            kn_bad_ctrl = float(np.clip(_ctrl_from_qpos(kn_bad_cmd, lower=knee_lo, upper=knee_hi), -1.0, 1.0))
             act_bad[knee_act_id] = kn_bad_ctrl
             knee_ctrl_bad_applied.append(float(act_bad[knee_act_id]))
             knee_ctrl_bad_target.append(float(kn_bad_ctrl))
@@ -706,30 +912,31 @@ def record_compare_rollout(
             knee_bad_actual.append(float(np.rad2deg(float(np.asarray(phys_bad.data.qpos[knee_adr_bad]).reshape(())))))
             _update_balance(physics=phys_bad, root_id=root_id_bad, ground=ground_bad, l_geoms=l_geoms_bad, r_geoms=r_geoms_bad, l_bodies=l_bodies_bad, r_bodies=r_bodies_bad, state=bal_bad)
 
-        # Render panels.
-        rend_ref.update_scene(phys_ref.data.ptr, camera=cam_ref)
-        rend_good.update_scene(phys_good.data.ptr, camera=cam_good)
-        img_ref = np.asarray(rend_ref.render(), dtype=np.uint8)
-        img_good = np.asarray(rend_good.render(), dtype=np.uint8)
-        if rend_bad is not None and phys_bad is not None and cam_bad is not None:
-            rend_bad.update_scene(phys_bad.data.ptr, camera=cam_bad)
-            img_bad = np.asarray(rend_bad.render(), dtype=np.uint8)
-            frame = np.concatenate([img_ref, img_good, img_bad], axis=1)
-        else:
-            frame = np.concatenate([img_ref, img_good], axis=1)
+        if render_media:
+            if rend_ref is None or rend_good is None:
+                raise RuntimeError("Media rollout is missing a renderer")
+            rend_ref.update_scene(phys_ref.data.ptr, camera=cam_ref)
+            rend_good.update_scene(phys_good.data.ptr, camera=cam_good)
+            img_ref = np.asarray(rend_ref.render(), dtype=np.uint8)
+            img_good = np.asarray(rend_good.render(), dtype=np.uint8)
+            if rend_bad is not None and phys_bad is not None and cam_bad is not None:
+                rend_bad.update_scene(phys_bad.data.ptr, camera=cam_bad)
+                img_bad = np.asarray(rend_bad.render(), dtype=np.uint8)
+                frame = np.concatenate([img_ref, img_good, img_bad], axis=1)
+            else:
+                frame = np.concatenate([img_ref, img_good], axis=1)
 
-        if Image is not None and ImageDraw is not None:
-            pil = Image.fromarray(frame)
-            draw = ImageDraw.Draw(pil)
-            pad = 8
-            w = int(width)
-            draw.text((pad + 0 * w, pad), "REF (no override)", fill=(255, 255, 255), font=font)
-            draw.text((pad + 1 * w, pad), "PRED (override)", fill=(255, 255, 255), font=font)
-            if run_bad:
-                draw.text((pad + 2 * w, pad), "BAD (override)", fill=(255, 255, 255), font=font)
-            frame = np.asarray(pil, dtype=np.uint8)
-
-        frames.append(frame)
+            if Image is not None and ImageDraw is not None:
+                pil = Image.fromarray(frame)
+                draw = ImageDraw.Draw(pil)
+                pad = 8
+                w = int(width)
+                draw.text((pad + 0 * w, pad), str(panel_labels[0]), fill=(255, 255, 255), font=font)
+                draw.text((pad + 1 * w, pad), str(panel_labels[1]), fill=(255, 255, 255), font=font)
+                if run_bad:
+                    draw.text((pad + 2 * w, pad), str(panel_labels[2]), fill=(255, 255, 255), font=font)
+                frame = np.asarray(pil, dtype=np.uint8)
+            frames.append(frame)
 
         # Hard stop if someone already fell badly; keeps GIF readable.
         if done_any or fell_ref_hard or fell_good_hard or fell_bad_hard:
@@ -782,7 +989,14 @@ def record_compare_rollout(
     balance_loss_step_bad = detect_balance_loss_step(risk_trace=risk_trace_bad)
 
     # Stack.
-    arr = np.stack(frames, axis=0).astype(np.uint8)
+    arr = (
+        np.stack(frames, axis=0).astype(np.uint8)
+        if frames
+        else np.zeros(
+            (0, int(height), int(width) * (3 if run_bad else 2), 3),
+            dtype=np.uint8,
+        )
+    )
     states_ref_arr = np.stack(states_ref, axis=0).astype(np.float32) if states_ref else np.zeros((0, 0), dtype=np.float32)
     states_good_arr = np.stack(states_good, axis=0).astype(np.float32) if states_good else np.zeros((0, 0), dtype=np.float32)
     states_bad_arr = np.stack(states_bad, axis=0).astype(np.float32) if states_bad else np.zeros((0, 0), dtype=np.float32)
@@ -807,6 +1021,19 @@ def record_compare_rollout(
         prosthetic_knee_kp=np.asarray(float(_PROSTHETIC_KNEE_KP), dtype=np.float32),
         prosthetic_knee_kd=np.asarray(float(_PROSTHETIC_KNEE_KD), dtype=np.float32),
         prosthetic_knee_force=np.asarray(float(_PROSTHETIC_KNEE_FORCE), dtype=np.float32),
+        moving_target_pd=np.asarray(bool(moving_target_pd)),
+        apply_good_override=np.asarray(bool(apply_good_override)),
+        render_media=np.asarray(bool(render_media)),
+        knee_good_target_velocity_rad_s=np.asarray(knee_good_target_velocity[:steps], dtype=np.float32),
+        knee_bad_target_velocity_rad_s=np.asarray(knee_bad_target_velocity[:steps], dtype=np.float32),
+        knee_good_command_qpos_deg=np.rad2deg(
+            np.asarray(knee_good_command_qpos[:steps], dtype=np.float64)
+        ).astype(np.float32),
+        knee_bad_command_qpos_deg=(
+            np.rad2deg(np.asarray(knee_bad_command_qpos[:steps], dtype=np.float64)).astype(np.float32)
+            if knee_bad_command_qpos is not None
+            else np.zeros((0,), dtype=np.float32)
+        ),
         states_ref=states_ref_arr,
         states_good=states_good_arr,
         states_bad=states_bad_arr,
@@ -866,7 +1093,7 @@ def record_compare_rollout(
     )
 
     gif_path = out_npz_path.with_suffix(".gif")
-    if Image is not None:
+    if render_media and Image is not None and int(arr.shape[0]) > 0:
         try:
             duration_ms = int(max(1, round(float(dt) * 1000.0)))
             base = Image.fromarray(arr[0]).convert("P", palette=Image.ADAPTIVE, colors=256)

@@ -25,6 +25,7 @@ SAVE_DIR = Path("checkpoints")
 RUN_NAME = datetime.now().strftime("tst_%Y%m%d_%H%M%S")
 RUN_NAME_OVERRIDE = os.environ.get("EMG_TST_RUN_NAME", "").strip()
 ABLATIONS_OVERRIDE = os.environ.get("EMG_TST_ABLATIONS", "").strip()
+SAVE_EPOCH_CHECKPOINTS = os.environ.get("EMG_TST_SAVE_EPOCH_CHECKPOINTS", "0").strip() == "1"
 
 SEED = 7
 K_FOLDS = 5
@@ -246,7 +247,8 @@ def build_windows_for_files(
         T = int(corpus.y_list[int(fid)].shape[0])
         if T < int(SOURCE_WINDOW):
             continue
-        for start in range(0, T - int(SOURCE_WINDOW) + 1, int(stride)):
+        last_start_exclusive = T - int(SOURCE_WINDOW) - int(LABEL_SHIFT) + 1
+        for start in range(0, max(0, last_start_exclusive), int(stride)):
             rows.append((int(fid), int(start)))
     if not rows:
         return np.empty((0, 2), dtype=np.int64)
@@ -554,6 +556,11 @@ def train_one_fold(
     early_stop_patience: int = EARLY_STOP_PATIENCE,
     train_stride: int = TRAIN_STRIDE,
 ) -> dict:
+    # Pair sensor conditions by resetting every fold to the same deterministic
+    # initialization and minibatch-order seed.
+    set_seed(int(SEED + fold_i * 1000))
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(int(SEED + fold_i * 1000))
     feature_cols = np.asarray(feature_cols, dtype=np.int64).reshape(-1)
     train_windows = np.asarray(train_windows, dtype=np.int64).reshape(-1, 2)
     test_windows = np.asarray(test_windows, dtype=np.int64).reshape(-1, 2)
@@ -691,6 +698,25 @@ def train_one_fold(
             last_val_rmse = float("inf")
 
         improved = float(val_metrics["rmse"]) < float(best_val_rmse) - 1e-8
+        if bool(SAVE_EPOCH_CHECKPOINTS) and str(label).upper() == "ALL" and run_dir is not None:
+            fold_dir = run_dir / f"fold_{int(fold_i):02d}"
+            _save_checkpoint(
+                fold_dir / f"reg_epoch_{int(epoch):03d}.pt",
+                model=model,
+                mean=mean,
+                std=std,
+                feature_cols=feature_cols,
+                n_emg_norm=int(corpus.n_emg),
+                extra={
+                    "stage": "epoch",
+                    "fold": int(fold_i),
+                    "epoch": int(epoch),
+                    "validation_rmse": float(val_metrics["rmse"]),
+                    "train_stride": int(train_stride),
+                    "label": str(label),
+                    "split_manifest": split_manifest,
+                },
+            )
         if improved:
             best_val_rmse = float(val_metrics["rmse"])
             best_epoch = int(epoch)
@@ -975,7 +1001,7 @@ def main():
 
     rmse_all = float(results["all"])
     rmse_thigh = float(results["thigh_only"])
-    rmse_emg = float(results["emg_only"])
+    rmse_emg = float(results["emg_only"]) if "emg_only" in results else float("nan")
     emg_improvement = float(rmse_thigh - rmse_all)
 
     print("\n" + "=" * 60)
@@ -983,7 +1009,8 @@ def main():
     print("=" * 60)
     print(f"  EMG + thigh: {rmse_all:8.3f} deg")
     print(f"  Thigh only:  {rmse_thigh:8.3f} deg")
-    print(f"  EMG only:    {rmse_emg:8.3f} deg")
+    if np.isfinite(rmse_emg):
+        print(f"  EMG only:    {rmse_emg:8.3f} deg")
     print("-" * 60)
     if emg_improvement > 0.5:
         print(f"  EMG helps: -{emg_improvement:.2f} deg RMSE")
@@ -997,7 +1024,7 @@ def main():
         "emg_improvement_degrees": float(emg_improvement),
         "folds_all": fold_summaries["all"],
         "folds_thigh": fold_summaries["thigh_only"],
-        "folds_emg": fold_summaries["emg_only"],
+        "folds_emg": fold_summaries.get("emg_only", []),
         "config": {
             "recording_glob": str(DATA_GLOB),
             "seed": int(SEED),
