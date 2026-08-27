@@ -1,0 +1,18 @@
+# Version-sensitive MoCapAct/MuJoCo stack; use Python 3.10.
+numpy==1.26.4
+scipy==1.11.4
+torch>=2.3,<3
+mujoco==2.2.2
+dm-control==1.0.7
+stable-baselines3==2.6.0
+gymnasium>=1.0,<1.2
+shimmy>=2,<3
+mocapact
+h5py>=3.14,<4
+ml-collections>=1.1,<2
+cloudpickle>=2.2,<4
+pillow>=11,<13
+tqdm>=4.67,<5
+imageio>=2.37,<3
+imageio-ffmpeg>=0.6,<1
+setuptools>=80,<82

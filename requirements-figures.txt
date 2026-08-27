@@ -1,0 +1,6 @@
+# Manuscript figures; OpenCV 4.12 requires NumPy below 2.3 on Python >=3.9.
+numpy>=2.2,<2.3
+scipy>=1.16,<1.17
+pandas>=3.0,<3.1
+matplotlib>=3.10,<3.11
+opencv-python>=4.12,<4.13

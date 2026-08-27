@@ -1,154 +1,102 @@
-# Physics-based evaluation of sEMG knee-angle regression
+# Gait120 residual-fusion simulation study
 
-This repository contains the code and publication artifacts for **“Towards the
-Use of Simulated Environments to Evaluate sEMG-Based Prosthetic Knee-Angle
-Regression.”** The study asks whether an sEMG-related reduction in 100-ms
-knee-angle prediction error also reduces instability when the paired prediction
-errors are inserted into matched whole-body walking simulations.
+This repository contains the analysis code for a paired study of 100-ms
+knee-angle prediction and whole-body simulation. The predictor was developed
+with 30 Gait120 participants and evaluated on later trials from a separate
+90-participant cohort after calibration on each cohort's earlier trials.
 
-## Final result
+The sEMG residual correction reduced mean participant RMSE from 5.093° to
+4.748° (paired difference 0.345°, 95% confidence interval 0.252–0.438°). That
+modest prediction improvement did not produce a detectable change in the
+study-specific simulation outcome. The experiment used healthy-participant
+data and an offline trajectory perturbation; it did not test a prosthetic
+device or estimate clinical fall risk.
 
-The participant-calibrated residual-fusion predictor was developed with 30
-Gait120 participants and evaluated once in 90 separate participants.
-
-| Result | Value |
-|---|---:|
-| RMSE with residual fusion | 4.748° |
-| RMSE without sEMG | 5.093° |
-| Mean paired improvement | 0.345° |
-| 95% confidence interval | 0.252–0.438° |
-| Paired test | t(89) = 7.39, p = 7.50 × 10⁻¹¹ |
-| Participants improved | 70 / 90 |
-
-All 80 fixed level-walking windows were matched to stable MoCapAct references
-and evaluated at seven prediction-accuracy checkpoints (560 numerical
-simulations). The sEMG prediction improvement did not produce a detectable
-change in excess-instability AUC at the full-data checkpoint. A sharp physical
-deterioration was observed between the measured 13.41° and 16.29° RMSE
-checkpoints.
-
-## Repository layout
+## Repository map
 
 | Path | Purpose |
 |---|---|
-| `emg_tst/gait120_data.py` | Native Gait120 MAT-file loading and causal sEMG processing |
-| `emg_tst/gait120_experiment.py` | Shared example construction, participant metrics, and fail-closed output utilities |
-| `emg_tst/preprocess_gait120.py` | Reproducible participant cache export |
-| `emg_tst/run_gait120_residual_fusion.py` | Development and untouched confirmation ablation |
+| `emg_tst/gait120_data.py` | Gait120 MAT-file loading and causal sEMG processing |
+| `emg_tst/gait120_experiment.py` | Shared example construction, ridge fitting, and participant metrics |
+| `emg_tst/run_gait120_residual_fusion.py` | Development and confirmation sEMG ablation |
 | `emg_tst/run_gait120_temporal_control.py` | 500-ms timing control |
-| `emg_tst/run_gait120_accuracy_path.py` | Seven fixed training-data checkpoints |
-| `emg_tst/prepare_gait120_physics_panel.py` | Fixed participant-balanced physics panel |
-| `mocap_phys_eval/run_gait120_level_walking_v4.py` | Definitive level-walking motion matching and MuJoCo evaluation |
-| `analysis/gait120_v4.py` | Frozen numerical physics audit and FWL analysis |
-| `analysis/gait120_conventional_paired_statistics.py` | Paired tests reported in the manuscript |
-| `analysis/gait120_submission_figures_original_style.py` | Publication figure generator |
-| `docs/EXPERIMENT_PROTOCOL.md` | Concise definitive protocol |
-| `final_submission/` | Verified PDF, editable Overleaf project, media, evidence, and submission bundle |
+| `emg_tst/run_gait120_accuracy_path.py` | Seven nested calibration-data checkpoints |
+| `emg_tst/prepare_gait120_physics_panel.py` | Fixed participant-balanced simulation panel |
+| `mocap_phys_eval/run_gait120_level_walking_v4.py` | Reference matching and paired MuJoCo evaluation |
+| `analysis/gait120_v4.py` | Numerical physics audit and adjusted association analysis |
+| `analysis/gait120_conventional_paired_statistics.py` | Participant-level inferential summaries |
+| `analysis/gait120_submission_figures.py` | Eight manuscript figures from archived results |
+| `docs/EXPERIMENT_PROTOCOL.md` | Human-readable analysis protocol |
+| `tests/` | Deterministic unit and repository-integrity checks |
 
-The older Georgia Tech acquisition and MoCapAct compatibility modules remain
-where the final implementation still uses them. They are not the predictor
-evaluated in the final paper.
+Generated runs, raw data, model banks, recordings, evidence archives, and
+manuscript files are intentionally excluded from Git. The journal supplement
+contains the derived records needed to verify the reported results.
 
 ## Data
 
-Raw datasets and the MoCapAct expert bank are intentionally not stored in Git.
+The final analysis uses level walking from:
 
 - [Gait120 dataset](https://doi.org/10.6084/m9.figshare.27677016)
-- [Gait120 article](https://doi.org/10.1038/s41597-025-05391-0)
+- [Gait120 data descriptor](https://doi.org/10.1038/s41597-025-05391-0)
 - [MoCapAct](https://microsoft.github.io/MoCapAct/)
 
-The final analysis uses only Gait120 level walking. Predictor inputs and targets
-are not interpolated or time-normalized. The matching search performs only the
-documented sampling-rate conversion needed to compare the 100-Hz Gait120 query
-with the 200-Hz MoCapAct reference grid.
+Predictor inputs and targets are not interpolated or time-normalized. The only
+sampling-rate conversion is used when matching 100-Hz Gait120 queries to the
+200-Hz MoCapAct reference grid.
 
-## Environment
+## Environments
 
-Create an isolated Python environment and install the project dependencies:
+Use separate environments for the three parts of the workflow:
 
 ```bash
-python -m venv .venv
+# Prediction and participant-level statistics
 python -m pip install -r requirements.txt
+
+# Figure generation (OpenCV currently requires NumPy below 2.3)
+python -m pip install -r requirements-figures.txt
+
+# Legacy MoCapAct/MuJoCo simulation stack
+python -m pip install -r requirements-physics.txt
 ```
 
-MoCapAct and its pinned MuJoCo 2.2.2 backend may require a compatible Python
-environment separate from the prediction and plotting environment. Exact
-software and protocol records from the completed run are included in
-`final_submission/Additional_file_2_reproducibility_evidence.zip`.
+The physics stack is version-sensitive and is best run under Python 3.10. The
+completed-run supplement records the exact software versions used for the
+reported simulations.
 
-## Reproducing the prediction analysis
+## Reproducing the analysis
 
-After downloading Gait120, inspect the cache-export options:
+Inspect each public entry point before supplying local data paths:
 
 ```bash
 python -m emg_tst.preprocess_gait120 --help
-```
-
-Run development first, then the untouched confirmation:
-
-```bash
 python -m emg_tst.run_gait120_residual_fusion --help
-```
-
-The timing control and accuracy path are separate entry points:
-
-```bash
 python -m emg_tst.run_gait120_temporal_control --help
 python -m emg_tst.run_gait120_accuracy_path --help
+python -m emg_tst.prepare_gait120_physics_panel --help
+python -m mocap_phys_eval.run_gait120_level_walking_v4 --help
 ```
 
-Each command writes a protocol before writing outcomes and stops on missing or
-incompatible inputs.
-
-## Reproducing the reported paired statistics
-
-Extract `Additional_file_2_reproducibility_evidence.zip`, then run:
+Participant-level statistics and figures are regenerated from an extracted
+evidence supplement:
 
 ```bash
-python -m analysis.gait120_conventional_paired_statistics \
-  --evidence-dir path/to/extracted/evidence \
-  --output conventional_paired_statistics.json
+python -m analysis.gait120_conventional_paired_statistics --help
+python -m analysis.gait120_v4 --help
+python -m analysis.gait120_submission_figures --help
 ```
 
-The primary ablation uses a two-sided paired t-test on the 90 participant-level
-RMSE differences. Wilcoxon signed-rank and exact sign tests are emitted as
-sensitivity analyses.
-
-The complete physics audit uses explicit input directories rather than local
-machine defaults:
-
-```bash
-python -m analysis.gait120_v4 \
-  --run-dir path/to/completed/physics/run \
-  --confirmation-dir path/to/completed/confirmation/run \
-  --output-dir path/to/analysis/output
-```
-
-The figure generator likewise requires the extracted evidence, the eight
-representative recordings, and the two source-data images identified in its
-command-line help. No user-specific paths are embedded in the source.
+See [the protocol](docs/EXPERIMENT_PROTOCOL.md) for the cohort split, signal
+windows, model comparison, simulation mapping, and outcome definitions.
 
 ## Tests
 
-The repository’s lightweight deterministic tests do not download either
-dataset:
+The deterministic tests do not download either dataset:
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-## Publication files
-
-The final deliverables are under `final_submission/`:
-
-- `main.pdf` — visually checked 34-page manuscript
-- `Prosthetic_Regression_BMC_Overleaf.zip` — clean editable LaTeX project
-- `Additional_file_1_simulation_recordings.zip` — eight prospectively selected
-  representative MuJoCo recordings
-- `Additional_file_2_reproducibility_evidence.zip` — participant results,
-  complete 560-simulation summary, protocols, audits, and source snapshot
-- `Prosthetic_Regression_BMC_Submission_Bundle.zip` — complete journal package
-- `SHA256SUMS.txt` — integrity hashes
-
-The manuscript currently uses “Independent researcher, United States.” Add the
-preferred correspondence email and confirm the affiliation before submission.
+Older Georgia Tech acquisition utilities remain because some shared data and
+coordinate helpers still depend on them. They are not the predictor evaluated
+in the Gait120 study.
