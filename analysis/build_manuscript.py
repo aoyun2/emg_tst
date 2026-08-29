@@ -839,7 +839,7 @@ Neither point is tested by this experiment, and the reported accuracy is not
 comparable with methods predicting from socket-available signals alone.
 
 The instability index has not been validated against clinical outcomes
-\cite{{hof2005,hof2008,gill2019,pickle2018,curtze2024}}. Simulation
+\cite{{hof2005,hof2008,curtze2024}}. Simulation
 outcomes also depend on motion-match quality, which is why match errors are treated
 as covariates, and the conclusion holds for this evaluation
 rather than for every application of the model.
