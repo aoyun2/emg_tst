@@ -29,6 +29,37 @@ this repository.
   participant RMSE without sEMG minus RMSE with residual fusion. Wilcoxon and
   exact sign tests were sensitivity analyses.
 
+### sEMG negative controls
+
+The ablation alone cannot separate real sEMG information from the extra fitted
+capacity of a second regression stage. Three surrogate conditions repeat the
+whole confirmation fit with the sEMG replaced by a signal that keeps its
+statistics but loses its correspondence with the knee:
+
+- `circular_shift`: each participant-trial sEMG block is rotated against its own
+  kinematics, preserving amplitudes, spectra, and cross-channel structure.
+- `participant_swap`: each participant receives another participant's sEMG.
+- `phase_randomized`: each channel is replaced by a surrogate with an identical
+  power spectrum and randomized Fourier phases.
+
+The kinematic stage is shared across all four conditions, so any difference is
+attributable to sEMG content.
+
+Attribution is judged by a paired within-participant contrast: for each
+participant, the improvement with recorded sEMG minus the improvement with that
+surrogate, summarized with the same bootstrap interval and sign-flip
+randomization test as the primary ablation. The improvement is attributed to
+sEMG content when the recorded signal clears its gate and beats every surrogate
+on that contrast.
+
+Requiring each surrogate to independently fail a significance threshold would be
+the wrong rule. Walking is periodic with a cycle close to one second, so a
+circular shift cannot fully break the correspondence between sEMG and knee
+angle: whatever offset it lands on is still a phase of the same repeating cycle.
+That surrogate sets a floor rather than a zero, and the observed residual effect
+in it is expected. The participant-swap and phase-randomized surrogates, which do
+not rely on a time offset, are the ones expected to reach zero.
+
 ## Timing control
 
 The same sEMG history was shifted 500 ms earlier within each continuous trial.
@@ -44,14 +75,20 @@ models were evaluated on identical target rows.
 - Matching: knee-angle RMSE ranked candidates. Right-thigh pitch RMSE was
   calculated afterward as a match-quality covariate. No amplitude scaling was
   allowed.
-- Prediction mapping: the sampled Gait120 prediction error was added to the
-  realized knee trajectory of the same matched MoCapAct reference.
+- Prediction mapping: the model's predicted knee angle is the tracking target of
+  the PD override on the right knee actuator, mapped into the matched clip's
+  knee convention by the constant offset and sign the match established. The
+  simulation is driven by the model output itself and never reads the recorded
+  future target.
 - Paired conditions shared the reference snippet, initial state, expert policy,
-  warm-up, and knee controller.
-- Accuracy range: 5%, 10%, 20%, 40%, 60%, 80%, and 100% of each participant's
-  eligible fitting examples. Every checkpoint used the same 80 windows and
-  references.
-- All 560 planned prediction rollouts were retained.
+  warm-up, and knee controller. The reference condition ran the unmodified
+  expert.
+- Accuracy range: checkpoints sampled along the gradient-descent training path of
+  the same model, from a zero initialization that predicts the participant mean
+  down to the closed-form confirmation fit, which is the terminal checkpoint.
+  Checkpoints are placed to tile the achieved training-RMSE range rather than
+  the step index, because descent crosses the high-error region in few steps.
+  Every checkpoint used the same 80 windows and references.
 
 ## Simulation outcomes
 
@@ -66,6 +103,19 @@ association between prediction RMSE and excess AUC. A high-instability flag was
 reported only as a descriptive algorithmic outcome; it was not an observed
 fall.
 
-The accuracy-range analysis compares measured calibration checkpoints. It does
-not isolate RMSE as a causal exposure or convert the unsampled interval between
+The accuracy-range analysis compares measured training checkpoints. It does not
+isolate RMSE as a causal exposure or convert the unsampled interval between
 checkpoints into a clinical safety threshold.
+
+Three association views are reported. `per_checkpoint` repeats the adjusted
+analysis at each accuracy level and carries the RMSE spread available to it, so
+a near-zero association on a near-zero spread is not read as evidence of no
+effect. `within_window` correlates each window's own accuracy against its own
+excess instability across checkpoints and combines the results with a Fisher-z
+one-sample test, which removes matched motion, snippet, and initial state as
+sources of variation. `pooled` uses every checkpoint-window pair with a
+window-level cluster bootstrap, since each window recurs once per checkpoint.
+
+The drop-off estimate is a descriptive two-segment fit of the per-checkpoint
+association against mean accuracy. It locates where the sampled association
+changes; it is not a changepoint test with its own error rate.

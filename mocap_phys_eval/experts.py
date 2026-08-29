@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import tarfile
+import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,7 +24,13 @@ _FULL_EXPERT_TARBALL_FILENAMES: tuple[str, ...] = tuple(f"all/experts/experts_{i
 
 
 def _is_no_space_error(e: BaseException) -> bool:
-    return isinstance(e, OSError) and int(getattr(e, "errno", -1)) in (28, 112)
+    # An OSError raised without an errno has the attribute set to None rather
+    # than missing it, so a default in getattr never fires and int(None) raises.
+    # That turned every truncated-transfer error into a TypeError inside the
+    # resume loop, escalating a recoverable drop into a stage failure.
+    if not isinstance(e, OSError):
+        return False
+    return getattr(e, "errno", None) in (28, 112)
 
 
 def _get_hf_token() -> str | None:
@@ -260,20 +267,60 @@ def _download_with_hf_transfer(url: str, dst: Path, *, force: bool, extra_header
     return dst
 
 
+# Each tarball is roughly 18 GB, so a transfer that has to run for twenty minutes
+# straight will occasionally be cut short. Resuming inside this function keeps a
+# dropped connection from consuming one of the caller's whole-stage attempts,
+# which would otherwise exhaust them long before the eight tarballs are through.
+_RESUME_ATTEMPTS = 40
+
+
 def _download_expert_tarball(url: str, dst: Path, *, force: bool, timeout_s: float) -> Path:
     extra_headers = _auth_headers()
 
+    def stream() -> Path:
+        return _stream_download(
+            url, dst, force=force, timeout_s=timeout_s, extra_headers=extra_headers
+        )
+
     # The builtin urllib downloader supports true resume via ".part".
     # If such a file exists, always resume with urllib regardless of backend.
-    if dst.with_suffix(dst.suffix + ".part").exists():
-        return _stream_download(url, dst, force=force, timeout_s=timeout_s, extra_headers=extra_headers)
+    if not dst.with_suffix(dst.suffix + ".part").exists():
+        backend = _download_backend()
+        if backend == "aria2":
+            return _download_with_aria2(url, dst, force=force, extra_headers=extra_headers)
+        if backend == "hf_transfer":
+            return _download_with_hf_transfer(url, dst, force=force, extra_headers=extra_headers)
 
-    backend = _download_backend()
-    if backend == "aria2":
-        return _download_with_aria2(url, dst, force=force, extra_headers=extra_headers)
-    if backend == "hf_transfer":
-        return _download_with_hf_transfer(url, dst, force=force, extra_headers=extra_headers)
-    return _stream_download(url, dst, force=force, timeout_s=timeout_s, extra_headers=extra_headers)
+    last: BaseException | None = None
+    for attempt in range(1, _RESUME_ATTEMPTS + 1):
+        try:
+            return stream()
+        except (IOError, OSError) as exc:
+            if _is_no_space_error(exc):
+                raise
+            last = exc
+            print(
+                f"[mocap_phys_eval] {dst.name}: resuming after interruption "
+                f"({attempt}/{_RESUME_ATTEMPTS}): {exc}"
+            )
+            time.sleep(min(60.0, 5.0 * attempt))
+    raise RuntimeError(
+        f"Could not complete {dst.name} after {_RESUME_ATTEMPTS} resume attempts"
+    ) from last
+
+
+def _published_size(url: str, *, extra_headers: dict[str, str] | None = None) -> int | None:
+    """Length the server reports for a URL, or None if it will not say."""
+    headers = {str(k): str(v) for k, v in (extra_headers or {}).items() if v}
+    try:
+        request = urllib.request.Request(str(url), headers=headers, method="HEAD")
+        with urllib.request.urlopen(request, timeout=60.0) as response:
+            raw = response.headers.get("Content-Length") or response.headers.get(
+                "x-linked-size"
+            )
+            return int(raw) if raw is not None else None
+    except Exception:
+        return None
 
 
 def _stream_download(
@@ -287,10 +334,22 @@ def _stream_download(
     """Stream download (supports resume if a .part file exists)."""
     dst = Path(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
-    if dst.exists() and dst.stat().st_size > 0 and not force:
-        return dst
-
     tmp = dst.with_suffix(dst.suffix + ".part")
+
+    if dst.exists() and dst.stat().st_size > 0 and not force:
+        # Size alone does not prove completeness, and an earlier truncated
+        # transfer may already have been promoted to the final name.  Confirm
+        # against the published length before trusting it; if it is short,
+        # demote it back to a .part so this call resumes rather than restarts.
+        published = _published_size(url, extra_headers=extra_headers)
+        if published is None or int(dst.stat().st_size) == int(published):
+            return dst
+        print(
+            f"[mocap_phys_eval] {dst.name} is {dst.stat().st_size} bytes but "
+            f"{int(published)} were published; resuming the transfer."
+        )
+        dst.replace(tmp)
+
     start = int(tmp.stat().st_size) if tmp.exists() else 0
 
     headers: dict[str, str] = {}
@@ -349,6 +408,20 @@ def _stream_download(
             raise
         if pbar is not None:
             pbar.close()
+
+    # A read loop that ends because the connection dropped looks exactly like one
+    # that ends because the file finished: urllib returns an empty chunk either
+    # way.  Promoting a short file to its final name makes the truncation
+    # permanent, because the completed-file check at the top of this function
+    # then accepts it on every later attempt and extraction fails forever.
+    # Leave the .part in place instead, so the next attempt resumes from it.
+    got = int(tmp.stat().st_size)
+    if total is not None and got < int(total):
+        raise IOError(
+            f"{dst.name} transfer ended early at {got} of {int(total)} bytes "
+            f"({got / max(1, int(total)):.1%}); the partial file was kept and the "
+            "next attempt will resume from it."
+        )
 
     tmp.replace(dst)
     return dst

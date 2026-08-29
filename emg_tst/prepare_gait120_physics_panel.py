@@ -17,15 +17,26 @@ WINDOW_FRAMES = 100
 WINDOW_HZ = 100
 WINDOW_STRIDE_FRAMES = 10
 TARGET_WINDOWS = 80
-CHECKPOINT_LABELS = (
-    "fraction_005pct",
-    "fraction_010pct",
-    "fraction_020pct",
-    "fraction_040pct",
-    "fraction_060pct",
-    "fraction_080pct",
-    "fraction_100pct",
-)
+
+
+def _checkpoint_schedule(accuracy_dir: Path) -> tuple[tuple[str, ...], str]:
+    """Read the checkpoint schedule the training path actually emitted.
+
+    The schedule is a property of the run, not of this file: the number and
+    placement of checkpoints depend on the descent and on ``--checkpoint-mode``.
+    """
+    manifest_path = Path(accuracy_dir) / "checkpoints" / "manifest.json"
+    if not manifest_path.exists():
+        raise RuntimeError(
+            f"Missing training-path checkpoint manifest: {manifest_path}. "
+            "Run emg_tst.run_gait120_training_path first."
+        )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    labels = tuple(str(label) for label in manifest["labels"])
+    primary = str(manifest.get("primary_checkpoint", labels[-1]))
+    if not labels or primary not in labels:
+        raise RuntimeError(f"Malformed checkpoint manifest: {manifest_path}")
+    return labels, primary
 
 
 def _atomic_npz(path: Path, **arrays: np.ndarray) -> None:
@@ -99,11 +110,12 @@ def main() -> None:
     if run_dir.exists():
         raise RuntimeError(f"Physics run directory already exists: {run_dir}")
 
+    checkpoint_labels, primary_checkpoint = _checkpoint_schedule(accuracy_dir)
     predictions = {
         label: _checkpoint_predictions(accuracy_dir, label)
-        for label in CHECKPOINT_LABELS
+        for label in checkpoint_labels
     }
-    reference = predictions[CHECKPOINT_LABELS[-1]]
+    reference = predictions[primary_checkpoint]
     metadata_fields = (
         "target_deg",
         "subject_number",
@@ -181,7 +193,7 @@ def main() -> None:
                 np.asarray(predictions[label]["fused_prediction_deg"], dtype=np.float32)[
                     prediction_rows
                 ]
-                for label in CHECKPOINT_LABELS
+                for label in checkpoint_labels
             ]
         )
         no_emg = np.stack(
@@ -189,7 +201,7 @@ def main() -> None:
                 np.asarray(predictions[label]["no_emg_prediction_deg"], dtype=np.float32)[
                     prediction_rows
                 ]
-                for label in CHECKPOINT_LABELS
+                for label in checkpoint_labels
             ]
         )
         query_id = f"{subject_name}_trial05_start{start:04d}"
@@ -209,7 +221,7 @@ def main() -> None:
             knee_included_deg=(180.0 - measured_flexion).astype(np.float32),
             thigh_pitch_deg=thigh_pitch,
             thigh_quat_wxyz=thigh_quat,
-            checkpoint_labels=np.asarray(CHECKPOINT_LABELS),
+            checkpoint_labels=np.asarray(checkpoint_labels),
             fused_prediction_deg=fused,
             no_emg_prediction_deg=no_emg,
         )
@@ -247,7 +259,8 @@ def main() -> None:
             "model_outputs_used_for_selection": False,
             "motion_match_or_simulation_used_for_selection": False,
         },
-        "checkpoint_labels": list(CHECKPOINT_LABELS),
+        "checkpoint_labels": list(checkpoint_labels),
+        "primary_checkpoint": primary_checkpoint,
         "alignment": {
             "forecast_assignment": "prediction assigned to its recorded target_frame",
             "predictor_interpolation": False,
@@ -255,8 +268,9 @@ def main() -> None:
         },
         "sha256": {
             "panel_runner": gait._sha256(Path(__file__).resolve()),
-            "accuracy_path_summary": gait._sha256(
-                accuracy_dir / "accuracy_path_summary.json"
+            "training_path_protocol": gait._sha256(accuracy_dir / "protocol.json"),
+            "training_path_checkpoints": gait._sha256(
+                accuracy_dir / "checkpoints" / "manifest.json"
             ),
             "experiment_protocol": gait._sha256(root / "docs" / "EXPERIMENT_PROTOCOL.md"),
         },

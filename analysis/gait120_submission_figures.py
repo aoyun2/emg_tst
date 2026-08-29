@@ -44,7 +44,7 @@ MUSCLES = ["VL", "RF", "VM", "TA", "BF", "ST", "GM", "GL", "SM", "SL", "PL", "PB
 
 DATA_ALIASES = {
     "prediction_confirmation/ablation_summary.json": "ablation_summary.json",
-    "accuracy_path/checkpoints/fraction_100pct/test_predictions.npz": "test_predictions.npz",
+    "training_path/checkpoints/test_predictions.npz": "test_predictions.npz",
     "physics/matching_summary.json": "matching_summary.json",
     "analysis/participant_primary.csv": "participant_primary.csv",
     "analysis/statistical_summary.json": "statistical_summary.json",
@@ -268,11 +268,29 @@ def schematic_emg(n: int = 180) -> tuple[np.ndarray, np.ndarray]:
     return x, np.asarray(signals)
 
 
-def load_predictions(evidence_dir: Path) -> dict[str, np.ndarray]:
-    path = resolve_data_path(
-        evidence_dir,
-        "accuracy_path/checkpoints/fraction_100pct/test_predictions.npz",
+def primary_checkpoint_predictions(evidence_dir: Path) -> Path:
+    """Locate the converged checkpoint's test predictions.
+
+    The training path emits one directory per checkpoint and names them from the
+    descent, so the converged one cannot be hardcoded; the checkpoint manifest
+    records which label is primary.
+    """
+    for manifest_path in sorted(evidence_dir.rglob("checkpoints/manifest.json")):
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        labels = [str(label) for label in manifest.get("labels", [])]
+        if not labels:
+            continue
+        primary = str(manifest.get("primary_checkpoint", labels[-1]))
+        candidate = manifest_path.parent / primary / "test_predictions.npz"
+        if candidate.is_file():
+            return candidate
+    return resolve_data_path(
+        evidence_dir, "training_path/checkpoints/test_predictions.npz"
     )
+
+
+def load_predictions(evidence_dir: Path) -> dict[str, np.ndarray]:
+    path = primary_checkpoint_predictions(evidence_dir)
     with np.load(path, allow_pickle=False) as stored:
         return {key: np.asarray(stored[key]) for key in stored.files}
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -24,13 +25,37 @@ from .sim import (
     tint_geoms_by_prefix,
 )
 
-# Prosthetic knee tracking gains (PRED/BAD only).
-# The default CMU humanoid "position-controlled" actuators are intentionally compliant.
-# For evaluation, we want the overridden knee angle to be physically realized (not just
-# changing the policy action), so we increase knee servo gains for PRED/BAD.
-_PROSTHETIC_KNEE_KP = 800.0
-_PROSTHETIC_KNEE_KD = 40.0
-_PROSTHETIC_KNEE_FORCE = 800.0
+# Prosthetic knee tracking gains, applied to the overridden knee only.
+# Match the walker's own knee actuator rather than overpowering it. The CMU
+# humanoid knee is a position servo at kp=160 with a 160 N.m limit; peak human
+# knee moment in walking is well under that. The previous 800/800 setting gave
+# the substituted knee five times the stiffness and five times the torque
+# authority of the joint it replaces, which destabilised the body even when the
+# commanded trajectory was exactly right. Damping is the one addition: the
+# native servo has none, and a derivative term is what lets the joint follow a
+# moving target without overshooting.
+#
+# Stiffness and the torque ceiling are separable and are tuned separately: the
+# servo can be made responsive while still being forbidden from exerting a
+# torque the joint it replaces could not.
+# Chosen by sweeping both against the oracle preflight, where prediction error is
+# zero by construction so any tracking error or added instability is caused by the
+# override alone. Measured over ten windows:
+#
+#   kp   kd  force   mean track   track<=10   mean added fall risk
+#  160   10    160        15.12        2/10                 -0.180
+#  400   20    160         6.83       10/10                 +0.042
+#  800   40    160         4.75       10/10                 +0.057
+#  800   40    800         4.59       10/10                 +0.055
+#
+# Raising the ceiling from the walker's native 160 N.m to 800 changes tracking by
+# 0.16 deg and added risk by 0.002: the actuator does not saturate, so the extra
+# authority buys nothing and only makes the substituted knee physically
+# implausible. Stiffness is the lever that matters, and kp=400 already imposes the
+# commanded trajectory on every window while adding the least instability.
+_PROSTHETIC_KNEE_KP = float(os.environ.get("PROSTHETIC_KNEE_KP", "400") or 400.0)
+_PROSTHETIC_KNEE_KD = float(os.environ.get("PROSTHETIC_KNEE_KD", "20") or 20.0)
+_PROSTHETIC_KNEE_FORCE = float(os.environ.get("PROSTHETIC_KNEE_FORCE", "160") or 160.0)
 
 
 @dataclass(frozen=True)
@@ -181,7 +206,20 @@ def _retune_general_position_actuator_pd(
     """Retune a CMU humanoid `<general>` actuator to behave like a PD position servo.
 
     This keeps the existing action semantics: `ctrl` in [-1,1] maps linearly to the
-    joint range, but increases tracking strength/damping.
+    joint range, but adds derivative damping the native servo lacks.
+
+    ``kp`` and ``force`` of zero or less mean "keep what the walker already has".
+    That is the intended setting. The CMU knee is already a position servo, at
+    kp=160 with a 160 N.m limit, and the expert policy and the whole body's
+    dynamics are tuned around those values. Overriding them with a much stiffer
+    servo and a much larger force limit makes the joint able to exert torques far
+    outside the model's envelope, so any small tracking error is amplified into a
+    whole-body disturbance. That is measurable: with a 5x stiffer knee the oracle
+    condition -- commanding the clip's own realized trajectory, with zero
+    prediction error -- still drove fall risk from 0.54 to 0.91. Inheriting the
+    native envelope keeps the substituted knee physically comparable to the one
+    it replaces, so the prediction and reference conditions differ only in the
+    target the servo is given.
     """
     m = physics.model
     aid = int(m.name2id(str(actuator_name), "actuator"))
@@ -194,9 +232,19 @@ def _retune_general_position_actuator_pd(
 
     a = 0.5 * (hi - lo)  # q_des = a*ctrl + b
     b = 0.5 * (hi + lo)
-    kp = float(kp)
+
+    # Recover the walker's own stiffness and force limit from the actuator it
+    # already has: the native bias is (kp*b, -kp, -kd), so -biasprm[1] is kp.
+    native_kp = float(-np.asarray(m.actuator_biasprm[aid], dtype=np.float64)[1])
+    native_force = float(
+        np.max(np.abs(np.asarray(m.actuator_forcerange[aid], dtype=np.float64)))
+    )
+
+    kp = float(kp) if float(kp) > 0.0 else native_kp
     kd = float(kd)
-    f = float(abs(force))
+    f = float(abs(force)) if float(force) > 0.0 else native_force
+    if not np.isfinite(kp) or kp <= 0.0 or not np.isfinite(f) or f <= 0.0:
+        return
 
     # General actuator (joint transmission, affine bias):
     #   tau = (kp*a)*ctrl + (kp*b) + (-kp)*q + (-kd)*qvel
