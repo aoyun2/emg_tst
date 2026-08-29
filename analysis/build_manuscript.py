@@ -674,9 +674,11 @@ RMSE spanned {deg(min(accuracy['mean_rmse_deg']), 2)}$^{{\circ}}$ to
 coefficient over that whole range is uninformative
 ($\rho={signed(accuracy['overall_spearman_rho'], 3)}$,
 $p={pval(accuracy['overall_p_value'])}$), because the relationship is not
-monotone. A two-segment fit places the turn at
+monotone. Searching the sampled levels for the best two-segment split places
+it between adjacent levels, at
 {deg(accuracy['breakpoint_rmse_deg'], 2)}$^{{\circ}}$ (95\% CI
-{ci(accuracy['breakpoint_95pct_ci'], 2)}$^{{\circ}}$).
+{ci(accuracy['breakpoint_95pct_ci'], 2)}$^{{\circ}}$); the split can therefore
+take only as many values as there are gaps between levels.
 
 Above that accuracy, worse prediction produces more simulated instability across
 the {accuracy['above_breakpoint']['n_levels']} levels in that segment (slope
@@ -687,10 +689,11 @@ Below it the sign inverts: models that are more accurate produce \emph{{more}} e
 instability across the {accuracy['below_breakpoint']['n_levels']} levels in that
 segment (slope {signed(accuracy['below_breakpoint']['slope_per_degree'], 5)},
 95\% CI {ci(accuracy['below_breakpoint']['slope_95pct_ci'], 5)}). Both intervals exclude
-zero under a bootstrap that resamples windows within every accuracy level, which
-is the level at which these data actually vary; the checkpoint means themselves
-are smooth by construction, so the rank correlation across levels does not rest
-on fourteen independent observations.
+zero under a bootstrap whose draws resample participants and carry each drawn
+participant's windows across every accuracy level, since the same windows are
+replayed at all of them; the checkpoint means themselves are smooth by
+construction, so the rank correlation across levels does not rest on fourteen
+independent observations.
 
 Commanding a matched clip's own recorded trajectory, which is the zero-error
 case, gave a mean excess instability of {signed(oracle_excess, 4)}~s over the
