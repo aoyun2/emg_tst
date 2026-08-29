@@ -75,6 +75,17 @@ def collect(runs: Path) -> dict[str, Any]:
     path_protocol = load(runs / "training_path" / "protocol.json")
     checkpoints = load(runs / "training_path" / "checkpoints" / "manifest.json")
     correlation = load(runs / "analysis" / "checkpoint_correlation.json")
+    panel_rows = (
+        (runs / "analysis" / "participant_primary.csv")
+        .read_text(encoding="utf-8").strip().splitlines()
+    )
+    _head = panel_rows[0].split(",")
+    _subject_col = next(i for i, h in enumerate(_head) if "subject" in h.lower())
+    _subjects = [r.split(",")[_subject_col] for r in panel_rows[1:] if r.strip()]
+    panel_participants = len(set(_subjects))
+    panel_repeats = sum(
+        1 for s in set(_subjects) if _subjects.count(s) > 1
+    )
     statistics = load(runs / "analysis" / "statistical_summary.json")
     kinematic_check = load(
         runs / "kinematic_input_check" / "kinematic_input_check.json"
@@ -98,6 +109,8 @@ def collect(runs: Path) -> dict[str, Any]:
         "kinematic_check": kinematic_check,
         "matching": matching,
         "oracle": oracle,
+        "panel_participants": panel_participants,
+        "panel_repeats": panel_repeats,
         "panel": panel,
         "physics_protocol": physics_protocol,
     }
@@ -191,6 +204,8 @@ def build(data: dict[str, Any]) -> str:
     dropoff = correlation["dropoff"]
     accuracy = correlation["accuracy_level"]
     panel = data["panel"]
+    panel_participants = data["panel_participants"]
+    panel_repeats = data["panel_repeats"]
     ORACLE_MAX_TRACKING_RMSE_DEG = float(
         data["physics_protocol"]["oracle_preflight"]["maximum_tracking_rmse_deg"]
     )
@@ -276,8 +291,9 @@ def build(data: dict[str, Any]) -> str:
 \begin{{document}}
 
 \title[Simulation of knee-angle prediction]{{Toward the use of simulated
-environments to evaluate sEMG-informed knee-angle prediction: RMSE predicts
-simulated walking instability only above a threshold accuracy}}
+environments to evaluate sEMG-informed knee-angle prediction: RMSE tracks
+simulated walking instability above a threshold accuracy and inverts below
+it}}
 
 \author*[1]{{\fnm{{Aaron}} \sur{{Xiong}}}}
 \affil*[1]{{\orgname{{Spring Branch Academic Institute}}, \city{{Houston}}, \state{{Texas}}, \country{{United States}}}}
@@ -324,8 +340,13 @@ the relationship inverted
 {signed(accuracy['below_breakpoint']['slope_per_degree'], 5)}, 95\% CI
 {ci(accuracy['below_breakpoint']['slope_95pct_ci'], 5)}).
 
-\textbf{{Conclusions:}} Prediction RMSE predicted simulated walking outcome only
-above roughly {deg(accuracy['breakpoint_rmse_deg'], 0)}$^{{\circ}}$. Below that the
+\textbf{{Conclusions:}} Prediction RMSE tracked the simulated walking outcome
+above roughly {deg(accuracy['breakpoint_rmse_deg'], 0)}$^{{\circ}}$ and inverted
+below it, so the two are related across the whole sampled range rather than
+only part of it. The sEMG correction itself, which improved prediction, did not
+detectably change the simulated outcome
+({signed(physics['mean'], 4)}~s, 95\% CI {ci(physics['ci_95'], 4)};
+$p={pval(physics['p_two_sided'])}$). Below the split the
 relationship reversed, because a partially fitted model regresses toward the
 participant mean and so commands a flatter trajectory that moves the knee less
 than the recorded motion does. A converged predictor therefore sits
@@ -411,8 +432,9 @@ $n={ablation['participant_count']}$ participants, S031--S120, referred to below
 as the confirmation cohort. Within each
 participant, trials 1--3 were used to fit the model and to compute the mean and
 standard deviation of that participant's twelve sEMG channels and knee angle,
-which standardize the inputs and the target. Trial 5 was held out and used for
-neither purpose.
+which standardize the inputs and the target. Trial 4 was reserved for checking
+the fit during development and is not reported. Trial 5 was held out and used
+for neither purpose, and is the trial every reported number comes from.
 
 Each participant contributed one value to every analysis: the mean error over
 that participant's trial 5 \cite{{roberts2017}}.
@@ -470,7 +492,7 @@ absolute kinematic residual from trials 1--3.
 \subsection{{Attributing the improvement to sEMG}}
 
 Because penalties were fixed on a separate development cohort and every model was
-scored on a held-out later trial from held-out participants, added capacity that
+scored on a later trial that no fit had seen, added capacity that
 fitted noise would raise held-out error rather than lower it. As a
 further check, three surrogate conditions repeated the whole confirmation fit with
 the sEMG replaced by a signal preserving its statistics but not its correspondence
@@ -521,7 +543,10 @@ spanned {deg(path_protocol['train_rmse_first_deg'], 2)}$^{{\circ}}$ to
 The fixed physics panel was drawn from confirmation trial 5 before matching or
 simulation outcomes were known. A seeded participant-balanced procedure selected
 {pooled['n_windows']} one-second windows, giving each eligible participant one
-window before assigning a second. Prediction error was not used for selection.
+window before assigning a second, so the panel draws on
+{panel_participants} participants, of whom {panel_repeats} contribute two
+windows. Prediction error was not used for selection, and the analyses below
+resample participants rather than windows for that reason.
 
 Each query was matched against the whole MoCapAct expert bank
 \cite{{wagener2022}}, which supplies short motion-capture clips, termed snippets,
@@ -601,7 +626,10 @@ matched reference already is,
 so the reported outcome is excess instability, $I'=I_{{\mathrm{{PRED}}}}-I_{{\mathrm{{REF}}}}$,
 measured against each window's own paired reference. The index is derived from
 the XCoM margin, is specific to this study, and has not been validated as a
-clinical stability or fall-risk measure.
+clinical stability or fall-risk measure. It falls whenever the commanded
+trajectory perturbs the body less, which a trajectory that moves the knee less
+than the recording also does, so a smoother or flatter command scores well
+without necessarily being better gait.
 
 \subsection{{Correlation study}}
 
@@ -619,6 +647,15 @@ test, which removes matched motion, snippet, and initial state as sources of
 variation. \emph{{Pooled}} uses every checkpoint--window pair with a window-level
 cluster bootstrap, since each window recurs once per checkpoint.
 
+The two-segment description of the accuracy--instability curve was not
+prespecified. It was chosen after plotting the checkpoint means, on seeing that
+a single monotone coefficient did not describe them, and is therefore
+exploratory: it reports where the sampled association changes sign rather than
+testing a hypothesis fixed in advance. Its split is found by trying every
+position between adjacent levels and keeping the one with the smallest combined
+residual sum of squares, and its interval comes from a bootstrap that resamples
+participants and carries each drawn participant across every checkpoint.
+
 \section{{Results}}\label{{sec:results}}
 
 \subsection{{Prediction accuracy}}
@@ -632,12 +669,15 @@ paired $t({controls['conditions']['identity']['paired_t']['df']})={controls['con
 {ablation['positive_participants']} of {ablation['participant_count']}
 participants improved.
 
-In the timing control, moving the same sEMG history 500~ms earlier
-changed participant RMSE by {deg(aligned['mean_improvement_deg'], 3)}$^{{\circ}}$
+The timing control is computed on the
+{statistics['temporal_control']['aligned_vs_lagged']['paired_t']['df'] + 1} participants
+whose trials contain a row 500~ms earlier for every target row, so the shifted
+and aligned models are scored on identical data. Moving the same sEMG history
+500~ms earlier changed participant RMSE by {deg(aligned['mean_improvement_deg'], 3)}$^{{\circ}}$
 relative to the aligned model (95\% CI
 {ci(aligned['bootstrap_95pct_ci_deg'], 3)}$^{{\circ}}$;
 $t({statistics['temporal_control']['aligned_vs_lagged']['paired_t']['df']})={statistics['temporal_control']['aligned_vs_lagged']['paired_t']['t']:.2f}$, $p={pval(statistics['temporal_control']['aligned_vs_lagged']['paired_t']['p_two_sided'])}$). Three surrogate
-controls are reported in Supplementary Table~\ref{{tab:controls}}.
+controls are reported in the additional file, Table~\ref{{tab:controls}}.
 {surrogate_sentence}.
 
 
@@ -781,6 +821,10 @@ The mechanism behind the inversion does not imply that accuracy is undesirable.
 It indicates that the mapping from accuracy to whole-body behavior
 is not monotone, and that the quantity being minimized during training is not the
 quantity that determines stability once the prediction is placed in a body.
+Moving along the training path changes the amplitude, smoothness, phase and bias
+of the predicted trajectory together, and RMSE is a summary of all of them, so
+what is reported here is an association along one model's path rather than an
+effect of prediction error considered on its own.
 
 The sEMG correction improved held-out prediction, and that improvement survived
 three surrogate controls which preserved the signal's amplitude, spectral, and
@@ -909,7 +953,12 @@ relationship whether or not one exists.
 The sEMG correction produced a small improvement in later-trial knee-angle
 prediction that survived three surrogate controls, and is therefore attributable to
 signal content rather than to added model capacity. The predictor evaluated in
-simulation draws on genuine myoelectric information.
+simulation draws on genuine myoelectric information. That improvement did not
+carry through to the simulated outcome: against the same panel and the same
+paired references, the residual-fusion and no-sEMG conditions differed by
+{signed(physics['mean'], 4)}~s in excess instability (95\% CI
+{ci(physics['ci_95'], 4)}; $p={pval(physics['p_two_sided'])}$), which is the same
+point the accuracy range makes, measured directly.
 
 \backmatter
 
@@ -946,7 +995,7 @@ comparison is conservative toward the surrounding-body arm.
 
 The reported ablation removes the sEMG correction from a model whose penalties
 were fixed on a separate development cohort and whose scores come from a held-out
-later trial of held-out participants. Under that design, extra fitted capacity
+later trial that no fit had seen. Under that design, extra fitted capacity
 raises held-out error rather than lowering it, so the comparison already speaks to
 sEMG rather than to model size. The surrogates below are a further check against
 subtler possibilities, such as an sEMG channel correlating with the target through
