@@ -355,8 +355,9 @@ In the timing control, moving the same sEMG history 500~ms earlier
 changed participant RMSE by -0.085$^{\circ}$
 relative to the aligned model (95\% CI
 -0.202 to 0.030$^{\circ}$;
-$t(65)=-1.42$, $p=0.160$). The surrogate controls
-(Supplementary Table~\ref{tab:controls}) gave the same result. The recorded signal outperformed all three surrogates in paired within-participant comparisons (smallest margin 0.288$^{\circ}$, all $p\leq1.68\times10^{-7}$).
+$t(65)=-1.42$, $p=0.160$). Three surrogate
+controls are reported in Supplementary Table~\ref{tab:controls}.
+The recorded signal outperformed all three surrogates in paired within-participant comparisons (smallest margin 0.288$^{\circ}$, all $p\leq1.68\times10^{-7}$).
 
 
 
@@ -485,7 +486,7 @@ error, a less accurate model produced a less stable simulated walker, and the
 slope is positive across that region. Below that point the
 relationship inverted, so that further improvements in accuracy were accompanied by
 slightly more excess instability rather than less. RMSE is therefore not a general
-proxy for physical behavior. It behaves as a proxy within a band, and the boundary
+proxy for the simulated outcome. It behaves as a proxy within a band, and the boundary
 of that band falls inside the range of accuracies that contemporary models occupy.
 
 That last point is what gives the result practical weight. The most accurate model
@@ -576,7 +577,7 @@ outcomes also depend on motion-match quality, which is why match errors are trea
 as covariates, and the conclusion holds for this evaluation
 rather than for every application of the model.
 
-Finally, the drop-off estimate is a descriptive two-segment fit over the sampled
+Finally, the turn is located by a descriptive two-segment fit over the sampled
 accuracy levels. It locates where the sampled association changes; it is not a
 changepoint test with its own error rate, and the unsampled interval between
 checkpoints does not define a safety threshold.
@@ -618,7 +619,7 @@ produced a less stable simulated walker. Below that point the relationship
 inverted, because a partially fitted model regresses toward the participant mean
 and so commands a flatter trajectory that moves the knee less than the recorded
 motion does. Root-mean-square error therefore tracked
-physical behavior only above the turn, and the converged model evaluated here,
+simulated behavior only above the turn, and the converged model evaluated here,
 at
 5.09$^{\circ}$, sits below the turn.
 
@@ -667,7 +668,7 @@ With sEMG active, the surrounding-body model reached
 4.959$^{\circ}$ against
 4.748$^{\circ}$ for knee history.
 Both penalties were the ones selected for the knee-history configuration, so this
-comparison is conservative towards the surrounding-body arm.
+comparison is conservative toward the surrounding-body arm.
 
 \bmhead{Supplementary analysis: sEMG surrogate controls}
 

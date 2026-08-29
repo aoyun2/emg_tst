@@ -227,8 +227,8 @@ def build(data: dict[str, Any]) -> str:
         )
         if dropoff.get("estimated") and excluding
         else (
-            "No accuracy level produced an interval excluding zero, so no drop-off "
-            "point is estimated: a two-segment fit over checkpoints that are "
+            "No accuracy level produced an interval excluding zero, so no turn "
+            "is estimated: a two-segment fit over checkpoints that are "
             "individually indistinguishable from zero would be describing noise."
         )
     )
@@ -620,8 +620,9 @@ In the timing control, moving the same sEMG history 500~ms earlier
 changed participant RMSE by {deg(aligned['mean_improvement_deg'], 3)}$^{{\circ}}$
 relative to the aligned model (95\% CI
 {ci(aligned['bootstrap_95pct_ci_deg'], 3)}$^{{\circ}}$;
-$t({statistics['temporal_control']['aligned_vs_lagged']['paired_t']['df']})={statistics['temporal_control']['aligned_vs_lagged']['paired_t']['t']:.2f}$, $p={pval(statistics['temporal_control']['aligned_vs_lagged']['paired_t']['p_two_sided'])}$). The surrogate controls
-(Supplementary Table~\ref{{tab:controls}}) gave the same result. {surrogate_sentence}.
+$t({statistics['temporal_control']['aligned_vs_lagged']['paired_t']['df']})={statistics['temporal_control']['aligned_vs_lagged']['paired_t']['t']:.2f}$, $p={pval(statistics['temporal_control']['aligned_vs_lagged']['paired_t']['p_two_sided'])}$). Three surrogate
+controls are reported in Supplementary Table~\ref{{tab:controls}}.
+{surrogate_sentence}.
 
 
 
@@ -737,7 +738,7 @@ error, a less accurate model produced a less stable simulated walker, and the
 slope is positive across that region. Below that point the
 relationship inverted, so that further improvements in accuracy were accompanied by
 slightly more excess instability rather than less. RMSE is therefore not a general
-proxy for physical behavior. It behaves as a proxy within a band, and the boundary
+proxy for the simulated outcome. It behaves as a proxy within a band, and the boundary
 of that band falls inside the range of accuracies that contemporary models occupy.
 
 That last point is what gives the result practical weight. The most accurate model
@@ -828,7 +829,7 @@ outcomes also depend on motion-match quality, which is why match errors are trea
 as covariates, and the conclusion holds for this evaluation
 rather than for every application of the model.
 
-Finally, the drop-off estimate is a descriptive two-segment fit over the sampled
+Finally, the turn is located by a descriptive two-segment fit over the sampled
 accuracy levels. It locates where the sampled association changes; it is not a
 changepoint test with its own error rate, and the unsampled interval between
 checkpoints does not define a safety threshold.
@@ -870,7 +871,7 @@ produced a less stable simulated walker. Below that point the relationship
 inverted, because a partially fitted model regresses toward the participant mean
 and so commands a flatter trajectory that moves the knee less than the recorded
 motion does. Root-mean-square error therefore tracked
-physical behavior only above the turn, and the converged model evaluated here,
+simulated behavior only above the turn, and the converged model evaluated here,
 at
 {deg(min(accuracy['mean_rmse_deg']), 2)}$^{{\circ}}$, sits below the turn.
 
@@ -919,7 +920,7 @@ With sEMG active, the surrounding-body model reached
 {deg(body_arm['fused_mean_participant_rmse_deg'])}$^{{\circ}}$ against
 {deg(knee_arm['fused_mean_participant_rmse_deg'])}$^{{\circ}}$ for knee history.
 Both penalties were the ones selected for the knee-history configuration, so this
-comparison is conservative towards the surrounding-body arm.
+comparison is conservative toward the surrounding-body arm.
 
 \bmhead{{Supplementary analysis: sEMG surrogate controls}}
 
