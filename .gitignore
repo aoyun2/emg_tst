@@ -52,3 +52,9 @@ data*.npy
 Thumbs.db
 .idea/
 .vscode/
+
+# Manuscript build products (regenerate with analysis/build_manuscript.py,
+# analysis/gait120_figures.py and the manuscript/make_*.py scripts)
+manuscript/main.pdf
+manuscript/*.zip
+manuscript/*.docx
