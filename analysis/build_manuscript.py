@@ -324,8 +324,9 @@ the relationship inverted
 \textbf{{Conclusions:}} Prediction RMSE predicted simulated walking outcome only
 above roughly {deg(accuracy['breakpoint_rmse_deg'], 0)}$^{{\circ}}$. Below that the
 relationship reversed, because substituting the knee perturbs the body even when
-the substituted trajectory is correct, and because a less accurate model commands
-a gentler trajectory than the recorded one. A converged predictor therefore sits
+the substituted trajectory is correct, and because a partially fitted model
+regresses toward the participant mean, so it commands a flatter trajectory that
+moves the knee less than the recorded motion does. A converged predictor therefore sits
 in the regime where lower RMSE no longer implies better simulated behaviour.}}
 
 \keywords{{surface electromyography, knee-angle prediction, prosthetic control,
@@ -989,8 +990,9 @@ over part of the accuracy range only. Above
 {ci(accuracy['breakpoint_95pct_ci'], 2)}$^{{\circ}}$) a less accurate model
 produced a less stable simulated walker. Below that point the relationship
 inverted, because substituting the knee perturbs the body even when the
-substituted trajectory is correct, and because a partially fitted model commands a
-gentler trajectory than the recorded one. Root-mean-square error is therefore a
+substituted trajectory is correct, and because a partially fitted model
+regresses toward the participant mean, so it commands a flatter trajectory that
+moves the knee less than the recorded motion does. Root-mean-square error is therefore a
 proxy for physical behaviour within a band rather than in general, and the
 converged model evaluated here, at
 {deg(min(accuracy['mean_rmse_deg']), 2)}$^{{\circ}}$, sits below that band.
