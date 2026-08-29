@@ -275,7 +275,7 @@ def build(data: dict[str, Any]) -> str:
 
 \begin{{document}}
 
-\title[Simulation of knee-angle prediction]{{Towards the use of simulated
+\title[Simulation of knee-angle prediction]{{Toward the use of simulated
 environments to evaluate sEMG-informed knee-angle prediction: RMSE predicts
 simulated walking instability only above a threshold accuracy}}
 
