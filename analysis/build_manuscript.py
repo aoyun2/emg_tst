@@ -146,7 +146,7 @@ def control_table(data: dict[str, Any]) -> str:
             share = f"{contrast['surrogate_share_of_real_effect']:.2f}"
             paired = (
                 f"{signed(contrast['mean_deg'], 3)} "
-                f"(${prel(contrast['two_sided_randomization_p'])}$)"
+                f"($p={pval(contrast['paired_t']['p_two_sided'])}$)"
             )
         rows.append(
             " & ".join(
@@ -154,9 +154,7 @@ def control_table(data: dict[str, Any]) -> str:
                     label,
                     signed(row["mean_improvement_deg"], 3),
                     ci(row["bootstrap_95pct_ci_deg"], 3),
-                    f"${prel(row['two_sided_randomization_p'])[1:]}$"
-                    if prel(row['two_sided_randomization_p']).startswith("p<")
-                    else f"${pval(row['two_sided_randomization_p'])}$",
+                    f"${pval(row['paired_t']['p_two_sided'])}$",
                     share,
                     paired,
                 ]
@@ -191,13 +189,13 @@ def build(data: dict[str, Any]) -> str:
     surrogate_verdict = controls["verdict"]
     contrasts = surrogate_verdict["recorded_vs_surrogate"]
     beaten = surrogate_verdict["surrogates_beaten_by_recorded_semg"]
-    worst_p = max(c["two_sided_randomization_p"] for c in contrasts.values())
+    worst_p = max(c["paired_t"]["p_two_sided"] for c in contrasts.values())
     smallest_margin = min(c["mean_deg"] for c in contrasts.values())
     surrogate_sentence = (
         (
             f"The recorded signal outperformed all {len(contrasts)} surrogates in paired "
             f"within-participant comparisons (smallest margin "
-            f"{deg(smallest_margin, 3)}$^{{\\circ}}$, all ${prel(worst_p)}$)"
+            f"{deg(smallest_margin, 3)}$^{{\\circ}}$, all $p\\leq{pval(worst_p)}$)"
         )
         if len(beaten) == len(contrasts)
         else (
@@ -245,7 +243,7 @@ def build(data: dict[str, Any]) -> str:
             f"averaged {signed(within['mean_spearman_rho_fisher_back_transformed'], 3)} "
             f"(95\\% CI {ci(within['ci_95pct_rho'], 3)}; "
             f"$t({within['n_windows'] - 1})={within['t_statistic']:.2f}$, "
-            f"${prel(within['p_value_two_sided'])}$), with "
+            f"$p={pval(within['p_value_two_sided'])}$), with "
             f"{within['positive_windows']} of {within['n_windows']} windows positive."
         )
         if not within.get("insufficient")
@@ -300,7 +298,7 @@ gradient-descent training path, spanning
 \textbf{{Results:}} Mean participant RMSE was
 {deg(ablation['fused_mean_participant_rmse_deg'])}$^{{\circ}}$ with residual fusion
 against {deg(ablation['no_emg_mean_participant_rmse_deg'])}$^{{\circ}}$ without sEMG
-(${prel(ablation['two_sided_randomization_p'])}$;
+($t({controls['conditions']['identity']['paired_t']['df']})={controls['conditions']['identity']['paired_t']['t']:.2f}$, $p={pval(controls['conditions']['identity']['paired_t']['p_two_sided'])}$;
 {ablation['positive_participants']} of {ablation['participant_count']}
 participants improved).
 
@@ -567,12 +565,11 @@ fitted noise would raise held-out error rather than lower it. The ablation is
 therefore already informative about sEMG rather than about model size. As a
 further check, three surrogate conditions repeated the whole confirmation fit with
 the sEMG replaced by a signal preserving its statistics but not its correspondence
-with the knee; these are reported in the supplementary analysis. Significance for
-every paired comparison came from a two-sided sign-flip randomisation test on the
-per-participant differences. Under the null of no effect the sign of each
-participant's difference is arbitrary, so reversing signs at random over
-$10^{{6}}$ draws gives the distribution of the mean difference expected by
-chance, without assuming those differences are normally distributed.
+with the knee; these are reported in the supplementary analysis. Every paired
+comparison was tested with a two-sided paired $t$-test on the per-participant
+differences, and a sign-flip randomisation test over $10^{{6}}$ draws was
+retained as a distribution-free check. The two agree throughout; they are
+reported together in the supplementary analysis.
 
 A separate timing control shifted the same sEMG history 500~ms earlier within each
 continuous trial, evaluating aligned and shifted models on identical target rows.
@@ -685,7 +682,7 @@ Mean participant RMSE on the held-out trial was
 and {deg(ablation['no_emg_mean_participant_rmse_deg'])}$^{{\circ}}$ without sEMG. The
 paired improvement was {deg(ablation['mean_improvement_deg'])}$^{{\circ}}$ (95\%
 bootstrap CI {ci(ablation['bootstrap_95pct_ci_deg'])}$^{{\circ}}$; two-sided
-randomisation ${prel(ablation['two_sided_randomization_p'])}$), and
+paired $t({controls['conditions']['identity']['paired_t']['df']})={controls['conditions']['identity']['paired_t']['t']:.2f}$, $p={pval(controls['conditions']['identity']['paired_t']['p_two_sided'])}$), and
 {ablation['positive_participants']} of {ablation['participant_count']}
 participants improved.
 
@@ -693,7 +690,7 @@ In the timing control, moving the same sEMG history 500~ms earlier
 changed participant RMSE by {deg(aligned['mean_improvement_deg'], 3)}$^{{\circ}}$
 relative to the aligned model (95\% CI
 {ci(aligned['bootstrap_95pct_ci_deg'], 3)}$^{{\circ}}$;
-${prel(aligned['two_sided_randomization_p'])}$). The surrogate controls
+$t({statistics['temporal_control']['aligned_vs_lagged']['paired_t']['df']})={statistics['temporal_control']['aligned_vs_lagged']['paired_t']['t']:.2f}$, $p={pval(statistics['temporal_control']['aligned_vs_lagged']['paired_t']['p_two_sided'])}$). The surrogate controls
 (Supplementary Table~\ref{{tab:controls}}) agreed. {surrogate_sentence}.
 
 
@@ -866,7 +863,7 @@ Comparing each window against itself does recover an association: holding the
 window fixed and varying only the model, a window became more unstable as its own
 prediction degraded
 ({signed(within['mean_spearman_rho_fisher_back_transformed'], 3)},
-95\% CI {ci(within['ci_95pct_rho'], 3)}, ${prel(within['p_value_two_sided'])}$,
+95\% CI {ci(within['ci_95pct_rho'], 3)}, $p={pval(within['p_value_two_sided'])}$,
 {within['positive_windows']} of {within['n_windows']} windows positive). The
 difference arises because between-window variation in excess instability is
 dominated by which motion a window was matched to, where in the gait cycle that
@@ -1023,9 +1020,9 @@ participant-level reduction in held-out RMSE relative to the same fitted kinemat
 stage without a correction; positive favours the correction. Share is each
 surrogate's effect as a fraction of the recorded one. The final column is the
 paired within-participant margin by which the recorded signal beats that
-surrogate. Randomisation tests used $10^{{6}}$ draws, so $p<10^{{-6}}$ is the
-smallest value the test can return rather than a measured
-quantity.}}\label{{tab:controls}}
+surrogate. Both columns are two-sided paired $t$-tests on per-participant
+differences; a sign-flip randomisation test agrees with each to three decimal
+places.}}\label{{tab:controls}}
 \setlength{{\tabcolsep}}{{2.5pt}}
 \begin{{tabular}}{{lccccc}}
 \toprule

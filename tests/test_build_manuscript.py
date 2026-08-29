@@ -52,29 +52,26 @@ class FormatterTests(unittest.TestCase):
 
 
 class ControlTableTests(unittest.TestCase):
-    """Table 2 carries the surrogate comparison, including a floored p-value."""
+    """Table 2 reports paired t-tests, which are not bounded below."""
 
     @staticmethod
     def _data(identity_p: float) -> dict:
-        condition = {
-            "mean_improvement_deg": 0.3452,
-            "bootstrap_95pct_ci_deg": [0.25365, 0.43558],
-            "two_sided_randomization_p": identity_p,
-        }
-        surrogate = {
-            "mean_improvement_deg": 0.0577,
-            "bootstrap_95pct_ci_deg": [0.00477, 0.11329],
-            "two_sided_randomization_p": 0.03964,
-        }
-        contrast = {
-            "mean_deg": 0.2876,
-            "two_sided_randomization_p": 1e-6,
-            "surrogate_share_of_real_effect": 0.17,
-        }
+        def entry(mean: float, p: float, t: float) -> dict:
+            return {
+                "mean_improvement_deg": mean,
+                "mean_deg": mean,
+                "bootstrap_95pct_ci_deg": [mean - 0.09, mean + 0.09],
+                "two_sided_randomization_p": max(p, 1e-6),
+                "surrogate_share_of_real_effect": 0.17,
+                "paired_t": {"t": t, "df": 89, "p_two_sided": p},
+            }
+
+        surrogate = entry(0.0577, 0.0412, 2.07)
+        contrast = entry(0.2876, 1.68e-7, 5.68)
         return {
             "controls": {
                 "conditions": {
-                    "identity": condition,
+                    "identity": entry(0.3452, identity_p, 7.39),
                     "circular_shift": surrogate,
                     "participant_swap": surrogate,
                     "phase_randomized": surrogate,
@@ -89,21 +86,26 @@ class ControlTableTests(unittest.TestCase):
             }
         }
 
-    def test_floored_p_keeps_its_inequality_in_the_table(self) -> None:
-        # A slice that trimmed one character too many once rendered this as
-        # "$10^{-6}$", turning a bound into a claimed measurement.
-        table = bm.control_table(self._data(1e-6))
-        self.assertIn("$<10^{-6}$", table)
-        self.assertNotIn("& $10^{-6}$ &", table)
+    def test_small_p_is_not_censored_to_the_randomisation_floor(self) -> None:
+        # Routing a t-test p-value through the randomisation formatter once
+        # reported 7.5e-11 as "p < 10^-6", discarding five orders of magnitude.
+        table = bm.control_table(self._data(7.5e-11))
+        self.assertIn(r"10^{-11}", table)
+        self.assertNotIn("<10^{-6}", table)
+        self.assertNotIn(r"$10^{-6}$", table)
 
-    def test_resolvable_p_is_rendered_without_an_inequality(self) -> None:
+    def test_contrast_margin_reports_its_own_magnitude(self) -> None:
+        table = bm.control_table(self._data(7.5e-11))
+        self.assertIn(r"10^{-7}", table)
+
+    def test_moderate_p_renders_as_a_decimal(self) -> None:
         table = bm.control_table(self._data(0.02))
         recorded = [row for row in table.splitlines() if "Recorded sEMG" in row][0]
         self.assertIn("0.020", recorded)
-        self.assertNotIn("<", recorded)
+        self.assertNotIn("times", recorded)
 
     def test_every_condition_appears_once(self) -> None:
-        table = bm.control_table(self._data(1e-6))
+        table = bm.control_table(self._data(7.5e-11))
         for label in bm.CONTROL_LABELS.values():
             self.assertEqual(table.count(label), 1, label)
 

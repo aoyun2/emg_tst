@@ -43,7 +43,7 @@ gradient-descent training path, spanning
 \textbf{Results:} Mean participant RMSE was
 4.748$^{\circ}$ with residual fusion
 against 5.093$^{\circ}$ without sEMG
-($p<10^{-6}$;
+($t(89)=7.39$, $p=7.50\times10^{-11}$;
 70 of 90
 participants improved).
 
@@ -310,12 +310,11 @@ fitted noise would raise held-out error rather than lower it. The ablation is
 therefore already informative about sEMG rather than about model size. As a
 further check, three surrogate conditions repeated the whole confirmation fit with
 the sEMG replaced by a signal preserving its statistics but not its correspondence
-with the knee; these are reported in the supplementary analysis. Significance for
-every paired comparison came from a two-sided sign-flip randomisation test on the
-per-participant differences. Under the null of no effect the sign of each
-participant's difference is arbitrary, so reversing signs at random over
-$10^{6}$ draws gives the distribution of the mean difference expected by
-chance, without assuming those differences are normally distributed.
+with the knee; these are reported in the supplementary analysis. Every paired
+comparison was tested with a two-sided paired $t$-test on the per-participant
+differences, and a sign-flip randomisation test over $10^{6}$ draws was
+retained as a distribution-free check. The two agree throughout; they are
+reported together in the supplementary analysis.
 
 A separate timing control shifted the same sEMG history 500~ms earlier within each
 continuous trial, evaluating aligned and shifted models on identical target rows.
@@ -428,7 +427,7 @@ Mean participant RMSE on the held-out trial was
 and 5.093$^{\circ}$ without sEMG. The
 paired improvement was 0.345$^{\circ}$ (95\%
 bootstrap CI 0.254 to 0.436$^{\circ}$; two-sided
-randomisation $p<10^{-6}$), and
+paired $t(89)=7.39$, $p=7.50\times10^{-11}$), and
 70 of 90
 participants improved.
 
@@ -436,8 +435,8 @@ In the timing control, moving the same sEMG history 500~ms earlier
 changed participant RMSE by -0.085$^{\circ}$
 relative to the aligned model (95\% CI
 -0.202 to 0.030$^{\circ}$;
-$p=0.160$). The surrogate controls
-(Supplementary Table~\ref{tab:controls}) agreed. The recorded signal outperformed all 3 surrogates in paired within-participant comparisons (smallest margin 0.288$^{\circ}$, all $p<10^{-6}$).
+$t(65)=-1.42$, $p=0.160$). The surrogate controls
+(Supplementary Table~\ref{tab:controls}) agreed. The recorded signal outperformed all 3 surrogates in paired within-participant comparisons (smallest margin 0.288$^{\circ}$, all $p\leq1.68\times10^{-7}$).
 
 
 
@@ -771,7 +770,7 @@ indistinguishable from zero.
 Attribution is therefore judged by a paired within-participant contrast -- whether
 the recorded signal beats each surrogate for the same participant -- rather than
 by whether each surrogate independently fails a significance threshold, which a
-periodic-signal surrogate cannot be expected to do. The recorded signal outperformed all 3 surrogates in paired within-participant comparisons (smallest margin 0.288$^{\circ}$, all $p<10^{-6}$).
+periodic-signal surrogate cannot be expected to do. The recorded signal outperformed all 3 surrogates in paired within-participant comparisons (smallest margin 0.288$^{\circ}$, all $p\leq1.68\times10^{-7}$).
 
 \begin{table}[!htbp]
 \caption{sEMG ablation and its surrogate negative controls. Improvement is the
@@ -779,18 +778,18 @@ participant-level reduction in held-out RMSE relative to the same fitted kinemat
 stage without a correction; positive favours the correction. Share is each
 surrogate's effect as a fraction of the recorded one. The final column is the
 paired within-participant margin by which the recorded signal beats that
-surrogate. Randomisation tests used $10^{6}$ draws, so $p<10^{-6}$ is the
-smallest value the test can return rather than a measured
-quantity.}\label{tab:controls}
+surrogate. Both columns are two-sided paired $t$-tests on per-participant
+differences; a sign-flip randomisation test agrees with each to three decimal
+places.}\label{tab:controls}
 \setlength{\tabcolsep}{2.5pt}
 \begin{tabular}{lccccc}
 \toprule
 Condition & Improvement ($^{\circ}$) & 95\% CI & $p$ & Share & Recorded $-$ surrogate ($^{\circ}$) \\
 \midrule
-Recorded sEMG & +0.345 & 0.254 to 0.436 & $<10^{-6}$ & --- & --- \\
-Circular shift & +0.058 & 0.005 to 0.113 & $0.040$ & 0.17 & +0.288 ($p<10^{-6}$) \\
-Participant swap & -0.011 & -0.048 to 0.026 & $0.557$ & -0.03 & +0.357 ($p<10^{-6}$) \\
-Phase randomized & -0.022 & -0.055 to 0.008 & $0.170$ & -0.07 & +0.368 ($p<10^{-6}$) \\
+Recorded sEMG & +0.345 & 0.254 to 0.436 & $7.50\times10^{-11}$ & --- & --- \\
+Circular shift & +0.058 & 0.005 to 0.113 & $0.041$ & 0.17 & +0.288 ($p=1.68\times10^{-7}$) \\
+Participant swap & -0.011 & -0.048 to 0.026 & $0.556$ & -0.03 & +0.357 ($p=3.00\times10^{-10}$) \\
+Phase randomized & -0.022 & -0.055 to 0.008 & $0.167$ & -0.07 & +0.368 ($p=9.26\times10^{-12}$) \\
 \bottomrule
 \end{tabular}
 \end{table}

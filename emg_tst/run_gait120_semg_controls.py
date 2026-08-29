@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from scipy import stats
 
 import emg_tst.gait120_experiment as gait
 import emg_tst.run_gait120_residual_fusion as fusion
@@ -164,6 +165,34 @@ def _fit_and_score(
     return {"test": fused_metrics}, {"test": no_emg_metrics}
 
 
+def _paired_t_summary(effects: Any) -> dict[str, Any]:
+    """Paired t-test on per-participant differences, with its assumption checked."""
+    values = np.asarray(effects, dtype=np.float64).reshape(-1)
+    n = int(values.size)
+    result = stats.ttest_rel(values, np.zeros_like(values))
+    sd = float(np.std(values, ddof=1))
+    half = float(stats.t.ppf(0.975, df=n - 1) * sd / np.sqrt(n))
+    mean = float(np.mean(values))
+    shapiro = stats.shapiro(values) if 3 <= n <= 5000 else None
+    wilcoxon = stats.wilcoxon(values) if np.any(values != 0.0) else None
+    return {
+        "paired_t": {
+            "t": float(result.statistic),
+            "df": n - 1,
+            "p_two_sided": float(result.pvalue),
+            "mean_95pct_ci_deg": [mean - half, mean + half],
+            "cohen_dz": (mean / sd) if sd > 0.0 else float("nan"),
+        },
+        "normality": {
+            "shapiro_w": float(shapiro.statistic) if shapiro is not None else float("nan"),
+            "shapiro_p": float(shapiro.pvalue) if shapiro is not None else float("nan"),
+        },
+        "wilcoxon_p_two_sided": (
+            float(wilcoxon.pvalue) if wilcoxon is not None else float("nan")
+        ),
+    }
+
+
 def _summarize_effects(effects: np.ndarray, seed: int = SEED) -> dict[str, Any]:
     """Bootstrap interval and sign-flip randomization test for a paired vector."""
     effects = np.asarray(effects, dtype=np.float64).reshape(-1)
@@ -185,12 +214,41 @@ def _summarize_effects(effects: np.ndarray, seed: int = SEED) -> dict[str, Any]:
             np.sum(np.abs(np.mean(signs * effects[None, :], axis=1)) >= observed - 1.0e-15)
         )
         completed += draws
+    # Paired t-test on the same differences. It is the conventional test for this
+    # design and, unlike the randomisation test, is not bounded below by the draw
+    # count. Shapiro-Wilk is carried alongside so a reader can see whether its
+    # normality assumption holds, and Wilcoxon covers the case where it does not.
+    t_result = stats.ttest_rel(effects, np.zeros_like(effects))
+    n = int(effects.size)
+    sd = float(np.std(effects, ddof=1))
+    half = float(stats.t.ppf(0.975, df=n - 1) * sd / np.sqrt(n))
+    shapiro = stats.shapiro(effects) if 3 <= n <= 5000 else None
+    wilcoxon = stats.wilcoxon(effects) if np.any(effects != 0.0) else None
+
     return {
         "mean_deg": float(np.mean(effects)),
         "bootstrap_95pct_ci_deg": [float(lower), float(upper)],
+        "paired_t": {
+            "t": float(t_result.statistic),
+            "df": n - 1,
+            "p_two_sided": float(t_result.pvalue),
+            "mean_95pct_ci_deg": [
+                float(np.mean(effects) - half),
+                float(np.mean(effects) + half),
+            ],
+            "cohen_dz": float(np.mean(effects) / sd) if sd > 0.0 else float("nan"),
+        },
+        "normality": {
+            "shapiro_w": float(shapiro.statistic) if shapiro is not None else float("nan"),
+            "shapiro_p": float(shapiro.pvalue) if shapiro is not None else float("nan"),
+        },
+        "wilcoxon_p_two_sided": (
+            float(wilcoxon.pvalue) if wilcoxon is not None else float("nan")
+        ),
         "two_sided_randomization_p": float((exceed + 1.0) / (completed + 1.0)),
         "positive_participants": int(np.sum(effects > 0.0)),
-        "participant_count": int(effects.size),
+        "participant_count": n,
+        "effects_deg": [float(v) for v in effects],
     }
 
 
@@ -256,6 +314,9 @@ def main() -> None:
         )
         statistics = gait._paired_statistics(fused, no_emg, require_gate=True)
         by_subject[name] = _improvement_by_subject(statistics)
+        # The per-participant differences are dropped from the stored record, so
+        # the conventional paired test has to be taken while they are still here.
+        statistics.update(_paired_t_summary(statistics["improvement_deg"]))
         statistics.pop("improvement_deg", None)
         results[name] = statistics
         print(
