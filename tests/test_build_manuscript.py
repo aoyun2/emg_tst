@@ -141,9 +141,20 @@ class GeneratedManuscriptTests(unittest.TestCase):
             self.fail(f"unsubstituted placeholder: {suspect}")
 
     def test_window_counts_agree_across_the_paper(self) -> None:
+        # The panel size is quoted in several places and must agree everywhere.
+        # The check run before the panel uses its own count, stated where it is
+        # used; any third count means two places disagree about the panel.
+        panel = re.search(r"selected\s+(\d+)\s+one-second windows", self.tex)
+        self.assertIsNotNone(panel, "the methods no longer state the panel size")
+        allowed = {panel.group(1)}
+        check = re.search(r"(\d+) windows of a check run", self.tex)
+        if check is not None:
+            allowed.add(check.group(1))
         counts = set(re.findall(r"(\d+) windows", self.tex))
-        self.assertLessEqual(
-            len(counts), 1, f"paper quotes conflicting window counts: {counts}"
+        self.assertTrue(
+            counts <= allowed,
+            f"paper quotes a window count that is neither the panel nor the "
+            f"check run: {sorted(counts - allowed)}",
         )
 
     def test_the_complementary_analyses_are_counted_the_same_way_twice(self) -> None:
