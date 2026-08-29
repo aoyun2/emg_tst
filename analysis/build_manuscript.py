@@ -996,6 +996,30 @@ Condition & Improvement ($^{{\circ}}$) & 95\% CI & $p$ & Share & Margin ($^{{\ci
 \end{{tabular}}
 \end{{table}}
 
+\bmhead{{Ethics approval and consent to participate}}
+This work is a secondary analysis of publicly available, de-identified
+recordings and did not involve new human participants, so ethics approval was
+not required. Approval and participant consent for the original Gait120
+recordings are reported by the authors of that dataset \cite{{boo2025}}.
+
+\bmhead{{Consent for publication}}
+Not applicable.
+
+\bmhead{{Competing interests}}
+The author declares no competing interests.
+
+\bmhead{{Funding}}
+The author received no financial support for the research, authorship, or
+publication of this article.
+
+\bmhead{{Authors' contributions}}
+A.X. is the sole author. A.X. designed the study, wrote the prediction,
+simulation, and analysis code, carried out the analysis, interpreted the
+results, and wrote the manuscript.
+
+\bmhead{{Acknowledgements}}
+Not applicable.
+
 \bmhead{{Data availability}}
 Gait120 is available at \url{{https://doi.org/10.6084/m9.figshare.27677016}}
 \cite{{boo2025dataset}}. MoCapAct is available from its published release
