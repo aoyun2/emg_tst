@@ -237,11 +237,10 @@ The present study addresses the question by holding the evaluation panel fixed a
 varying the model instead. One fixed panel of walking windows is replayed at a
 series of accuracy levels sampled along a single model's own gradient-descent
 training path, with the predicted knee angle serving as the tracking target of the
-simulated joint throughout. Prediction accuracy thereby becomes an experimental
-variable spanning a wide range rather than a fixed property of a converged model,
-which allows the relationship between RMSE and simulated walking instability to be
-traced across that range: whether the two are related at all, and if so, over what
-portion of the accuracy range the relationship holds.
+simulated joint throughout. Prediction accuracy is therefore an experimental
+variable rather than a fixed property of a converged model. That makes it
+possible to ask whether RMSE and simulated walking instability are related at
+all, and if so, across which part of the accuracy range.
 
 \begin{figure}[!htbp]
 \centering
@@ -259,15 +258,17 @@ seven movement tasks \cite{boo2025,boo2025dataset}. Only level walking was used,
 that the prediction data and the MoCapAct reference bank represented the same
 general activity.
 
-Participants S001--S030 formed the development cohort used to select
-hyperparameters. The reported confirmation experiment used S031--S120
-($n=90$). Trials 1--3 supplied participant-specific
-scaling values and the pooled model-fitting data; trial 5 was the held-out test.
-This is a later-trial, participant-calibrated design, in which the fitted models
-used early trials from the same participants whose later trials were tested. The
-reported accuracy is therefore conditional on that calibration and is not
-transfer to a person who supplied none. The participant, not an individual prediction frame, was the unit of
-inference.
+Participants S001--S030 formed a development cohort used to choose
+hyperparameters. The reported experiment used the remaining
+$n=90$ participants, S031--S120. For each of them,
+trials 1--3 supplied the scaling values and the data the model was fitted on, and
+trial 5 was held out for testing.
+
+Every model was therefore fitted on earlier trials from the same participant it
+was later tested on. These accuracies are therefore what a model reaches after
+calibrating to an individual, not what it would reach for someone whose data it
+had never seen. Each participant contributed a single error
+value to every comparison.
 
 The released sEMG was sampled at 2000~Hz and the OpenSim joint angles at 100~Hz.
 Twelve right-leg sEMG channels were retained. Each was mean-centred, filtered with
@@ -365,10 +366,10 @@ matching knee error was 3.78$^{\circ}$
 (median 3.44$^{\circ}$) and mean thigh
 orientation RMS 4.10$^{\circ}$.
 
-In the prediction condition the model's predicted knee angle, mapped into the
-matched clip's convention by the constant offset and sign the match established,
-was the tracking target of a proportional-derivative override on the right knee
-actuator:
+In the prediction condition the model's predicted knee angle was the tracking
+target of a proportional-derivative override on the right knee actuator. The
+prediction was first mapped into the matched clip's convention using the constant
+offset and sign that the match established:
 
 \begin{equation}
 \tau=K_p(q_{\mathrm{des}}-q)+K_d(\dot q_{\mathrm{des}}-\dot q),
@@ -496,10 +497,10 @@ free even when the substituted trajectory is exactly right: commanding the match
 clip's own realised trajectory still changed fall risk by
 +0.042 on average. Excess instability therefore approaches that
 mechanism floor as prediction error vanishes, not zero. Second, a partially
-fitted linear model regresses toward the participant mean and so commands a
-gentler knee trajectory than the recorded one, which perturbs the body less than
-the true motion does; mean excess instability is correspondingly negative through
-the middle of the range, reaching
+fitted linear model regresses toward the participant mean, so it commands a
+gentler knee trajectory than the recorded one. A gentler trajectory perturbs the
+body less than the true motion does, and mean excess instability is
+correspondingly negative through the middle of the range, reaching
 -0.0247 score-seconds.
 
 Two secondary views are consistent with a real but small effect. Comparing windows
@@ -640,11 +641,10 @@ is not a suitable instrument for detecting it.
 \subsection{Limitations}
 
 The benchmark used able-bodied level walking rather than data from transfemoral
-prosthesis users, so it tests an evaluation framework on a proxy dataset. The
-design is participant-calibrated: fitted models used early trials from the same
-participants whose later trials were tested, and the reported accuracy is
-conditional on that calibration rather than on transfer to an uncalibrated
-wearer.
+prosthesis users, so it tests an evaluation framework on a proxy dataset. Each
+model was also fitted on earlier trials from the participant it was tested on, so
+these accuracies are what a calibrated model achieves, not what a wearer would get
+from a model that had never seen their data.
 
 The kinematic stage predicts from recorded knee-angle history. A microprocessor
 knee carries a joint angle encoder, so that channel would exist on a device, but
@@ -674,7 +674,7 @@ checkpoints does not define a safety threshold.
 \subsection{Future Work}
 
 The turn reported here was located with one model class on one evaluation
-pipeline, and the first question for further work is whether it moves. A
+design, and the first question for further work is whether it moves. A
 predictor with a different error structure, such as a recurrent or
 transformer model rather than a ridge pair, may distribute its residuals
 differently across the gait cycle and place its turn elsewhere. The
