@@ -159,6 +159,25 @@ class GeneratedManuscriptTests(unittest.TestCase):
             "the methods and the results count the same analyses differently",
         )
 
+    def test_headings_are_sentence_case(self) -> None:
+        # Springer Nature sets headings in sentence case. Proper nouns and
+        # initialisms keep their capitals, so only ordinary words are checked.
+        allowed = {
+            "EMG", "sEMG", "RMSE", "MuJoCo", "MoCapAct", "CNN", "LSTM", "IMU",
+            "XCoM", "Gait120", "Prediction", "Spearman", "Frisch", "Waugh",
+            "Lovell", "Methods", "Results", "Discussion", "Conclusion",
+            "Introduction", "Limitations",
+        }
+        for heading in re.findall(r"\\(?:sub)?section\*?\{([^}]*)\}", self.tex):
+            words = re.findall(r"[A-Za-z][\w-]*", heading)
+            for word in words[1:]:
+                if word in allowed or word.isupper():
+                    continue
+                self.assertFalse(
+                    word[0].isupper(),
+                    f"heading is not sentence case: {heading!r} (word {word!r})",
+                )
+
     def test_every_label_sits_inside_a_reference_command(self) -> None:
         # A command written into a non-raw Python string loses its backslash
         # and the letter after it, so "\\ref{sec:future}" prints as
