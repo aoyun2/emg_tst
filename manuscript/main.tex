@@ -258,10 +258,12 @@ simulation outcomes were known. A seeded participant-balanced procedure selected
 80 one-second windows, giving each eligible participant one
 window before assigning a second. Prediction error was not used for selection.
 
-Each query was matched to a level-walking reference from MoCapAct
+Each query was matched against the whole MoCapAct expert bank
 \cite{wagener2022}, which supplies short motion-capture clips, termed snippets,
 and for each one a policy trained to reproduce that clip in simulation, termed
-its expert policy. Candidate snippets were aligned by a constant knee offset and
+its expert policy. No motion label restricted the candidates, since the released
+snippets carry none; a match was selected on knee-trajectory agreement alone,
+and the agreement achieved is reported below and carried as a covariate. Candidate snippets were aligned by a constant knee offset and
 either sign convention, without amplitude scaling. Knee RMSE determined the match
 rank; the RMS geodesic angle between the query and candidate right-thigh
 orientations was retained as a match-quality covariate. Mean
