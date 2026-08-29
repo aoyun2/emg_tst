@@ -671,6 +671,31 @@ accuracy levels. It locates where the sampled association changes; it is not a
 changepoint test with its own error rate, and the unsampled interval between
 checkpoints does not define a safety threshold.
 
+\subsection{Future Work}
+
+The turn reported here was located with one model class on one evaluation
+pipeline, and the first question for further work is whether it moves. A
+predictor with a different error structure, such as a recurrent or
+transformer model rather than a ridge pair, may distribute its residuals
+differently across the gait cycle and place its turn elsewhere. The
+training-path construction used here would locate that turn in the same way,
+since it requires only a model whose accuracy can be varied continuously.
+
+A second extension would be to move from able-bodied public recordings to data
+from prosthetic users while keeping the paired reference and prediction
+structure intact. That would test the framework in a setting closer to real
+conditions, where the kinematic history available to the predictor is produced
+by a device rather than by an intact knee, and where the distribution of that
+history differs from the one used here.
+
+Future work should also examine whether more phase-sensitive summaries of
+prediction error, such as stance-weighted RMSE or error aligned to support
+transitions, track simulated instability more closely than window-level RMSE
+does. The present result does not show that every summary of prediction error
+behaves this way. It shows that RMSE, which is the summary the field reports,
+stops tracking simulated behaviour below roughly
+13$^{\circ}$.
+
 \section{Conclusion}\label{sec:conclusion}
 
 Replaying one fixed panel of walking windows at
@@ -781,12 +806,12 @@ differences.}\label{tab:controls}
 \setlength{\tabcolsep}{2.5pt}
 \begin{tabular}{lccccc}
 \toprule
-Condition & Improvement ($^{\circ}$) & 95\% CI & $p$ & Share & Recorded $-$ surrogate ($^{\circ}$) \\
+Condition & Improvement ($^{\circ}$) & 95\% CI & $p$ & Share & Margin ($^{\circ}$) \\
 \midrule
 Recorded sEMG & +0.345 & 0.254 to 0.436 & $7.50\times10^{-11}$ & --- & --- \\
-Circular shift & +0.058 & 0.005 to 0.113 & $0.041$ & 0.17 & +0.288 ($p=1.68\times10^{-7}$) \\
-Participant swap & -0.011 & -0.048 to 0.026 & $0.556$ & -0.03 & +0.357 ($p=3.00\times10^{-10}$) \\
-Phase randomized & -0.022 & -0.055 to 0.008 & $0.167$ & -0.07 & +0.368 ($p=9.26\times10^{-12}$) \\
+Circular shift & +0.058 & 0.005 to 0.113 & $0.041$ & 0.17 & +0.288 \\
+Participant swap & -0.011 & -0.048 to 0.026 & $0.556$ & -0.03 & +0.357 \\
+Phase randomized & -0.022 & -0.055 to 0.008 & $0.167$ & -0.07 & +0.368 \\
 \bottomrule
 \end{tabular}
 \end{table}

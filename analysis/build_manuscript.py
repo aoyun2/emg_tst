@@ -144,10 +144,7 @@ def control_table(data: dict[str, Any]) -> str:
         else:
             contrast = contrasts[key]
             share = f"{contrast['surrogate_share_of_real_effect']:.2f}"
-            paired = (
-                f"{signed(contrast['mean_deg'], 3)} "
-                f"($p={pval(contrast['paired_t']['p_two_sided'])}$)"
-            )
+            paired = signed(contrast["mean_deg"], 3)
         rows.append(
             " & ".join(
                 [
@@ -913,6 +910,31 @@ accuracy levels. It locates where the sampled association changes; it is not a
 changepoint test with its own error rate, and the unsampled interval between
 checkpoints does not define a safety threshold.
 
+\subsection{{Future Work}}
+
+The turn reported here was located with one model class on one evaluation
+pipeline, and the first question for further work is whether it moves. A
+predictor with a different error structure, such as a recurrent or
+transformer model rather than a ridge pair, may distribute its residuals
+differently across the gait cycle and place its turn elsewhere. The
+training-path construction used here would locate that turn in the same way,
+since it requires only a model whose accuracy can be varied continuously.
+
+A second extension would be to move from able-bodied public recordings to data
+from prosthetic users while keeping the paired reference and prediction
+structure intact. That would test the framework in a setting closer to real
+conditions, where the kinematic history available to the predictor is produced
+by a device rather than by an intact knee, and where the distribution of that
+history differs from the one used here.
+
+Future work should also examine whether more phase-sensitive summaries of
+prediction error, such as stance-weighted RMSE or error aligned to support
+transitions, track simulated instability more closely than window-level RMSE
+does. The present result does not show that every summary of prediction error
+behaves this way. It shows that RMSE, which is the summary the field reports,
+stops tracking simulated behaviour below roughly
+{deg(accuracy['breakpoint_rmse_deg'], 0)}$^{{\circ}}$.
+
 \section{{Conclusion}}\label{{sec:conclusion}}
 
 Replaying one fixed panel of walking windows at
@@ -1023,7 +1045,7 @@ differences.}}\label{{tab:controls}}
 \setlength{{\tabcolsep}}{{2.5pt}}
 \begin{{tabular}}{{lccccc}}
 \toprule
-Condition & Improvement ($^{{\circ}}$) & 95\% CI & $p$ & Share & Recorded $-$ surrogate ($^{{\circ}}$) \\
+Condition & Improvement ($^{{\circ}}$) & 95\% CI & $p$ & Share & Margin ($^{{\circ}}$) \\
 \midrule
 {control_table(data)}
 \bottomrule
