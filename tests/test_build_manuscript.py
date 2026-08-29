@@ -94,9 +94,11 @@ class ControlTableTests(unittest.TestCase):
         self.assertNotIn("<10^{-6}", table)
         self.assertNotIn(r"$10^{-6}$", table)
 
-    def test_contrast_margin_reports_its_own_magnitude(self) -> None:
+    def test_margin_column_carries_the_margin(self) -> None:
+        # The column reports the paired margin; its p-value is given in the text,
+        # where it does not push the table past the text block.
         table = bm.control_table(self._data(7.5e-11))
-        self.assertIn(r"10^{-7}", table)
+        self.assertIn("+0.288", table)
 
     def test_moderate_p_renders_as_a_decimal(self) -> None:
         table = bm.control_table(self._data(0.02))
