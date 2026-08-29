@@ -197,7 +197,7 @@ def build(data: dict[str, Any]) -> str:
     smallest_margin = min(c["mean_deg"] for c in contrasts.values())
     surrogate_sentence = (
         (
-            f"The recorded signal outperformed all {len(contrasts)} surrogates in paired "
+            f"The recorded signal outperformed all three surrogates in paired "
             f"within-participant comparisons (smallest margin "
             f"{deg(smallest_margin, 3)}$^{{\\circ}}$, all $p\\leq{pval(worst_p)}$)"
         )
@@ -314,7 +314,7 @@ $p={pval(accuracy['overall_p_value'])}$). A two-segment fit located a turn at
 {deg(accuracy['breakpoint_rmse_deg'], 2)}$^{{\circ}}$ (95\% CI
 {ci(accuracy['breakpoint_95pct_ci'], 2)}$^{{\circ}}$). Above it, worse prediction
 gave more instability (slope
-{signed(accuracy['above_breakpoint']['slope_per_degree'], 5)} score-seconds per
+{signed(accuracy['above_breakpoint']['slope_per_degree'], 5)}~s per
 degree, 95\% CI {ci(accuracy['above_breakpoint']['slope_95pct_ci'], 5)}). Below it
 the relationship inverted
 (slope
@@ -405,17 +405,14 @@ general activity.
 
 Participants S001--S030 formed a development cohort used to choose
 hyperparameters. The reported experiment used the remaining
-$n={ablation['participant_count']}$ participants, S031--S120. For each of them,
-trials 1--3 supplied the scaling values and the data the model was fitted on, and
-trial 5 was held out for testing.
+$n={ablation['participant_count']}$ participants, S031--S120. Within each
+participant, trials 1--3 were used to fit the model and to compute the mean and
+standard deviation of that participant's twelve sEMG channels and knee angle,
+which standardize the inputs and the target. Trial 5 was held out and used for
+neither purpose.
 
-Every model was therefore fitted on earlier trials from the same participant it
-was later tested on. These accuracies are therefore what a model reaches after
-calibrating to an individual, not what it would reach for someone whose data it
-had never seen. Because prediction frames within a participant are
-not independent, each participant contributed a single error value to every
-comparison, and every interval and test was computed at the participant
-level \cite{{roberts2017}}.
+Each participant contributed one value to every analysis: the mean error over
+that participant's trial 5 \cite{{roberts2017}}.
 
 The released sEMG was sampled at 2000~Hz and the OpenSim joint angles at 100~Hz.
 Twelve right-leg sEMG channels were retained. Each was mean-centered, filtered with
@@ -436,14 +433,13 @@ signals \cite{{coker2021}}.
 \subsection{{Windowing, forecast horizon, and training}}
 
 Because the study measures what prediction error does to a simulated walker, the
-predictor only has to be good enough to be worth simulating, and the design places
-two requirements on it that a top-scoring architecture would not meet. Locating the accuracy at which RMSE stops
-tracking simulated instability requires a model whose accuracy can be varied
-continuously across a wide range and returned to a reproducible endpoint. A
-convex objective with a closed-form solution provides both: descent runs from the
-participant mean to the exact analytic optimum, and that optimum is the terminal
-checkpoint rather than an approximation of it. Two separable stages also make the
-sEMG comparison exact, because setting the correction to zero removes the signal
+predictor only has to be good enough to be worth simulating. The design does place
+two requirements on it. The first is that the model's accuracy can be varied
+continuously across a wide range and returned to the same endpoint every time,
+which is what locating the turn depends on. A convex objective with a closed-form
+solution gives that: descent runs from the participant mean to the exact analytic
+optimum, and that optimum is the terminal checkpoint rather than an approximation
+of it. The second is that the sEMG contribution can be removed exactly, because setting the correction to zero removes the signal
 from a model that has already been fitted, instead of requiring a second fit whose
 capacity and initialisation would differ. A convolutional, recurrent or
 transformer predictor of the kind reviewed above would follow a stochastic
@@ -579,7 +575,8 @@ At each control step the convex hull of foot--ground contact points defined the
 support polygon, and XCoM extended horizontal center-of-mass position in the
 direction of its velocity. A bounded per-step instability index in $[0,1]$ was
 derived from the signed margin and its short-term trend, and integrated over the
-window. Absolute instability depends on how stable a matched reference already is,
+window, giving a quantity in seconds. Absolute instability depends on how stable a
+matched reference already is,
 so the reported outcome is excess instability, $I'=I_{{\mathrm{{PRED}}}}-I_{{\mathrm{{REF}}}}$,
 measured against each window's own paired reference. The index is study-specific
 and has not been validated as a clinical stability or fall-risk measure.
@@ -591,7 +588,7 @@ prediction RMSE and excess instability, controlling for matching knee RMSE and
 thigh orientation RMS, following Frisch--Waugh--Lovell residualisation on ranked
 variables \cite{{spearman1904,frisch1933,lovell1963}}.
 
-Three complementary analyzes are reported. \emph{{Per checkpoint}} repeats that analysis at each
+Three complementary analyses are reported. \emph{{Per checkpoint}} repeats that analysis at each
 accuracy level and carries the RMSE spread available to it, which separates a
 near-zero association from a near-zero spread.
 \emph{{Within window}} correlates each window's own accuracy against its own excess
@@ -618,7 +615,7 @@ changed participant RMSE by {deg(aligned['mean_improvement_deg'], 3)}$^{{\circ}}
 relative to the aligned model (95\% CI
 {ci(aligned['bootstrap_95pct_ci_deg'], 3)}$^{{\circ}}$;
 $t({statistics['temporal_control']['aligned_vs_lagged']['paired_t']['df']})={statistics['temporal_control']['aligned_vs_lagged']['paired_t']['t']:.2f}$, $p={pval(statistics['temporal_control']['aligned_vs_lagged']['paired_t']['p_two_sided'])}$). The surrogate controls
-(Supplementary Table~\ref{{tab:controls}}) agreed. {surrogate_sentence}.
+(Supplementary Table~\ref{{tab:controls}}) gave the same result. {surrogate_sentence}.
 
 
 
@@ -631,8 +628,7 @@ $t({statistics['temporal_control']['aligned_vs_lagged']['paired_t']['df']})={sta
 \subsection{{Motion matching and paired simulation}}
 
 Across the fixed panel, the paired difference in excess-instability area between
-the residual-fusion and no-sEMG conditions was {signed(physics['mean'], 4)}
-score-seconds (95\% CI {ci(physics['ci_95'], 4)};
+the residual-fusion and no-sEMG conditions was {signed(physics['mean'], 4)}~s (95\% CI {ci(physics['ci_95'], 4)};
 $t({physics['df']})={physics['t']:.2f}$, $p={pval(physics['p_two_sided'])}$). The
 prediction improvement attributable to sEMG was therefore not accompanied by a
 detectable change in the simulated outcome.
@@ -663,7 +659,7 @@ monotone. A two-segment fit places the turn at
 
 Above that accuracy, worse prediction produces more simulated instability across
 the {accuracy['above_breakpoint']['n_levels']} levels in that segment (slope
-{signed(accuracy['above_breakpoint']['slope_per_degree'], 5)} score-seconds per
+{signed(accuracy['above_breakpoint']['slope_per_degree'], 5)}~s per
 degree, 95\% CI {ci(accuracy['above_breakpoint']['slope_95pct_ci'], 5)}).
 
 Below it the sign inverts: models that are more accurate produce \emph{{more}} excess
@@ -677,14 +673,15 @@ on fourteen independent observations.
 
 Two mechanisms account for the inversion. First, substituting the knee is not
 free even when the substituted trajectory is exactly right: commanding the matched
-clip's own realized trajectory still changed fall risk by
-{signed(0.042, 3)} on average. Excess instability therefore approaches that
-mechanism floor as prediction error vanishes, not zero. Second, a partially
+clip's own realized trajectory still raised the instability index by
+{signed(0.042, 3)} on average, on the same $[0,1]$ scale as the index itself. As
+prediction error falls to zero, excess instability therefore approaches that value
+rather than approaching zero. Second, a partially
 fitted linear model regresses toward the participant mean, so it commands a
 gentler knee trajectory than the recorded one. A gentler trajectory perturbs the
 body less than the true motion does, and mean excess instability is
 correspondingly negative through the middle of the range, reaching
-{signed(min(accuracy['mean_excess_instability']), 4)} score-seconds.
+{signed(min(accuracy['mean_excess_instability']), 4)}~s.
 
 Two secondary views are consistent with a real but small effect. Comparing windows
 against one another within a single accuracy level recovers nothing at any level
@@ -734,7 +731,7 @@ The central finding is that prediction error and simulated walking instability a
 related across part of the accuracy range and not across the rest of it. Above
 approximately {deg(accuracy['breakpoint_rmse_deg'], 2)}$^{{\circ}}$ of prediction
 error, a less accurate model produced a less stable simulated walker, and the
-ordering held at every level sampled in that region. Below that point the
+slope is positive across that region. Below that point the
 relationship inverted, so that further improvements in accuracy were accompanied by
 slightly more excess instability rather than less. RMSE is therefore not a general
 proxy for physical behavior. It behaves as a proxy within a band, and the boundary
@@ -759,14 +756,14 @@ validation strategy.
 Two mechanisms account for the inversion. The first is that substituting the knee is not free even when
 the substituted trajectory is correct. Commanding the matched clip's own realized
 trajectory still perturbed the simulated body, so excess instability approaches a
-mechanism floor as prediction error vanishes rather than approaching zero. The
+value rather than approaching zero as prediction error falls. The
 second is that a partially fitted linear model regresses toward the participant
 mean and therefore commands a gentler knee trajectory than the recorded one. A
 gentler trajectory disturbs the walker less than the true motion does, which means
 that through the middle of the accuracy range a less accurate model can be
 mechanically less disruptive. Neither mechanism implies that accuracy is
 undesirable; both indicate that the mapping from accuracy to whole-body behavior
-is not monotone, and that the quantity being minimised during training is not the
+is not monotone, and that the quantity being minimized during training is not the
 quantity that determines stability once the prediction is placed in a body.
 
 The sEMG correction improved held-out prediction, and that improvement survived
@@ -882,7 +879,7 @@ regresses toward the participant mean, so it commands a flatter trajectory that
 moves the knee less than the recorded motion does. Root-mean-square error therefore tracked
 physical behavior only above the turn, and the converged model evaluated here,
 at
-{deg(min(accuracy['mean_rmse_deg']), 2)}$^{{\circ}}$, sits below that band.
+{deg(min(accuracy['mean_rmse_deg']), 2)}$^{{\circ}}$, sits below the turn.
 
 The practical consequence is for how prosthetic regression models are evaluated.
 Since such models are ordinarily compared after convergence, they are compared in
@@ -947,7 +944,7 @@ signal that preserves its statistics but not its correspondence with the knee.
 kinematics, preserving amplitudes, spectra, and cross-channel structure.
 \emph{{Participant swap}} gives each participant another participant's sEMG.
 \emph{{Phase randomization}} replaces each channel with a surrogate of identical
-power spectrum and randomised Fourier phases \cite{{theiler1992}}. The kinematic
+power spectrum and randomized Fourier phases \cite{{theiler1992}}. The kinematic
 stage is shared across all four conditions, so any difference between them is
 attributable to sEMG content alone.
 
@@ -973,7 +970,7 @@ participant-level reduction in held-out RMSE relative to the same fitted kinemat
 stage without a correction; positive favors the correction. Share is each
 surrogate's effect as a fraction of the recorded one. The final column is the
 paired within-participant margin by which the recorded signal beats that
-surrogate. Both columns are two-sided paired $t$-tests on per-participant
+surrogate. The reported $p$-values are two-sided paired $t$-tests on per-participant
 differences.}}\label{{tab:controls}}
 \setlength{{\tabcolsep}}{{2.5pt}}
 \begin{{tabular}}{{lccccc}}
