@@ -408,7 +408,7 @@ def fig_instability(runs: Path, out: Path) -> Path:
     ax.set_xlabel("time (s)"); ax.set_ylabel("excess instability")
     span = float(np.max(diff) - np.min(diff)) or 1.0
     ax.set_ylim(np.min(diff) - 0.08 * span, np.max(diff) + 0.30 * span)
-    ax.text(0.02, 0.97, f"integrated excess {best_excess:+.3f} score-s",
+    ax.text(0.02, 0.97, f"integrated excess {best_excess:+.3f} s",
             transform=ax.transAxes, ha="left", va="top", fontsize=6.4, color=INK)
     clean(ax); panel(ax, "B")
     return save(fig, out, "fig05_instability.pdf")
@@ -439,7 +439,7 @@ def fig_accuracy_vs_instability(data: dict[str, Any], out: Path) -> Path:
                 linestyle=":", alpha=0.9)
     ax.axhline(0, color=INK, linewidth=0.7)
     ax.set_xlabel("model accuracy: mean window RMSE (deg)")
-    ax.set_ylabel("mean excess instability (score-seconds)")
+    ax.set_ylabel("mean excess instability (s)")
     ax.text(bp, ax.get_ylim()[1], f" turn at {bp:.1f}$\\degree$\n [{lo:.1f}, {hi:.1f}]",
             va="top", fontsize=6.4, color=INK)
     ax.legend(loc="lower right")
@@ -457,7 +457,7 @@ def fig_accuracy_vs_instability(data: dict[str, Any], out: Path) -> Path:
     ax.axvline(0, color=INK, linewidth=0.8)
     ax.set_yticks([0, 1]); ax.set_yticklabels(names)
     ax.set_ylim(-0.6, 1.6)
-    ax.set_xlabel("slope (score-seconds per degree of RMSE)")
+    ax.set_xlabel("slope (s per degree of RMSE)")
     clean(ax, grid="x"); panel(ax, "B", x=-0.24)
     return save(fig, out, "fig06_accuracy_vs_instability.pdf")
 
@@ -486,7 +486,7 @@ def fig_per_checkpoint(data: dict[str, Any], out: Path) -> Path:
     ax.set_xlabel("model accuracy: mean window RMSE (deg)")
     ax.set_ylabel("between-window RMSE SD (deg)")
     ax.set_ylim(0, max(sd) * 1.25)
-    ax.text(0.98, 0.06, "spread is available at every level,\nso the null is not a power limit",
+    ax.text(0.98, 0.06, "between-window spread\nat every level",
             transform=ax.transAxes, ha="right", fontsize=6.4, color=MUTED)
     clean(ax); panel(ax, "B", x=-0.18)
     return save(fig, out, "fig08_per_checkpoint.pdf")
@@ -647,7 +647,7 @@ def fig_simulation(runs, out):
         ax.axvline(idx * dt, color=GRID, linewidth=0.8, zorder=0)
     ax.set_ylim(0, 1.03)
     ax.set_xlabel("time (s)"); ax.set_ylabel("instability index")
-    ax.text(0.97, 0.30, f"excess {score:+.3f} score-s", transform=ax.transAxes,
+    ax.text(0.97, 0.30, f"excess {score:+.3f} s", transform=ax.transAxes,
             ha="right", fontsize=6.4, color=INK)
     ax.legend(loc="upper left", fontsize=6.2)
     clean(ax); panel(ax, "D", x=-0.20)
@@ -683,7 +683,7 @@ def fig_fwl(data, out):
     ax.scatter(rmse, excess, s=11, color=BLUE, alpha=0.7, linewidths=0)
     ax.axhline(0, color=INK, linewidth=0.7)
     ax.set_xlabel("window prediction RMSE (deg)")
-    ax.set_ylabel("excess instability (score-s)")
+    ax.set_ylabel("excess instability (s)")
     ax.set_title(f"raw  $\\rho$ = {raw.statistic:+.3f}  (p = {raw.pvalue:.2f})",
                  fontsize=7.0, color=INK, pad=4)
     clean(ax, grid="both"); panel(ax, "A", x=-0.24)
@@ -692,7 +692,7 @@ def fig_fwl(data, out):
     ax.scatter(knee, excess, s=11, color=RUST, alpha=0.7, linewidths=0)
     ax.axhline(0, color=INK, linewidth=0.7)
     ax.set_xlabel("motion-match knee RMSE (deg)")
-    ax.set_ylabel("excess instability (score-s)")
+    ax.set_ylabel("excess instability (s)")
     cm = stats.spearmanr(knee, excess)
     ax.set_title(f"confounder  $\\rho$ = {cm.statistic:+.3f}", fontsize=7.0,
                  color=INK, pad=4)

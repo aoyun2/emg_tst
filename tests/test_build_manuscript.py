@@ -146,6 +146,64 @@ class GeneratedManuscriptTests(unittest.TestCase):
             len(counts), 1, f"paper quotes conflicting window counts: {counts}"
         )
 
+    def test_the_complementary_analyses_are_counted_the_same_way_twice(self) -> None:
+        # The methods name them and the results introduce them again; the two
+        # counts describe one set and drifted apart once already.
+        methods = re.search(r"(\w+) complementary analyses are reported", self.tex)
+        results = re.search(r"(\w+) further comparisons were made", self.tex)
+        self.assertIsNotNone(methods, "methods no longer count the analyses")
+        self.assertIsNotNone(results, "results no longer count the comparisons")
+        self.assertEqual(
+            methods.group(1).lower(),
+            results.group(1).lower(),
+            "the methods and the results count the same analyses differently",
+        )
+
+    def test_headings_are_sentence_case(self) -> None:
+        # Springer Nature sets headings in sentence case. Proper nouns and
+        # initialisms keep their capitals, so only ordinary words are checked.
+        allowed = {
+            "EMG", "sEMG", "RMSE", "MuJoCo", "MoCapAct", "CNN", "LSTM", "IMU",
+            "XCoM", "Gait120", "Prediction", "Spearman", "Frisch", "Waugh",
+            "Lovell", "Methods", "Results", "Discussion", "Conclusion",
+            "Introduction", "Limitations",
+        }
+        for heading in re.findall(r"\\(?:sub)?section\*?\{([^}]*)\}", self.tex):
+            words = re.findall(r"[A-Za-z][\w-]*", heading)
+            for word in words[1:]:
+                if word in allowed or word.isupper():
+                    continue
+                self.assertFalse(
+                    word[0].isupper(),
+                    f"heading is not sentence case: {heading!r} (word {word!r})",
+                )
+
+    def test_every_label_sits_inside_a_reference_command(self) -> None:
+        # A command written into a non-raw Python string loses its backslash
+        # and the letter after it, so "\\ref{sec:future}" prints as
+        # "efsec:future" in the body text.
+        for match in re.finditer(r"(?<!\\label)(?<!\\ref)\{?(sec|tab|fig|eq):[a-z_]+",
+                                 self.tex):
+            head = self.tex[max(0, match.start() - 12):match.start()]
+            self.assertRegex(
+                head,
+                r"\\(?:ref|label|eqref|autoref|cref)\{$",
+                f"label leaked into the text: {self.tex[match.start() - 20:match.end()]!r}",
+            )
+
+    def test_no_command_lost_its_leading_backslash(self) -> None:
+        # The same accident applied to any command starting with a b f n r t v.
+        tails = ("ef", "ho", "egin", "extbf", "imes", "rac", "space", "ewline",
+                 "oindent", "extit", "ootnote", "abular", "oprule")
+        pattern = r"(?<![A-Za-z\\])(" + "|".join(tails) + r")(?=[{~])"
+        for match in re.finditer(pattern, self.tex):
+            before = self.tex[max(0, match.start() - 40):match.start()]
+            self.assertNotRegex(
+                before,
+                r"[\n~]\s*$",
+                f"command lost its backslash: {self.tex[match.start() - 30:match.end() + 15]!r}",
+            )
+
     def test_p_values_at_the_floor_are_never_equalities(self) -> None:
         self.assertNotIn(r"$p=1.00\times10^{-6}$", self.tex)
         self.assertNotIn(r"p=1.00\times10^{-6}", self.tex)
