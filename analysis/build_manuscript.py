@@ -443,13 +443,12 @@ solution gives that: descent runs from the participant mean to the exact analyti
 optimum, and that optimum is the terminal checkpoint rather than an approximation
 of it. The second is that the sEMG contribution can be removed exactly, because setting the correction to zero removes the signal
 from a model that has already been fitted, instead of requiring a second fit whose
-capacity and initialization would differ. A convolutional, recurrent or
+capacity and initialization would differ. A convolutional, recurrent, or
 transformer predictor of the kind reviewed above would follow a stochastic
 training path to an endpoint that is not exactly reproducible, and its ablation
 would confound signal content with model capacity. The cost of this choice is
 that the result belongs to one model family, which
-Section~
-ef{{sec:future}} returns to.
+Section~\ref{{sec:future}} returns to.
 
 One participant-balanced pair of ridge regressions was fitted to trials 1--3
 \cite{{hoerl1970}}. The first predicted standardized future knee angle from the
@@ -688,10 +687,9 @@ body less than the true motion does, and mean excess instability is
 correspondingly negative through the middle of the range, reaching
 {signed(min(accuracy['mean_excess_instability']), 4)}~s.
 
-Two secondary views are consistent with a real but small effect. Comparing windows
-against one another within a single accuracy level recovers nothing at any level
-(Table~\ref{{tab:checkpoints}}), because between-window differences in matched
-motion and reference stability are large beside the effect of prediction error.
+Two further comparisons were made. Comparing windows against one another within a
+single accuracy level recovers nothing at any level
+(Table~\ref{{tab:checkpoints}}).
 {within_sentence} Pooled across all {pooled['n_pairs']} checkpoint--window pairs
 the match-adjusted association was
 {signed(pooled['partial_spearman_rho'], 3)} (window-level cluster bootstrap 95\% CI
@@ -723,7 +721,7 @@ training-path checkpoint, ordered from the converged model to the untrained one.
 Excess instability is measured against each window's own paired reference.}}\label{{tab:checkpoints}}
 \begin{{tabular}}{{lcccccc}}
 \toprule
-Descent step & $n$ & Mean RMSE ($^{{\circ}}$) & SD ($^{{\circ}}$) & Mean excess & Partial $\rho$ & 95\% CI \\
+Descent step & $n$ & Mean RMSE ($^{{\circ}}$) & SD ($^{{\circ}}$) & Mean excess (s) & Partial $\rho$ & 95\% CI \\
 \midrule
 {checkpoint_table(data)}
 \bottomrule
@@ -771,12 +769,12 @@ signal content from the additional model capacity that accompanies it. The
 predictor driving the simulations therefore draws on genuine myoelectric
 information rather than on model size.
 
-The two comparisons give different answers. Comparing windows against one another
+Comparisons drawn across windows and comparisons drawn within a window
+give different results. Comparing windows against one another
 within a single accuracy level recovers nothing at any of the
 {correlation['n_checkpoints']} checkpoints, even where mean window error exceeds
 {deg(max(r['mean_prediction_rmse_deg'] for r in correlation['per_checkpoint']), 0)}$^{{\circ}}$.
-This is not a limitation of statistical power, since between-window error spread
-ranges from
+Between-window error spread was available at every level, ranging from
 {deg(min(r['prediction_rmse_sd_deg'] for r in correlation['per_checkpoint']), 2)}
 to {deg(max(r['prediction_rmse_sd_deg'] for r in correlation['per_checkpoint']), 2)}$^{{\circ}}$,
 and the same null appears when the outcome is normalized by rollout duration.
