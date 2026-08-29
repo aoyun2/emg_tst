@@ -329,8 +329,8 @@ Relating accuracy to simulated outcome across {accuracy['n_accuracy_levels']}
 accuracy levels on the same fixed panel, RMSE and
 excess instability were not monotonically related over the sampled range
 ($\rho={signed(accuracy['overall_spearman_rho'], 3)}$,
-$p={pval(accuracy['overall_p_value'])}$). A two-segment fit located a turn at
-{deg(accuracy['breakpoint_rmse_deg'], 2)}$^{{\circ}}$ (95\% CI
+$p={pval(accuracy['overall_p_value'])}$). An exploratory two-segment split, placed between adjacent
+levels, falls at {deg(accuracy['breakpoint_rmse_deg'], 2)}$^{{\circ}}$ (95\% CI
 {ci(accuracy['breakpoint_95pct_ci'], 2)}$^{{\circ}}$). Above it, worse prediction
 gave more instability (slope
 {signed(accuracy['above_breakpoint']['slope_per_degree'], 5)}~s per
@@ -343,14 +343,13 @@ the relationship inverted
 \textbf{{Conclusions:}} Prediction RMSE tracked the simulated walking outcome
 above roughly {deg(accuracy['breakpoint_rmse_deg'], 0)}$^{{\circ}}$ and inverted
 below it, so the two are related across the whole sampled range rather than
-only part of it. The sEMG correction itself, which improved prediction, did not
-detectably change the simulated outcome
-({signed(physics['mean'], 4)}~s, 95\% CI {ci(physics['ci_95'], 4)};
-$p={pval(physics['p_two_sided'])}$). Below the split the
-relationship reversed, because a partially fitted model regresses toward the
-participant mean and so commands a flatter trajectory that moves the knee less
-than the recorded motion does. A converged predictor therefore sits
-in the regime where lower RMSE no longer implies better simulated behavior.}}
+only part of it. The inversion arises because a partially fitted model regresses
+toward the participant mean and so commands a flatter trajectory that moves the
+knee less than the recorded motion does. A converged predictor therefore sits in
+the regime where lower RMSE no longer implies better simulated behavior. The
+sEMG correction itself, which improved prediction, did not detectably change the
+simulated outcome ({signed(physics['mean'], 4)}~s, 95\% CI
+{ci(physics['ci_95'], 4)}; $p={pval(physics['p_two_sided'])}$).}}
 
 \keywords{{surface electromyography, knee-angle prediction, prosthetic control,
 biomechanics, MuJoCo, motion matching, extrapolated center of mass}}
@@ -405,7 +404,7 @@ series of accuracy levels sampled along a single model's own gradient-descent
 training path, with the predicted knee angle serving as the tracking target of the
 simulated joint throughout. Because the windows, the matched reference motions,
 and the initial states are identical at every level, the only thing that differs
-between them is how accurate the model was. That makes it possible to ask whether
+between them is the model. That makes it possible to ask whether
 RMSE and simulated walking instability are related at all, and if so, across which
 part of the accuracy range.
 
@@ -423,8 +422,8 @@ part of the accuracy range.
 The experiment used the public Gait120 dataset, which contains synchronized
 full-body kinematics and right-leg sEMG from 120 healthy adult men performing
 seven movement tasks \cite{{boo2025,boo2025dataset}}. Only level walking was used, so
-that the prediction data and the MoCapAct reference bank represented the same
-general activity.
+that every prediction window the panel draws on comes from walking on the
+level.
 
 Participants S001--S030 formed a development cohort used to choose
 hyperparameters. The reported experiment used the remaining
@@ -433,7 +432,7 @@ as the confirmation cohort. Within each
 participant, trials 1--3 were used to fit the model and to compute the mean and
 standard deviation of that participant's twelve sEMG channels and knee angle,
 which standardize the inputs and the target. Trial 4 was reserved for checking
-the fit during development and is not reported. Trial 5 was held out and used
+the fit and is not reported. Trial 5 was held out and used
 for neither purpose, and is the trial every reported number comes from.
 
 Each participant contributed one value to every analysis: the mean error over
@@ -545,8 +544,9 @@ simulation outcomes were known. A seeded participant-balanced procedure selected
 {pooled['n_windows']} one-second windows, giving each eligible participant one
 window before assigning a second, so the panel draws on
 {panel_participants} participants, of whom {panel_repeats} contribute two
-windows. Prediction error was not used for selection, and the analyses below
-resample participants rather than windows for that reason.
+windows. Prediction error was not used for selection. Windows are therefore
+nested within participants, which the bootstrap over accuracy levels takes into
+account.
 
 Each query was matched against the whole MoCapAct expert bank
 \cite{{wagener2022}}, which supplies short motion-capture clips, termed snippets,
@@ -636,7 +636,8 @@ without necessarily being better gait.
 The primary association was a partial Spearman correlation between window
 prediction RMSE and excess instability, controlling for matching knee RMSE and
 thigh orientation RMS, following Frisch--Waugh--Lovell residualization on ranked
-variables, and is called the match-adjusted association below \cite{{spearman1904,frisch1933,lovell1963}}.
+variables \cite{{spearman1904,frisch1933,lovell1963}}, and is called the
+match-adjusted association below.
 
 Three complementary analyses are reported. \emph{{Per checkpoint}} repeats that analysis at each
 accuracy level and carries the RMSE spread available to it, which separates a
@@ -677,7 +678,7 @@ and aligned models are scored on identical data. Moving the same sEMG history
 relative to the aligned model (95\% CI
 {ci(aligned['bootstrap_95pct_ci_deg'], 3)}$^{{\circ}}$;
 $t({statistics['temporal_control']['aligned_vs_lagged']['paired_t']['df']})={statistics['temporal_control']['aligned_vs_lagged']['paired_t']['t']:.2f}$, $p={pval(statistics['temporal_control']['aligned_vs_lagged']['paired_t']['p_two_sided'])}$). Three surrogate
-controls are reported in the additional file, Table~\ref{{tab:controls}}.
+controls are reported in Table~\ref{{tab:controls}}.
 {surrogate_sentence}.
 
 
@@ -761,7 +762,7 @@ the match-adjusted association was
 \begin{{figure}}[!htbp]
 \centering
 \includegraphics[width=\linewidth]{{fig06_accuracy_vs_instability}}
-\caption{{Primary result. \textbf{{A}} Mean excess instability against model accuracy across the sampled levels, with the fitted turn and its bootstrap interval shaded; dotted lines are the two segment fits. \textbf{{B}} Segment slopes with 95\% intervals from resampling windows within every accuracy level.}}\label{{fig:primary}}
+\caption{{Primary result. \textbf{{A}} Mean excess instability against model accuracy across the sampled levels, with the fitted turn and its bootstrap interval shaded; dotted lines are the two segment fits. \textbf{{B}} Segment slopes with 95\% intervals from a bootstrap that resamples participants and carries each across every accuracy level.}}\label{{fig:primary}}
 \end{{figure}}
 
 \begin{{figure}}[!htbp]
@@ -792,7 +793,8 @@ Descent step & $n$ & Mean RMSE ($^{{\circ}}$) & SD ($^{{\circ}}$) & Mean excess 
 \section{{Discussion}}\label{{sec:discussion}}
 
 The central finding is that prediction error and simulated walking instability are
-related across part of the accuracy range and not across the rest of it. Above
+related across the whole sampled range, with the sign of the relationship
+reversing partway along it. Above
 {deg(accuracy['breakpoint_rmse_deg'], 2)}$^{{\circ}}$ of prediction
 error, a less accurate model produced a less stable simulated walker, and the
 slope is positive across that region. Below that point the
@@ -806,9 +808,10 @@ evaluated here reached {deg(min(accuracy['mean_rmse_deg']), 2)}$^{{\circ}}$, whi
 lies below the turn. Because knee-angle regression models are ordinarily compared
 with one another only after convergence, the regime in which they are compared is
 also the regime in which further reduction in RMSE no longer predicts a more stable
-simulated gait. A study confined to that regime samples only the flat portion of
-the relationship, so it cannot separate an absent effect from an effect its range
-does not reach. This supplies a possible
+simulated gait. A study confined to that regime samples only the inverted portion of
+the relationship, where lower error is accompanied by slightly more simulated
+instability, so it cannot recover the positive relationship that holds above the
+turn. This supplies a possible
 mechanism for the more general observation, made in myoelectric control by Hargrove
 et al. \cite{{hargrove2007}} and by Krasoulis et al. \cite{{krasoulis2019}}, that
 offline model scores do not reliably predict functional performance. It also
@@ -868,7 +871,9 @@ is not a suitable instrument for detecting it.
 \subsection{{Limitations}}
 
 The benchmark used able-bodied level walking rather than data from transfemoral
-prosthesis users, so it tests an evaluation framework on a proxy dataset. Each
+prosthesis users, so it tests an evaluation framework on a proxy dataset, and
+every participant in Gait120 is an adult man, so the cohort does not represent
+the range of body structures a prosthetic controller would meet. Each
 model was also fitted on earlier trials from the participant it was tested on, so
 these accuracies are what a calibrated model achieves, not what a wearer would get
 from a model that had never seen their data.
@@ -920,7 +925,7 @@ prediction error, such as stance-weighted RMSE or error aligned to support
 transitions, track simulated instability more closely than window-level RMSE
 does. The present result does not show that every summary of prediction error
 behaves this way. It shows that RMSE, which is the summary the field reports,
-stops tracking simulated behavior below roughly
+tracks simulated behavior in opposite directions either side of roughly
 {deg(accuracy['breakpoint_rmse_deg'], 0)}$^{{\circ}}$.
 
 \section{{Conclusion}}\label{{sec:conclusion}}
@@ -928,14 +933,15 @@ stops tracking simulated behavior below roughly
 Replaying one fixed panel of walking windows at
 {accuracy['n_accuracy_levels']} accuracy levels sampled along a model's own
 training path shows that prediction error predicts simulated walking instability
-over part of the accuracy range only. Above
+in opposite directions either side of a split in the accuracy range. Above
 {deg(accuracy['breakpoint_rmse_deg'], 2)}$^{{\circ}}$ (95\% CI
 {ci(accuracy['breakpoint_95pct_ci'], 2)}$^{{\circ}}$) a less accurate model
 produced a less stable simulated walker. Below that point the relationship
 inverted, because a partially fitted model regresses toward the participant mean
 and so commands a flatter trajectory that moves the knee less than the recorded
 motion does. Root-mean-square error therefore tracked
-simulated behavior only above the turn, and the converged model evaluated here,
+simulated behavior in the expected direction only above the turn, and the
+converged model evaluated here,
 at
 {deg(min(accuracy['mean_rmse_deg']), 2)}$^{{\circ}}$, sits below the turn.
 
