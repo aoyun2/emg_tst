@@ -417,7 +417,7 @@ Each participant contributed one value to every analysis: the mean error over
 that participant's trial 5 \cite{{roberts2017}}.
 
 The released sEMG was sampled at 2000~Hz and the OpenSim joint angles at 100~Hz.
-Twelve right-leg sEMG channels were retained. Each was mean-centered, filtered with
+Twelve right-leg sEMG channels were retained. Each was filtered with
 a second-order 20--500-Hz Butterworth band-pass, rectified, and converted to a
 causal 250-sample (125-ms) root-mean-square envelope
 \cite{{chowdhury2013,phinyomark2018}}. No future sEMG entered an input frame.
