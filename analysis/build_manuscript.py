@@ -82,6 +82,9 @@ def collect(runs: Path) -> dict[str, Any]:
     # The physics runner writes its matching gate under matching_preflight/.
     matching = load(runs / "panel" / "matching_preflight" / "summary.json")
     panel = load(runs / "panel" / "panel_manifest.json")
+    physics_protocol = load(
+        runs / "panel" / "physics_protocol.moving_target_pd_v2.json"
+    )
     return {
         "ablation": ablation,
         "protocol": protocol,
@@ -94,6 +97,7 @@ def collect(runs: Path) -> dict[str, Any]:
         "kinematic_check": kinematic_check,
         "matching": matching,
         "panel": panel,
+        "physics_protocol": physics_protocol,
     }
 
 
@@ -181,6 +185,9 @@ def build(data: dict[str, Any]) -> str:
     dropoff = correlation["dropoff"]
     accuracy = correlation["accuracy_level"]
     panel = data["panel"]
+    ORACLE_MAX_TRACKING_RMSE_DEG = float(
+        data["physics_protocol"]["oracle_preflight"]["maximum_tracking_rmse_deg"]
+    )
     physics = statistics["physics_comparison"]["paired_t"]
 
     surrogate_verdict = controls["verdict"]
@@ -368,7 +375,7 @@ EMG features, support vector methods, and relevance vector regression
 convolutional and recurrent networks can model time dependencies in continuous
 joint-angle prediction more effectively than many classical benchmarks,
 particularly when sEMG and kinematic information are combined into a temporally
-aware model \cite{{sun2022,zhang2022,zhu2022,moghadam2023,keles2023}}.
+aware model \cite{{sun2022,yi2022,zhang2022,zhu2022,moghadam2023,keles2023}}.
 Transformer-based models have also shown strong results in wearable biomechanics
 and myoelectric prediction, particularly where sequence length and cross-subject
 generalisation become central concerns
@@ -489,11 +496,10 @@ The present study addresses the question by holding the evaluation panel fixed a
 varying the model instead. One fixed panel of walking windows is replayed at a
 series of accuracy levels sampled along a single model's own gradient-descent
 training path, with the predicted knee angle serving as the tracking target of the
-simulated joint throughout. Prediction accuracy thereby becomes an experimental
-variable spanning a wide range rather than a fixed property of a converged model,
-which allows the relationship between RMSE and simulated walking instability to be
-traced across that range: whether the two are related at all, and if so, over what
-portion of the accuracy range the relationship holds.
+simulated joint throughout. Prediction accuracy is therefore an experimental
+variable rather than a fixed property of a converged model. That makes it
+possible to ask whether RMSE and simulated walking instability are related at
+all, and if so, across which part of the accuracy range.
 
 \begin{{figure}}[!htbp]
 \centering
@@ -511,15 +517,19 @@ seven movement tasks \cite{{boo2025,boo2025dataset}}. Only level walking was use
 that the prediction data and the MoCapAct reference bank represented the same
 general activity.
 
-Participants S001--S030 formed the development cohort used to select
-hyperparameters. The reported confirmation experiment used S031--S120
-($n={ablation['participant_count']}$). Trials 1--3 supplied participant-specific
-scaling values and the pooled model-fitting data; trial 5 was the held-out test.
-This is a later-trial, participant-calibrated design, in which the fitted models
-used early trials from the same participants whose later trials were tested. The
-reported accuracy is therefore conditional on that calibration and is not
-transfer to a person who supplied none. The participant, not an individual prediction frame, was the unit of
-inference.
+Participants S001--S030 formed a development cohort used to choose
+hyperparameters. The reported experiment used the remaining
+$n={ablation['participant_count']}$ participants, S031--S120. For each of them,
+trials 1--3 supplied the scaling values and the data the model was fitted on, and
+trial 5 was held out for testing.
+
+Every model was therefore fitted on earlier trials from the same participant it
+was later tested on. These accuracies are therefore what a model reaches after
+calibrating to an individual, not what it would reach for someone whose data it
+had never seen. Because prediction frames within a participant are
+not independent, each participant contributed a single error value to every
+comparison, and every interval and test was computed at the participant
+level \cite{{roberts2017}}.
 
 The released sEMG was sampled at 2000~Hz and the OpenSim joint angles at 100~Hz.
 Twelve right-leg sEMG channels were retained. Each was mean-centred, filtered with
@@ -530,9 +540,29 @@ Predictor inputs and targets were not interpolated or time-normalised.
 
 Each prediction example contained 60 knee-angle frames (600~ms) and the final 15
 sampled envelope frames (150~ms) from all 12 sEMG channels. The target was the
-recorded knee angle 100~ms after the final input frame.
+recorded knee angle 100~ms after the final input frame. That horizon is longer
+than the electromechanical delay between muscle activation and the resulting
+joint movement \cite{{cavanagh1979}}, so an sEMG sample can carry information
+about motion that has not yet happened, and it matches the horizon at which
+comparable work predicts future knee angle from myoelectric and kinematic
+signals \cite{{coker2021}}.
 
 \subsection{{Windowing, forecast horizon, and training}}
+
+The predictor is an instrument here rather than the object of study, and the
+design constrains what it can be. Locating the accuracy at which RMSE stops
+tracking simulated instability requires a model whose accuracy can be varied
+continuously across a wide range and returned to a reproducible endpoint. A
+convex objective with a closed-form solution provides both: descent runs from the
+participant mean to the exact analytic optimum, and that optimum is the terminal
+checkpoint rather than an approximation of it. Two separable stages also make the
+sEMG comparison exact, because setting the correction to zero removes the signal
+from a model that has already been fitted, instead of requiring a second fit whose
+capacity and initialisation would differ. A convolutional, recurrent or
+transformer predictor of the kind reviewed above would follow a stochastic
+training path to an endpoint that is not exactly reproducible, and its ablation
+would confound signal content with model capacity. The cost of this choice is
+that the result belongs to one model family, which is taken up below.
 
 One participant-balanced pair of ridge regressions was fitted to trials 1--3
 \cite{{hoerl1970}}. The first predicted standardised future knee angle from the
@@ -608,6 +638,11 @@ The fixed physics panel was drawn from confirmation trial 5 before matching or
 simulation outcomes were known. A seeded participant-balanced procedure selected
 {pooled['n_windows']} one-second windows, giving each eligible participant one
 window before assigning a second. Prediction error was not used for selection.
+The panel size was set by the simulation budget, since every window is replayed
+in both conditions at all
+{accuracy['n_accuracy_levels']} accuracy levels; because the same panel is used
+at every level, its size limits precision rather than biasing the comparison
+between levels.
 
 Each query was matched to a level-walking reference from MoCapAct
 \cite{{wagener2022}}. Candidate snippets were aligned by a constant knee offset and
@@ -617,16 +652,26 @@ matching knee error was {deg(matching['mean_knee_rmse_deg'], 2)}$^{{\circ}}$
 (median {deg(matching['median_knee_rmse_deg'], 2)}$^{{\circ}}$) and mean thigh
 orientation RMS {deg(matching['mean_thigh_rms_deg'], 2)}$^{{\circ}}$.
 
-In the prediction condition the model's predicted knee angle, mapped into the
-matched clip's convention by the constant offset and sign the match established,
-was the tracking target of a proportional-derivative override on the right knee
-actuator:
+In the prediction condition the model's predicted knee angle was the tracking
+target of a proportional-derivative override on the right knee actuator. The
+prediction was first mapped into the matched clip's convention using the constant
+offset and sign that the match established:
 
 \begin{{equation}}
 \tau=K_p(q_{{\mathrm{{des}}}}-q)+K_d(\dot q_{{\mathrm{{des}}}}-\dot q),
 \qquad q_{{\mathrm{{des}}}}(t)=\hat y(t).
 \label{{eq:control}}
 \end{{equation}}
+
+Proportional and derivative gains were $K_p=400$ and $K_d=20$ with the actuator
+force limited to 160, and the desired velocity was the causal backward difference
+of the commanded trajectory, zero at the first evaluation step. The gains were
+set on the apparatus rather than on any prediction: commanding a matched clip's
+own recorded trajectory has to reproduce that trajectory in joint space, and a
+position-only controller with no feedforward velocity trailed a fast knee badly
+enough to miss the {deg(ORACLE_MAX_TRACKING_RMSE_DEG, 0)}$^{{\circ}}$ tracking
+criterion used to check the apparatus. Adding the feedforward term brought
+tracking inside it.
 
 The paired reference condition ran the unmodified expert policy on the same
 snippet, initial state, warm-up, and controller. Nothing in either rollout reads
@@ -748,10 +793,10 @@ free even when the substituted trajectory is exactly right: commanding the match
 clip's own realised trajectory still changed fall risk by
 {signed(0.042, 3)} on average. Excess instability therefore approaches that
 mechanism floor as prediction error vanishes, not zero. Second, a partially
-fitted linear model regresses toward the participant mean and so commands a
-gentler knee trajectory than the recorded one, which perturbs the body less than
-the true motion does; mean excess instability is correspondingly negative through
-the middle of the range, reaching
+fitted linear model regresses toward the participant mean, so it commands a
+gentler knee trajectory than the recorded one. A gentler trajectory perturbs the
+body less than the true motion does, and mean excess instability is
+correspondingly negative through the middle of the range, reaching
 {signed(min(accuracy['mean_excess_instability']), 4)} score-seconds.
 
 Two secondary views are consistent with a real but small effect. Comparing windows
@@ -879,11 +924,10 @@ is not a suitable instrument for detecting it.
 \subsection{{Limitations}}
 
 The benchmark used able-bodied level walking rather than data from transfemoral
-prosthesis users, so it tests an evaluation framework on a proxy dataset. The
-design is participant-calibrated: fitted models used early trials from the same
-participants whose later trials were tested, and the reported accuracy is
-conditional on that calibration rather than on transfer to an uncalibrated
-wearer.
+prosthesis users, so it tests an evaluation framework on a proxy dataset. Each
+model was also fitted on earlier trials from the participant it was tested on, so
+these accuracies are what a calibrated model achieves, not what a wearer would get
+from a model that had never seen their data.
 
 The kinematic stage predicts from recorded knee-angle history. A microprocessor
 knee carries a joint angle encoder, so that channel would exist on a device, but
@@ -913,7 +957,7 @@ checkpoints does not define a safety threshold.
 \subsection{{Future Work}}
 
 The turn reported here was located with one model class on one evaluation
-pipeline, and the first question for further work is whether it moves. A
+design, and the first question for further work is whether it moves. A
 predictor with a different error structure, such as a recurrent or
 transformer model rather than a ridge pair, may distribute its residuals
 differently across the gait cycle and place its turn elsewhere. The
