@@ -521,9 +521,9 @@ hyperparameters. The reported confirmation experiment used S031--S120
 ($n={ablation['participant_count']}$). Trials 1--3 supplied participant-specific
 scaling values and the pooled model-fitting data; trial 5 was the held-out test.
 This is a later-trial, participant-calibrated design, in which the fitted models
-used early trials from the same participants whose later trials were tested, so the result
-should not be read as immediate transfer to a person who supplied no calibration
-data. The participant, not an individual prediction frame, was the unit of
+used early trials from the same participants whose later trials were tested. The
+reported accuracy is therefore conditional on that calibration and is not
+transfer to a person who supplied none. The participant, not an individual prediction frame, was the unit of
 inference.
 
 The released sEMG was sampled at 2000~Hz and the OpenSim joint angles at 100~Hz.
@@ -568,9 +568,11 @@ therefore already informative about sEMG rather than about model size. As a
 further check, three surrogate conditions repeated the whole confirmation fit with
 the sEMG replaced by a signal preserving its statistics but not its correspondence
 with the knee; these are reported in the supplementary analysis. Significance for
-every paired comparison came from a two-sided randomisation test over
-$10^{{6}}$ sign-flip draws, whose smallest attainable value is
-$10^{{-6}}$.
+every paired comparison came from a two-sided sign-flip randomisation test on the
+per-participant differences. Under the null of no effect the sign of each
+participant's difference is arbitrary, so reversing signs at random over
+$10^{{6}}$ draws gives the distribution of the mean difference expected by
+chance, without assuming those differences are normally distributed.
 
 A separate timing control shifted the same sEMG history 500~ms earlier within each
 continuous trial, evaluating aligned and shifted models on identical target rows.
@@ -666,8 +668,8 @@ thigh orientation RMS, following Frisch--Waugh--Lovell residualisation on ranked
 variables \cite{{spearman1904,frisch1933,lovell1963}}.
 
 Three complementary analyses are reported. \emph{{Per checkpoint}} repeats that analysis at each
-accuracy level and carries the RMSE spread available to it, so a near-zero
-association measured on a near-zero spread is not read as evidence of no effect.
+accuracy level and carries the RMSE spread available to it, which separates a
+near-zero association from a near-zero spread.
 \emph{{Within window}} correlates each window's own accuracy against its own excess
 instability across checkpoints and combines results with a Fisher-$z$ one-sample
 test, which removes matched motion, snippet, and initial state as sources of
@@ -746,8 +748,8 @@ segment (slope {signed(accuracy['below_breakpoint']['slope_per_degree'], 5)},
 95\% CI {ci(accuracy['below_breakpoint']['slope_95pct_ci'], 5)}). Both intervals exclude
 zero under a bootstrap that resamples windows within every accuracy level, which
 is the level at which these data actually vary; the checkpoint means themselves
-are smooth by construction, so the rank correlation across levels should not be
-read as fourteen independent observations.
+are smooth by construction, so the rank correlation across levels does not rest
+on fourteen independent observations.
 
 Two mechanisms account for the inversion. First, substituting the knee is not
 free even when the substituted trajectory is exactly right: commanding the matched
@@ -872,8 +874,8 @@ window falls, and how stable the matched reference already was. Those sources of
 variation are large beside the effect of prediction error and obscure it in any
 comparison drawn across windows, whereas holding the window fixed removes them.
 
-Taken together, these observations carry a consequence for how such benchmarks
-should be built. An evaluation that varies only the window, which is what a study
+These observations bear on benchmark design. An evaluation that varies only the
+window, which is what a study
 of a single converged model is restricted to, will tend to report no relationship
 between prediction error and simulated outcome, not because no relationship exists
 but because that contrast cannot resolve one. Varying the model along its own
@@ -887,23 +889,23 @@ is not a suitable instrument for detecting it.
 The benchmark used able-bodied level walking rather than data from transfemoral
 prosthesis users, so it tests an evaluation framework on a proxy dataset. The
 design is participant-calibrated: fitted models used early trials from the same
-participants whose later trials were tested, and the result should not be read as
-transfer to an uncalibrated wearer.
+participants whose later trials were tested, and the reported accuracy is
+conditional on that calibration rather than on transfer to an uncalibrated
+wearer.
 
 The kinematic stage predicts from recorded knee-angle history. A microprocessor
 knee carries a joint angle encoder, so that channel would exist on a device, but
 two differences separate this experiment from deployment. First, the history used
 here is the trajectory of an intact biological knee, whereas a prosthetic knee
 follows whatever its own controller produced; the channel is the same but its
-distribution is not, so accuracy measured here should not be read as accuracy a
-device would achieve. Second, a deployed predictor whose output drives the knee
+distribution is not, so the accuracy measured here is not the accuracy a device
+would achieve. Second, a deployed predictor whose output drives the knee
 would receive its own past commands as input, making the kinematic stage largely
 a propagator of its own trajectory. Under that arrangement the sEMG correction
 becomes the only term carrying new information about the wearer's intent, so its
 contribution would matter more than the held-out share reported here, not less.
-Neither point is tested by this experiment, and the reported accuracy should not
-be compared directly against methods predicting from socket-available signals
-alone.
+Neither point is tested by this experiment, and the reported accuracy is not
+comparable with methods predicting from socket-available signals alone.
 
 The instability index is bounded, study-specific, and derived from XCoM margin; it
 is not a clinical fall-risk measure \cite{{hof2005,hof2008,curtze2024}}. Simulation
@@ -914,7 +916,7 @@ rather than for every application of the model.
 Finally, the drop-off estimate is a descriptive two-segment fit over the sampled
 accuracy levels. It locates where the sampled association changes; it is not a
 changepoint test with its own error rate, and the unsampled interval between
-checkpoints should not be converted into a safety threshold.
+checkpoints does not define a safety threshold.
 
 \section{{Conclusion}}\label{{sec:conclusion}}
 
