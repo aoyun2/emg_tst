@@ -81,6 +81,7 @@ def collect(runs: Path) -> dict[str, Any]:
     )
     # The physics runner writes its matching gate under matching_preflight/.
     matching = load(runs / "panel" / "matching_preflight" / "summary.json")
+    oracle = load(runs / "panel" / "oracle_preflight" / "summary.json")
     panel = load(runs / "panel" / "panel_manifest.json")
     physics_protocol = load(
         runs / "panel" / "physics_protocol.moving_target_pd_v2.json"
@@ -96,6 +97,7 @@ def collect(runs: Path) -> dict[str, Any]:
         "statistics": statistics,
         "kinematic_check": kinematic_check,
         "matching": matching,
+        "oracle": oracle,
         "panel": panel,
         "physics_protocol": physics_protocol,
     }
@@ -172,6 +174,10 @@ def build(data: dict[str, Any]) -> str:
     checkpoints = data["checkpoints"]
     path_protocol = data["path_protocol"]
     matching = data["matching"]
+    oracle_windows = data["oracle"]["windows"]
+    oracle_excess = sum(
+        w["metrics"]["excess_instability_auc"]["fused"] for w in oracle_windows
+    ) / len(oracle_windows)
     statistics = data["statistics"]
     temporal = data["temporal"]
     kinematic_check = data["kinematic_check"]
@@ -279,9 +285,8 @@ simulated walking instability only above a threshold accuracy}}
 
 \abstract{{\textbf{{Background:}} Root-mean-square error (RMSE) measures the numerical
 accuracy of knee-angle prediction, but it does not establish that the remaining
-error changes whole-body motion. Testing that link requires a predictor that
-actually drives a simulated body, and enough variation in accuracy for an
-association to be measurable.
+error changes whole-body motion. Whether a lower value corresponds to more stable
+walking has not been tested.
 
 \textbf{{Methods:}} A prespecified residual-fusion model was evaluated on level
 walking from {ablation['participant_count']} healthy participants in Gait120.
@@ -295,9 +300,7 @@ of a MuJoCo humanoid, against a paired unmodified reference on the same matched
 MoCapAct motion. Because the fitted model converges to a narrow error band, the
 same fixed panel of {pooled['n_windows']} windows was replayed at
 {correlation['n_checkpoints']} checkpoints sampled along the model's
-gradient-descent training path, spanning
-{deg(path_protocol['train_rmse_first_deg'], 2)}$^{{\circ}}$ to
-{deg(path_protocol['train_rmse_last_deg'], 2)}$^{{\circ}}$ training RMSE.
+gradient-descent training path.
 
 \textbf{{Results:}} Mean participant RMSE was
 {deg(ablation['fused_mean_participant_rmse_deg'])}$^{{\circ}}$ with residual fusion
@@ -323,10 +326,9 @@ the relationship inverted
 
 \textbf{{Conclusions:}} Prediction RMSE predicted simulated walking outcome only
 above roughly {deg(accuracy['breakpoint_rmse_deg'], 0)}$^{{\circ}}$. Below that the
-relationship reversed, because substituting the knee perturbs the body even when
-the substituted trajectory is correct, and because a partially fitted model
-regresses toward the participant mean, so it commands a flatter trajectory that
-moves the knee less than the recorded motion does. A converged predictor therefore sits
+relationship reversed, because a partially fitted model regresses toward the
+participant mean and so commands a flatter trajectory that moves the knee less
+than the recorded motion does. A converged predictor therefore sits
 in the regime where lower RMSE no longer implies better simulated behavior.}}
 
 \keywords{{surface electromyography, knee-angle prediction, prosthetic control,
@@ -397,7 +399,7 @@ part of the accuracy range.
 
 \subsection{{Data preparation}}
 
-The experiment used the public Gait120 dataset, which contains synchronised
+The experiment used the public Gait120 dataset, which contains synchronized
 full-body kinematics and right-leg sEMG from 120 healthy adult men performing
 seven movement tasks \cite{{boo2025,boo2025dataset}}. Only level walking was used, so
 that the prediction data and the MoCapAct reference bank represented the same
@@ -421,6 +423,8 @@ causal 250-sample (125-ms) root-mean-square envelope
 \cite{{chowdhury2013,phinyomark2018}}. No future sEMG entered an input frame.
 Predictor inputs and targets were not interpolated or time-normalized.
 
+\subsection{{Windowing, forecast horizon, and training}}
+
 Each prediction example contained 60 knee-angle frames (600~ms) and the final 15
 sampled envelope frames (150~ms) from all 12 sEMG channels. The target was the
 recorded knee angle 100~ms after the final input frame. That horizon is longer
@@ -429,8 +433,6 @@ joint movement \cite{{cavanagh1979}}, so an sEMG sample can carry information
 about motion that has not yet happened, and it matches the horizon at which
 comparable work predicts future knee angle from myoelectric and kinematic
 signals \cite{{coker2021}}.
-
-\subsection{{Windowing, forecast horizon, and training}}
 
 Because the study measures what prediction error does to a simulated walker, the
 predictor only has to be good enough to be worth simulating. The design does place
@@ -441,11 +443,13 @@ solution gives that: descent runs from the participant mean to the exact analyti
 optimum, and that optimum is the terminal checkpoint rather than an approximation
 of it. The second is that the sEMG contribution can be removed exactly, because setting the correction to zero removes the signal
 from a model that has already been fitted, instead of requiring a second fit whose
-capacity and initialisation would differ. A convolutional, recurrent or
+capacity and initialization would differ. A convolutional, recurrent or
 transformer predictor of the kind reviewed above would follow a stochastic
 training path to an endpoint that is not exactly reproducible, and its ablation
 would confound signal content with model capacity. The cost of this choice is
-that the result belongs to one model family, which is taken up below.
+that the result belongs to one model family, which
+Section~
+ef{{sec:future}} returns to.
 
 One participant-balanced pair of ridge regressions was fitted to trials 1--3
 \cite{{hoerl1970}}. The first predicted standardized future knee angle from the
@@ -475,7 +479,8 @@ fitted noise would raise held-out error rather than lower it. The ablation is
 therefore already informative about sEMG rather than about model size. As a
 further check, three surrogate conditions repeated the whole confirmation fit with
 the sEMG replaced by a signal preserving its statistics but not its correspondence
-with the knee; these are reported in the supplementary analysis. Every paired
+with the knee; these are reported in the supplementary analysis of surrogate
+controls. Every paired
 comparison was tested with a two-sided paired $t$-test on the per-participant
 differences.
 
@@ -493,20 +498,21 @@ continuous trial, evaluating aligned and shifted models on identical target rows
 
 The residual-fusion model has a closed-form solution, which yields one converged
 model and no trajectory to sample. Refitting on nested fractions of the
-calibration data does not help: a linear model fitted to a small fraction of 90
+trial 1--3 fitting data does not help: a linear model fitted to a small fraction of 90
 participants' level walking is already close to its converged error, so every such
 checkpoint lands in the same narrow band.
 
 Instead, the same model class was fitted by full-batch gradient descent on the same
 participant-balanced ridge objective, from a zero coefficient vector. At step zero
-each stage predicts the participant-balanced target mean, so the path begins near
-the intrinsic spread of the knee angle and descends to the closed-form solution,
+each stage predicts the participant-balanced target mean, so the path begins with an error close to the
+standard deviation of the knee angle itself and descends to the closed-form
+solution,
 which is appended as the terminal checkpoint. The descent therefore ends on exactly
 the model the confirmation run reports rather than near it.
 
-The step size was set well below the stability bound. The reason is sampling
-resolution rather than stability: near the bound the first steps collapse most of
-the error, so the high-error region is crossed between recorded points and cannot
+The step size was set well below the largest value for which the descent still
+converges. The reason is sampling resolution rather than stability: near that
+value the first steps collapse most of the error, so the high-error region is crossed between recorded points and cannot
 be sampled. Checkpoints were placed to tile the achieved training-RMSE range
 rather than the step index, because descent spends most of its steps near
 convergence. The reported path ran {path_protocol['descent_steps']} steps and
@@ -566,7 +572,7 @@ rather than by a replayed error.
 \begin{{figure}}[!htbp]
 \centering
 \includegraphics[width=\linewidth]{{fig04_simulation}}
-\caption{{A paired rollout at the least accurate model. \textbf{{A}} The unmodified reference. \textbf{{B}} The same matched motion with the right knee overridden; the substituted shank is highlighted. \textbf{{C}} Realized and commanded knee angle in both conditions. \textbf{{D}} The instability index in both conditions; shading marks the excess integrated as the outcome.}}\label{{fig:simulation}}
+\caption{{A paired rollout at the least accurate model. \textbf{{A}} The unmodified reference. \textbf{{B}} The same matched motion with the right knee overridden; the substituted shank is highlighted. \textbf{{C}} Realized and commanded knee angle in both conditions. \textbf{{D}} The instability index in both conditions; shading marks the excess instability that is integrated to give the outcome.}}\label{{fig:simulation}}
 \end{{figure}}
 
 \subsection{{Evaluating simulations with an instability metric}}
@@ -585,7 +591,7 @@ and has not been validated as a clinical stability or fall-risk measure.
 
 The primary association was a partial Spearman correlation between window
 prediction RMSE and excess instability, controlling for matching knee RMSE and
-thigh orientation RMS, following Frisch--Waugh--Lovell residualisation on ranked
+thigh orientation RMS, following Frisch--Waugh--Lovell residualization on ranked
 variables \cite{{spearman1904,frisch1933,lovell1963}}.
 
 Three complementary analyses are reported. \emph{{Per checkpoint}} repeats that analysis at each
@@ -627,7 +633,7 @@ $t({statistics['temporal_control']['aligned_vs_lagged']['paired_t']['df']})={sta
 
 \subsection{{Motion matching and paired simulation}}
 
-Across the fixed panel, the paired difference in excess-instability area between
+Across the fixed panel, the paired difference in excess instability between
 the residual-fusion and no-sEMG conditions was {signed(physics['mean'], 4)}~s (95\% CI {ci(physics['ci_95'], 4)};
 $t({physics['df']})={physics['t']:.2f}$, $p={pval(physics['p_two_sided'])}$). The
 prediction improvement attributable to sEMG was therefore not accompanied by a
@@ -671,12 +677,10 @@ is the level at which these data actually vary; the checkpoint means themselves
 are smooth by construction, so the rank correlation across levels does not rest
 on fourteen independent observations.
 
-Two mechanisms account for the inversion. First, substituting the knee is not
-free even when the substituted trajectory is exactly right: commanding the matched
-clip's own realized trajectory still raised the instability index by
-{signed(0.042, 3)} on average, on the same $[0,1]$ scale as the index itself. As
-prediction error falls to zero, excess instability therefore approaches that value
-rather than approaching zero. Second, a partially
+Commanding a matched clip's own recorded trajectory, which is the zero-error
+case, gave a mean excess instability of {signed(oracle_excess, 4)}~s over the
+{len(oracle_windows)} preflight windows, so the inversion is not explained by a
+fixed cost of substituting the knee. A partially
 fitted linear model regresses toward the participant mean, so it commands a
 gentler knee trajectory than the recorded one. A gentler trajectory perturbs the
 body less than the true motion does, and mean excess instability is
@@ -709,7 +713,7 @@ the match-adjusted association was
 \begin{{figure}}[!htbp]
 \centering
 \includegraphics[width=\linewidth]{{fig08_per_checkpoint}}
-\caption{{Why comparing windows cannot resolve the effect. \textbf{{A}} Match-adjusted association across windows at each accuracy level; every interval includes zero. \textbf{{B}} Between-window RMSE spread at each level, showing variation was available and the null is not a power limit.}}\label{{fig:perlevel}}
+\caption{{Match-adjusted association and between-window spread at each accuracy level. \textbf{{A}} Match-adjusted association across windows at each accuracy level; every interval includes zero. \textbf{{B}} Between-window RMSE spread at each level.}}\label{{fig:perlevel}}
 \end{{figure}}
 
 \begin{{table}}[!htbp]
@@ -729,7 +733,7 @@ Descent step & $n$ & Mean RMSE ($^{{\circ}}$) & SD ($^{{\circ}}$) & Mean excess 
 
 The central finding is that prediction error and simulated walking instability are
 related across part of the accuracy range and not across the rest of it. Above
-approximately {deg(accuracy['breakpoint_rmse_deg'], 2)}$^{{\circ}}$ of prediction
+{deg(accuracy['breakpoint_rmse_deg'], 2)}$^{{\circ}}$ of prediction
 error, a less accurate model produced a less stable simulated walker, and the
 slope is positive across that region. Below that point the
 relationship inverted, so that further improvements in accuracy were accompanied by
@@ -753,16 +757,8 @@ EMG-driven prosthetic control \cite{{cimolato2022,ahkami2023}} might reasonably
 extend to the evaluation stage, and not only to preprocessing, architecture, and
 validation strategy.
 
-Two mechanisms account for the inversion. The first is that substituting the knee is not free even when
-the substituted trajectory is correct. Commanding the matched clip's own realized
-trajectory still perturbed the simulated body, so excess instability approaches a
-value rather than approaching zero as prediction error falls. The
-second is that a partially fitted linear model regresses toward the participant
-mean and therefore commands a gentler knee trajectory than the recorded one. A
-gentler trajectory disturbs the walker less than the true motion does, which means
-that through the middle of the accuracy range a less accurate model can be
-mechanically less disruptive. Neither mechanism implies that accuracy is
-undesirable; both indicate that the mapping from accuracy to whole-body behavior
+The mechanism behind the inversion does not imply that accuracy is undesirable.
+It indicates that the mapping from accuracy to whole-body behavior
 is not monotone, and that the quantity being minimized during training is not the
 quantity that determines stability once the prediction is placed in a body.
 
@@ -839,7 +835,7 @@ accuracy levels. It locates where the sampled association changes; it is not a
 changepoint test with its own error rate, and the unsampled interval between
 checkpoints does not define a safety threshold.
 
-\subsection{{Future Work}}
+\subsection{{Future Work}}\label{{sec:future}}
 
 The turn reported here was located with one model class on one evaluation
 design, and the first question for further work is whether it moves. A
@@ -873,10 +869,9 @@ over part of the accuracy range only. Above
 {deg(accuracy['breakpoint_rmse_deg'], 2)}$^{{\circ}}$ (95\% CI
 {ci(accuracy['breakpoint_95pct_ci'], 2)}$^{{\circ}}$) a less accurate model
 produced a less stable simulated walker. Below that point the relationship
-inverted, because substituting the knee perturbs the body even when the
-substituted trajectory is correct, and because a partially fitted model
-regresses toward the participant mean, so it commands a flatter trajectory that
-moves the knee less than the recorded motion does. Root-mean-square error therefore tracked
+inverted, because a partially fitted model regresses toward the participant mean
+and so commands a flatter trajectory that moves the knee less than the recorded
+motion does. Root-mean-square error therefore tracked
 physical behavior only above the turn, and the converged model evaluated here,
 at
 {deg(min(accuracy['mean_rmse_deg']), 2)}$^{{\circ}}$, sits below the turn.

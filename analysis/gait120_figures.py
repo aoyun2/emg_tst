@@ -486,7 +486,7 @@ def fig_per_checkpoint(data: dict[str, Any], out: Path) -> Path:
     ax.set_xlabel("model accuracy: mean window RMSE (deg)")
     ax.set_ylabel("between-window RMSE SD (deg)")
     ax.set_ylim(0, max(sd) * 1.25)
-    ax.text(0.98, 0.06, "spread is available at every level,\nso the null is not a power limit",
+    ax.text(0.98, 0.06, "between-window spread\nat every level",
             transform=ax.transAxes, ha="right", fontsize=6.4, color=MUTED)
     clean(ax); panel(ax, "B", x=-0.18)
     return save(fig, out, "fig08_per_checkpoint.pdf")
