@@ -142,7 +142,8 @@ general activity.
 
 Participants S001--S030 formed a development cohort used to choose
 hyperparameters. The reported experiment used the remaining
-$n=90$ participants, S031--S120. Within each
+$n=90$ participants, S031--S120, referred to below
+as the confirmation cohort. Within each
 participant, trials 1--3 were used to fit the model and to compute the mean and
 standard deviation of that participant's twelve sEMG channels and knee angle,
 which standardize the inputs and the target. Trial 5 was held out and used for
@@ -169,9 +170,7 @@ about motion that has not yet happened, and it matches the horizon at which
 comparable work predicts future knee angle from myoelectric and kinematic
 signals \cite{coker2021}.
 
-Because the study measures what prediction error does to a simulated walker, the
-predictor only has to be good enough to be worth simulating. The design does place
-two requirements on it. The first is that the model's accuracy can be varied
+The design places two requirements on the predictor. The first is that the model's accuracy can be varied
 continuously across a wide range and returned to the same endpoint every time,
 which is what locating the turn depends on. A convex objective with a closed-form
 solution gives that: descent runs from the participant mean to the exact analytic
@@ -181,9 +180,7 @@ from a model that has already been fitted, instead of requiring a second fit who
 capacity and initialization would differ. A convolutional, recurrent, or
 transformer predictor of the kind reviewed above would follow a stochastic
 training path to an endpoint that is not exactly reproducible, and its ablation
-would confound signal content with model capacity. The cost of this choice is
-that the result belongs to one model family, which
-Section~\ref{sec:future} returns to.
+would confound signal content with model capacity.
 
 One participant-balanced pair of ridge regressions was fitted to trials 1--3
 \cite{hoerl1970}. The first predicted standardized future knee angle from the
@@ -209,8 +206,7 @@ absolute kinematic residual from trials 1--3.
 
 Because penalties were fixed on a separate development cohort and every model was
 scored on a held-out later trial from held-out participants, added capacity that
-fitted noise would raise held-out error rather than lower it. The ablation is
-therefore already informative about sEMG rather than about model size. As a
+fitted noise would raise held-out error rather than lower it. As a
 further check, three surrogate conditions repeated the whole confirmation fit with
 the sEMG replaced by a signal preserving its statistics but not its correspondence
 with the knee; these are reported in the supplementary analysis of surrogate
@@ -261,14 +257,11 @@ The fixed physics panel was drawn from confirmation trial 5 before matching or
 simulation outcomes were known. A seeded participant-balanced procedure selected
 80 one-second windows, giving each eligible participant one
 window before assigning a second. Prediction error was not used for selection.
-The panel size was set by the simulation budget, since every window is replayed
-in both conditions at all
-14 accuracy levels; because the same panel is used
-at every level, its size limits precision rather than biasing the comparison
-between levels.
 
 Each query was matched to a level-walking reference from MoCapAct
-\cite{wagener2022}. Candidate snippets were aligned by a constant knee offset and
+\cite{wagener2022}, which supplies short motion-capture clips, termed snippets,
+and for each one a policy trained to reproduce that clip in simulation, termed
+its expert policy. Candidate snippets were aligned by a constant knee offset and
 either sign convention, without amplitude scaling. Knee RMSE determined the match
 rank; the RMS geodesic angle between the query and candidate right-thigh
 orientations was retained as a match-quality covariate. Mean
@@ -290,15 +283,16 @@ offset and sign that the match established:
 Proportional and derivative gains were $K_p=400$ and $K_d=20$ with the actuator
 force limited to 160, and the desired velocity was the causal backward difference
 of the commanded trajectory, zero at the first evaluation step. The gains were
-set on the apparatus rather than on any prediction: commanding a matched clip's
-own recorded trajectory has to reproduce that trajectory in joint space, and a
-position-only controller with no feedforward velocity trailed a fast knee badly
-enough to miss the 10$^{\circ}$ tracking
-criterion used to check the apparatus. Adding the feedforward term brought
-tracking inside it.
+set by requiring that commanding a matched clip's own recorded trajectory
+reproduce that trajectory in joint space to within
+10$^{\circ}$; no prediction was used to
+set them.
 
 The paired reference condition ran the unmodified expert policy on the same
-snippet, initial state, warm-up, and controller. Nothing in either rollout reads
+snippet, initial state, and controller, and began from the same point in the
+clip after the same number of warm-up steps, which are simulation steps run
+before the evaluation window so that the policy is already tracking the clip
+when measurement starts. Nothing in either rollout reads
 the recorded future knee angle, so the simulation is driven by the model output
 rather than by a replayed error.
 
@@ -314,9 +308,28 @@ rather than by a replayed error.
 
 At each control step the convex hull of foot--ground contact points defined the
 support polygon, and the XCoM extrapolated the horizontal center-of-mass
-position in the direction of its velocity. A bounded per-step instability index in $[0,1]$ was
-derived from the signed support margin and its short-term trend, and integrated over the
-window, giving a quantity in seconds. Absolute instability depends on how stable a
+position in the direction of its velocity. Let $m$ be the signed distance from the
+XCoM to the boundary of that polygon, in meters, positive when the XCoM lies
+inside it.
+
+The instability index was computed at each step from the trailing ten control
+steps of $m$. Writing $m_{\mathrm{min}}$ and $m_{\mathrm{end}}$ for the
+smallest and the last margin in that window, and $s$ for the slope of $m$ across
+it in meters per second, three terms were each clipped to $[0,1]$,
+\begin{equation}
+r_{\mathrm{min}}=\frac{-m_{\mathrm{min}}-0.42}{0.40},\qquad
+r_{\mathrm{end}}=\frac{-m_{\mathrm{end}}-0.30}{0.35},\qquad
+r_{s}=\frac{-s-0.15}{0.45},
+\end{equation}
+and combined into the index
+$I=0.55\,r_{\mathrm{min}}+0.25\,r_{\mathrm{end}}+0.20\,r_{s}$, again
+clipped to $[0,1]$. Each term is zero while the XCoM stays near or inside the
+support polygon and reaches one when it is far outside it or leaving it quickly.
+The ramp endpoints and weights were set on reference walking and running so that
+unperturbed motion scores near zero. Steps at which no support margin could be
+computed, such as flight phases, were given $I=0.25$.
+
+Integrating $I$ over the window gives a quantity in seconds. Absolute instability depends on how stable a
 matched reference already is,
 so the reported outcome is excess instability, $I'=I_{\mathrm{PRED}}-I_{\mathrm{REF}}$,
 measured against each window's own paired reference. The index is derived from
@@ -328,7 +341,7 @@ clinical stability or fall-risk measure.
 The primary association was a partial Spearman correlation between window
 prediction RMSE and excess instability, controlling for matching knee RMSE and
 thigh orientation RMS, following Frisch--Waugh--Lovell residualization on ranked
-variables \cite{spearman1904,frisch1933,lovell1963}.
+variables, and is called the match-adjusted association below \cite{spearman1904,frisch1933,lovell1963}.
 
 Three complementary analyses are reported. \emph{Per checkpoint} repeats that analysis at each
 accuracy level and carries the RMSE spread available to it, which separates a
@@ -416,7 +429,8 @@ on fourteen independent observations.
 
 Commanding a matched clip's own recorded trajectory, which is the zero-error
 case, gave a mean excess instability of -0.0004~s over the
-10 preflight windows, so the inversion is not explained by a
+10 windows of a check run before the main panel, so the
+inversion is not explained by a
 fixed cost of substituting the knee. A partially
 fitted linear model regresses toward the participant mean, so it commands a
 gentler knee trajectory than the recorded one. A gentler trajectory perturbs the
