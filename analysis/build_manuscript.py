@@ -360,15 +360,15 @@ A common method of physically evaluating locomotion behavior is to evaluate the 
 
 To determine whether the XCoM is in an acceptable state, an area called the support polygon must be defined. In double support, or two-legged motion, the support polygon includes the area between both feet. The relationship between the XCoM and the support polygon is defined by a metric called the support margin; if the XCoM remains inside this margin near the support polygon, the body is generally easier to stabilize. If the XCoM strays too far, corrective steps by the legs may be necessary to prevent falling, resulting in a high instability (i.e. stumbling) \cite{{hof2005,hof2008}}.
 
-Functional evaluation in prosthetics research thus requires more than numerical predictive accuracy. Equally as, if not more important to consider is the question of whether or not the knee angle derived from the prediction model remains compatible with gait, support, and balance in a full physical context. The literature has made strong progress improving on current numerical benchmarks, but a remaining gap can be found by questioning if those numerical benchmarks are accurate representations of functional success. RMSE can show that a model reconstructs a target angle accurately, but it cannot by itself show whether that angle would preserve the balance and the characteristics of the original motion as part of a physical system. This gap motivates simulation-based evaluation as the next step in the evaluation process of prosthetic regression models.
+Functional evaluation in prosthetics research thus requires more than numerical predictive accuracy. Equally, if not more, important to consider is the question of whether or not the knee angle derived from the prediction model remains compatible with gait, support, and balance in a full physical context. The literature has made strong progress improving on current numerical benchmarks, but a remaining gap can be found by questioning if those numerical benchmarks are accurate representations of functional success. RMSE can show that a model reconstructs a target angle accurately, but it cannot by itself show whether that angle would preserve the balance and the characteristics of the original motion as part of a physical system. This gap motivates simulation-based evaluation as the next step in the evaluation process of prosthetic regression models.
 
 Two features of how such evaluations are ordinarily built stand in the way of
-answering it directly. The first concerns where the predictor sits. Hargrove et
+testing directly whether prediction accuracy corresponds to functional behavior. The first concerns where the predictor sits. Hargrove et
 al.\ \cite{{hargrove2007}} drew a distinction between offline scoring and
 real-time control, and the same distinction applies to simulation: a rollout that
 reproduces a recorded error by displacing a reference trajectory has to be handed
 the recorded future target in order to do so, and a controller supplied with the
-answer is a replay rather than a controller. Only a predictor placed inside the
+answer is replaying a recording rather than controlling. Only a predictor placed inside the
 control loop, generating the signal that the simulated joint actually follows,
 tests what a deployed model would do. The second concerns the range of accuracy
 examined. A converged model occupies a narrow band of error, and an association
@@ -497,8 +497,8 @@ continuous trial, evaluating aligned and shifted models on identical target rows
 
 The residual-fusion model has a closed-form solution, which yields one converged
 model and no trajectory to sample. Refitting on nested fractions of the
-trial 1--3 fitting data does not help: a linear model fitted to a small fraction of 90
-participants' level walking is already close to its converged error, so every such
+trial 1--3 fitting data does not help: a linear model fitted to a small fraction of
+{ablation['participant_count']} participants' level walking is already close to its converged error, so every such
 checkpoint lands in the same narrow band.
 
 Instead, the same model class was fitted by full-batch gradient descent on the same
