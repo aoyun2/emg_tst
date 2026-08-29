@@ -327,7 +327,7 @@ relationship reversed, because substituting the knee perturbs the body even when
 the substituted trajectory is correct, and because a partially fitted model
 regresses toward the participant mean, so it commands a flatter trajectory that
 moves the knee less than the recorded motion does. A converged predictor therefore sits
-in the regime where lower RMSE no longer implies better simulated behaviour.}}
+in the regime where lower RMSE no longer implies better simulated behavior.}}
 
 \keywords{{surface electromyography, knee-angle prediction, prosthetic control,
 biomechanics, MuJoCo, motion matching, extrapolated center of mass}}
@@ -335,173 +335,57 @@ biomechanics, MuJoCo, motion matching, extrapolated center of mass}}
 \maketitle
 
 \section{{Introduction}}\label{{sec:introduction}}
+Lower-limb amputation remains a substantial rehabilitation problem in the United States, and transfemoral (above-the-knee) amputation is especially disruptive because it removes the knee joint and many of the mechanical advantages that it provides during standing, walking, sitting, and transitions onto different terrain \cite{{dillingham2002,pran2021}}. Even with contemporary microprocessor-based artificial knees, users frequently walk more slowly, expend more mechanical work, and experience functional limitations that can vary from one wearer to another \cite{{pinhey2022}}. Following from these limitations of the status quo, the main goal of current research continues to be the accurate reconstruction of the knee trajectory across changing gait states, variable sensor conditions, and differences in movement and body structure from patient to patient.
 
-Lower-limb amputation remains a substantial rehabilitation problem, and
-transfemoral (above-the-knee) amputation is especially disruptive because it
-removes the knee joint and many of the mechanical advantages that it provides
-during standing, walking, sitting, and transitions onto different terrain
-\cite{{dillingham2002,pran2021}}. Even with contemporary microprocessor-based
-artificial knees, users frequently walk more slowly, expend more mechanical work,
-and experience functional limitations that can vary from one wearer to another
-\cite{{pinhey2022}}. Following from these limitations of the status quo, a central
-goal of current research continues to be the accurate reconstruction of the knee
-trajectory across changing gait states, variable sensor conditions, and
-differences in movement and body structure from patient to patient.
+The major challenge in transfemoral prosthetics is that direct information about the missing or mechanically replaced knee is unavailable to predictive solutions for the knee angle. A reconstructive algorithm must instead infer knee behavior from nearby available signals that are practical and preferably non-invasive to collect from the patient. Surface electromyography (sEMG) provides a window into muscle activations, while inertial measurement units (IMUs) give predictor models kinematic information from the limbs, such as acceleration, angular velocity, and position \cite{{deluca1997,farina2014}}. These signals are valuable for different reasons. sEMG contains neuromuscular intent, but is noisy, non-stationary, and sensitive to fatigue, variance in electrode placement, skin impedance, and inter-subject variability, which is why artificial intelligence and machine learning techniques are commonly used to process this rather volatile signal \cite{{huang2008,chowdhury2013,phinyomark2018}}. IMUs are comparatively stable, but encode the current physical state of the limbs and body rather than the direct intent of a patient to activate a specific muscle group. The task of prediction, or regression, as it is referred to in the literature, involves fusing the noisy sEMG signal with contextual kinematic data from IMUs to estimate the knee angle at some future horizon, typically a few milliseconds from the time the sEMG and IMU data are captured.
 
-The major challenge in transfemoral prosthetics is that direct information about
-the missing or mechanically replaced knee is unavailable to predictive solutions
-for the knee angle. A reconstructive algorithm must instead infer knee behaviour
-from nearby signals that are practical and preferably non-invasive to collect from
-the patient. Surface electromyography (sEMG) provides a window into muscle
-activations, while kinematic measurements describe the motion already under way
-\cite{{deluca1997,farina2014}}. These signals are valuable for different reasons.
-sEMG contains neuromuscular intent, but it is noisy, non-stationary, and sensitive
-to fatigue, variance in electrode placement, skin impedance, and inter-subject
-variability, which is why machine-learning techniques are commonly used to process
-this rather volatile signal \cite{{huang2008,chowdhury2013,phinyomark2018}}.
-Kinematic measurements are comparatively stable, but they encode the current
-physical state of the limb rather than the direct intent of a patient to activate a
-specific muscle group. The task of prediction, or regression as it is referred to
-in the literature, involves fusing the noisy sEMG signal with contextual kinematic
-data to estimate the knee angle at some future horizon, typically a few tens of
-milliseconds beyond the moment at which the signals are captured.
+\subsection{{Current Methods for Knee-Angle Prediction}}
+This major inference problem has been studied with both classical and deep methods in machine learning. Earlier work in myoelectric control relied heavily on feature-engineered models and pattern-recognition pipelines, including support vector methods, relevance vector regression, and handcrafted EMG features \cite{{hudgins1993,hargrove2007,lihb2023}}. More recent studies show that convolutional (CNN) and recurrent neural networks (LSTM) can model time dependencies in continuous joint-angle prediction more effectively than many classical benchmarks, particularly when sEMG and kinematic information are combined into a temporally-aware model \cite{{sun2022,yi2022,zhang2022,zhu2022,moghadam2023,keles2023}}. Transformer-based models have also shown strong results in wearable biomechanics and myoelectric prediction, particularly when sequence length and cross-subject generalization become central concerns \cite{{zerveas2021,liang2023,lix2023,linhe2024,lin2025a,lin2025b}}. At the same time, systematic reviews of EMG-driven lower-limb prosthetic control still describe the field as methodologically evolving, with researchers still trying novel techniques, especially with respect to preprocessing, validation strategy, and model architecture, to improve on current benchmarks \cite{{cimolato2022,ahkami2023}}.
 
-\subsection{{Current methods for knee-angle prediction}}
+\subsection{{Simulation of Virtual Prosthetics}}
+The primary problem with the current evaluation metric, cross-validation Root Mean Squared Error (RMSE), is that prediction accuracy alone does not guarantee the prosthetic's true usefulness in an actual kinematic context. Joint-angle regressors, such as the methods described above, are only valuable if their outputs are biomechanically plausible when considered in the context of whole-body motion. This gap between statistical error and real-time function has already been examined in myoelectric control research. Hargrove et al.\ \cite{{hargrove2007}}, for example, evaluated a pattern-recognition controller through a real-time virtual environment rather than solely reporting classifier accuracy. Similarly, Krasoulis et al.\ \cite{{krasoulis2019}} showed that prosthetic finger performance improved with user practice and could not be reliably inferred from machine learning statistics alone. Together, these studies suggest that a low RMSE could hide functionally poor control of the prosthetic.
 
-This inference problem has been studied with both classical and deep methods in
-machine learning. Earlier work in myoelectric control relied heavily on
-feature-engineered models and pattern-recognition pipelines, including handcrafted
-EMG features, support vector methods, and relevance vector regression
-\cite{{hudgins1993,hargrove2007,lihb2023}}. More recent studies show that
-convolutional and recurrent networks can model time dependencies in continuous
-joint-angle prediction more effectively than many classical benchmarks,
-particularly when sEMG and kinematic information are combined into a temporally
-aware model \cite{{sun2022,yi2022,zhang2022,zhu2022,moghadam2023,keles2023}}.
-Transformer-based models have also shown strong results in wearable biomechanics
-and myoelectric prediction, particularly where sequence length and cross-subject
-generalisation become central concerns
-\cite{{zerveas2021,liang2023,lix2023,linhe2024,lin2025a,lin2025b}}. At the same
-time, systematic reviews of EMG-driven lower-limb prosthetic control still describe
-the field as methodologically evolving, with preprocessing, validation strategy,
-and model architecture all under active revision \cite{{cimolato2022,ahkami2023}}.
+Another issue is that real human-subject testing is difficult, expensive, and potentially risky. Testing a weak or unstable controller on an actual prosthesis could create safety concerns for the user. For that reason, virtual environments and physics-based simulation can serve as an intermediate evaluation layer between offline prediction and real-world trials. Hargrove et al.\ \cite{{hargrove2007}}, for example, evaluated a pattern-recognition myoelectric controller in a real-time virtual environment rather than relying only on offline classification accuracy. Krasoulis et al.\ \cite{{krasoulis2019}} similarly showed that prosthetic finger-control performance changed with user practice, suggesting that offline model performance does not fully capture practical control quality.
 
-What these studies share is the standard against which they are judged.
-Performance is reported almost universally as cross-validated root-mean-square
-error (RMSE) against a recorded knee trajectory, and a lower value is treated as
-evidence of a controller that would serve a wearer better.
+Physics-based simulation offers a closer approximation to a real-life locomotion context because it models bodies using joints, forces, contacts, and dynamics instead of simply displaying a motion visually. One Python implementation of physics-based simulation is MuJoCo, a physics engine commonly used in research for model-based control and simulated articulated bodies \cite{{todorov2012}}. For prosthetic research, this kind of engine is valuable because it can test whether a predicted movement is dynamically plausible in a controlled environment. A simulated body can fall, lose balance, or react poorly to a control signal, which provides information that a static prediction-error number cannot provide.
 
-\subsection{{Simulation of virtual prosthetics}}
+Motion-capture-based resources also help make simulation more realistic. MoCapAct provides motion-capture-based humanoid control data, allowing simulated movement to be grounded in recorded human-like motion rather than arbitrary synthetic poses \cite{{wagener2022}}. One derivative technique is motion matching, a related idea from video game character animation in which a system searches a database for the motion clip that best matches a query \cite{{clavet2016}}. In a prosthetic-evaluation context, motion matching is useful because it can place a predicted joint trajectory into a broader whole-body movement context. Without that context, a knee prediction remains only a time-series output; with context, it can be examined as part of a simulated gait sequence.
 
-The primary problem with that convention is that prediction accuracy alone does not
-guarantee a prosthesis's true usefulness in an actual kinematic context.
-Joint-angle regressors, such as the methods described above, are only valuable if
-their outputs are biomechanically plausible when considered in the context of
-whole-body motion. This gap between statistical error and real-time function has
-already been examined in myoelectric control research. Hargrove et al.
-\cite{{hargrove2007}} evaluated a pattern-recognition controller through a
-real-time virtual environment rather than solely reporting classifier accuracy, and
-Krasoulis et al. \cite{{krasoulis2019}} showed that prosthetic finger performance
-improved with user practice and could not be reliably inferred from offline
-machine-learning statistics alone. Together, these studies suggest that a low RMSE
-could hide functionally poor control of the prosthetic.
+It is important to note that simulation is not a replacement for real human testing. A simulated body is still a simplified model of a real person, and simulated instability is not the same as a clinical fall outcome. However, simulation can still expose a gap between local prediction accuracy and whole-body functional behavior. A model that performs well by RMSE may produce a trajectory that is poorly timed, physically awkward, or destabilizing once inserted into a locomotion system. Conversely, a slightly higher-RMSE trajectory may not be physically harmful if its errors occur in less sensitive parts of the gait cycle. By opening the door for investigation into the ability of RMSE to predict functional performance, simulation helps test whether numerical prediction metrics represent real practical ability in a prosthetic algorithm.
 
-Another issue is that real human-subject testing is difficult, expensive, and
-potentially risky, since testing a weak or unstable controller on an actual
-prosthesis could create safety concerns for the user. For that reason, virtual
-environments and physics-based simulation can serve as an intermediate evaluation
-layer between offline prediction and real-world trials.
+\subsection{{Balance Metrics and Functional Evaluation}}
+A common method of physically evaluating locomotion behavior is to evaluate the balance of a full body system during a walk cycle. This is traditionally done by finding the center of mass, or CoM, which constitutes the average concentration of the mass distributed across the body. During standing, keeping the CoM over the feet is closely related to staying balanced and upright. In a moving scenario, however, determining instability is more complex. A person's CoM may be in an acceptable position at one instant but still moving quickly enough that a corrective step is needed lest a loss of balance occur. The extrapolated center of mass, or XCoM, accounts for this by incorporating both the CoM and its velocity, allowing dynamic movement to be accounted for while examining balance \cite{{hof2005,hof2008}}.
 
-Physics-based simulation offers a closer approximation to a real-life locomotion
-context because it models bodies using joints, forces, contacts, and dynamics
-instead of simply displaying a motion visually. MuJoCo is one such engine, used
-commonly in research for model-based control and simulated articulated bodies
-\cite{{todorov2012}}. For prosthetic research, this kind of engine is valuable
-because it can test whether a predicted movement is dynamically plausible in a
-controlled environment. A simulated body can fall, lose balance, or react poorly to
-a control signal, which provides information that a static prediction-error number
-cannot provide.
+To determine whether the XCoM is in an acceptable state, an area called the support polygon must be defined. In double support, or two-legged motion, the support polygon includes the area between both feet. The relationship between the XCoM and the support polygon is defined by a metric called the support margin; if the XCoM remains inside this margin near the support polygon, the body is generally easier to stabilize. If the XCoM strays too far, corrective steps by the legs may be necessary to prevent falling, resulting in a high instability (i.e. stumbling) \cite{{hof2005,hof2008}}.
 
-Motion-capture-based resources also help make simulation more realistic. MoCapAct
-provides motion-capture-based humanoid control data, allowing simulated movement to
-be grounded in recorded human-like motion rather than arbitrary synthetic poses
-\cite{{wagener2022}}. One derivative technique is motion matching, a related idea
-from video game character animation in which a system searches a database for the
-motion clip that best matches a query \cite{{clavet2016}}. In a
-prosthetic-evaluation context, motion matching is useful because it can place a
-predicted joint trajectory into a broader whole-body movement context. Without that
-context, a knee prediction remains only a time-series output; with context, it can
-be examined as part of a simulated gait sequence.
+Functional evaluation in prosthetics research thus requires more than numerical predictive accuracy. Equally as, if not more important to consider is the question of whether or not the knee angle derived from the prediction model remains compatible with gait, support, and balance in a full physical context. The literature has made strong progress improving on current numerical benchmarks, but a remaining gap can be found by questioning if those numerical benchmarks are accurate representations of functional success. RMSE can show that a model reconstructs a target angle accurately, but it cannot by itself show whether that angle would preserve the balance and the characteristics of the original motion as part of a physical system. This gap motivates simulation-based evaluation as the next step in the evaluation process of prosthetic regression models.
 
-It is important to note that simulation is not a replacement for real human
-testing. A simulated body is still a simplified model of a real person, and
-simulated instability is not the same as a clinical fall outcome. However,
-simulation can still expose a gap between local prediction accuracy and whole-body
-functional behaviour. A model that performs well by RMSE may produce a trajectory
-that is poorly timed, physically awkward, or destabilising once inserted into a
-locomotion system. Conversely, a slightly higher-RMSE trajectory may not be
-physically harmful if its errors occur in less sensitive parts of the gait cycle.
-
-\subsection{{Balance metrics and functional evaluation}}
-
-A common method of physically evaluating locomotion behaviour is to assess the
-balance of a full body system during a walk cycle. This is traditionally done by
-finding the centre of mass, or CoM, which constitutes the average concentration of
-the mass distributed across the body. During standing, keeping the CoM over the
-feet is closely related to staying balanced and upright. In a moving scenario,
-however, determining instability is more complex. A person's CoM may be in an
-acceptable position at one instant but still moving quickly enough that a
-corrective step is needed lest a loss of balance occur. The extrapolated centre of
-mass, or XCoM, accounts for this by incorporating both the CoM and its velocity,
-allowing dynamic movement to be accounted for while examining balance
-\cite{{hof2005,hof2008}}.
-
-To determine whether the XCoM is in an acceptable state, an area called the support
-polygon must be defined. In double support, or two-legged motion, the support
-polygon includes the area between both feet. The relationship between the XCoM and
-the support polygon is defined by a metric called the support margin; if the XCoM
-remains inside this margin near the support polygon, the body is generally easier
-to stabilise. If the XCoM strays too far, corrective steps by the legs may be
-necessary to prevent falling, resulting in a high instability
-\cite{{hof2005,hof2008}}. The margin is an instantaneous mechanical quantity rather
-than a clinical outcome, and its limitations as a descriptor of stability are
-documented \cite{{gill2019,pickle2018,curtze2024}}.
-
-Functional evaluation in prosthetics research thus requires more than numerical
-predictive accuracy. Equally as, if not more important to consider is the question
-of whether the knee angle derived from the prediction model remains compatible with
-gait, support, and balance in a full physical context. The literature has made
-strong progress improving on current numerical benchmarks, but a remaining gap can
-be found by questioning whether those numerical benchmarks are accurate
-representations of functional success. RMSE can show that a model reconstructs a
-target angle accurately, but it cannot by itself show whether that angle would
-preserve the balance and the characteristics of the original motion as part of a
-physical system.
-
-That question has not been answered directly, and two features of how such
-evaluations are ordinarily constructed stand in the way. The first concerns where
-the predictor sits. The distinction Hargrove et al. \cite{{hargrove2007}} drew
-between offline scoring and real-time control applies to simulation as much as to a
-virtual environment: a rollout that reproduces a recorded error by displacing a
-reference trajectory must be handed the recorded future target in order to do so,
-and a controller supplied with the answer is a replay rather than a controller.
-Only a predictor placed inside the control loop, generating the signal that the
-simulated joint actually follows, tests what a deployed model would do. The second
-concerns the range of accuracy examined. A converged model occupies a narrow band
-of error, and an association estimated inside that band cannot separate the
-possibility that error does not matter from the possibility that error did not
-vary. A study that evaluates one trained model is restricted to comparing
-prediction windows against one another, where differences are dominated by which
-motion each window contains rather than by the predictor that drove it.
+Two features of how such evaluations are ordinarily built stand in the way of
+answering it directly. The first concerns where the predictor sits. Hargrove et
+al.\ \cite{{hargrove2007}} drew a distinction between offline scoring and
+real-time control, and the same distinction applies to simulation: a rollout that
+reproduces a recorded error by displacing a reference trajectory has to be handed
+the recorded future target in order to do so, and a controller supplied with the
+answer is a replay rather than a controller. Only a predictor placed inside the
+control loop, generating the signal that the simulated joint actually follows,
+tests what a deployed model would do. The second concerns the range of accuracy
+examined. A converged model occupies a narrow band of error, and an association
+estimated inside that band cannot separate the possibility that error does not
+matter from the possibility that error did not vary. A study that evaluates one
+trained model can only compare prediction windows against one another, where
+differences are dominated by which motion each window contains rather than by the
+predictor that drove it.
 
 The present study addresses the question by holding the evaluation panel fixed and
 varying the model instead. One fixed panel of walking windows is replayed at a
 series of accuracy levels sampled along a single model's own gradient-descent
 training path, with the predicted knee angle serving as the tracking target of the
-simulated joint throughout. Because the windows, the matched reference
-motions, and the initial states are identical at every level, the only thing that
-differs between them is how accurate the model was. That makes it possible to ask
-whether RMSE and simulated walking instability are related at all, and if so,
-across which part of the accuracy range.
+simulated joint throughout. Because the windows, the matched reference motions,
+and the initial states are identical at every level, the only thing that differs
+between them is how accurate the model was. That makes it possible to ask whether
+RMSE and simulated walking instability are related at all, and if so, across which
+part of the accuracy range.
+
 
 \begin{{figure}}[!htbp]
 \centering
@@ -534,11 +418,11 @@ comparison, and every interval and test was computed at the participant
 level \cite{{roberts2017}}.
 
 The released sEMG was sampled at 2000~Hz and the OpenSim joint angles at 100~Hz.
-Twelve right-leg sEMG channels were retained. Each was mean-centred, filtered with
+Twelve right-leg sEMG channels were retained. Each was mean-centered, filtered with
 a second-order 20--500-Hz Butterworth band-pass, rectified, and converted to a
 causal 250-sample (125-ms) root-mean-square envelope
 \cite{{chowdhury2013,phinyomark2018}}. No future sEMG entered an input frame.
-Predictor inputs and targets were not interpolated or time-normalised.
+Predictor inputs and targets were not interpolated or time-normalized.
 
 Each prediction example contained 60 knee-angle frames (600~ms) and the final 15
 sampled envelope frames (150~ms) from all 12 sEMG channels. The target was the
@@ -568,7 +452,7 @@ would confound signal content with model capacity. The cost of this choice is
 that the result belongs to one model family, which is taken up below.
 
 One participant-balanced pair of ridge regressions was fitted to trials 1--3
-\cite{{hoerl1970}}. The first predicted standardised future knee angle from the
+\cite{{hoerl1970}}. The first predicted standardized future knee angle from the
 60-frame knee history. The second predicted the remaining training residual from
 the sEMG history. Equal total weight per participant prevented participants with
 more eligible frames from dominating the fit. The fused estimate was
@@ -692,7 +576,7 @@ rather than by a replayed error.
 \subsection{{Evaluating simulations with an instability metric}}
 
 At each control step the convex hull of foot--ground contact points defined the
-support polygon, and XCoM extended horizontal centre-of-mass position in the
+support polygon, and XCoM extended horizontal center-of-mass position in the
 direction of its velocity. A bounded per-step instability index in $[0,1]$ was
 derived from the signed margin and its short-term trend, and integrated over the
 window. Absolute instability depends on how stable a matched reference already is,
@@ -707,7 +591,7 @@ prediction RMSE and excess instability, controlling for matching knee RMSE and
 thigh orientation RMS, following Frisch--Waugh--Lovell residualisation on ranked
 variables \cite{{spearman1904,frisch1933,lovell1963}}.
 
-Three complementary analyses are reported. \emph{{Per checkpoint}} repeats that analysis at each
+Three complementary analyzes are reported. \emph{{Per checkpoint}} repeats that analysis at each
 accuracy level and carries the RMSE spread available to it, which separates a
 near-zero association from a near-zero spread.
 \emph{{Within window}} correlates each window's own accuracy against its own excess
@@ -793,7 +677,7 @@ on fourteen independent observations.
 
 Two mechanisms account for the inversion. First, substituting the knee is not
 free even when the substituted trajectory is exactly right: commanding the matched
-clip's own realised trajectory still changed fall risk by
+clip's own realized trajectory still changed fall risk by
 {signed(0.042, 3)} on average. Excess instability therefore approaches that
 mechanism floor as prediction error vanishes, not zero. Second, a partially
 fitted linear model regresses toward the participant mean, so it commands a
@@ -853,7 +737,7 @@ error, a less accurate model produced a less stable simulated walker, and the
 ordering held at every level sampled in that region. Below that point the
 relationship inverted, so that further improvements in accuracy were accompanied by
 slightly more excess instability rather than less. RMSE is therefore not a general
-proxy for physical behaviour. It behaves as a proxy within a band, and the boundary
+proxy for physical behavior. It behaves as a proxy within a band, and the boundary
 of that band falls inside the range of accuracies that contemporary models occupy.
 
 That last point is what gives the result practical weight. The most accurate model
@@ -873,7 +757,7 @@ extend to the evaluation stage, and not only to preprocessing, architecture, and
 validation strategy.
 
 Two mechanisms account for the inversion. The first is that substituting the knee is not free even when
-the substituted trajectory is correct. Commanding the matched clip's own realised
+the substituted trajectory is correct. Commanding the matched clip's own realized
 trajectory still perturbed the simulated body, so excess instability approaches a
 mechanism floor as prediction error vanishes rather than approaching zero. The
 second is that a partially fitted linear model regresses toward the participant
@@ -881,7 +765,7 @@ mean and therefore commands a gentler knee trajectory than the recorded one. A
 gentler trajectory disturbs the walker less than the true motion does, which means
 that through the middle of the accuracy range a less accurate model can be
 mechanically less disruptive. Neither mechanism implies that accuracy is
-undesirable; both indicate that the mapping from accuracy to whole-body behaviour
+undesirable; both indicate that the mapping from accuracy to whole-body behavior
 is not monotone, and that the quantity being minimised during training is not the
 quantity that determines stability once the prediction is placed in a body.
 
@@ -901,7 +785,7 @@ This is not a limitation of statistical power, since between-window error spread
 ranges from
 {deg(min(r['prediction_rmse_sd_deg'] for r in correlation['per_checkpoint']), 2)}
 to {deg(max(r['prediction_rmse_sd_deg'] for r in correlation['per_checkpoint']), 2)}$^{{\circ}}$,
-and the same null appears when the outcome is normalised by rollout duration.
+and the same null appears when the outcome is normalized by rollout duration.
 Comparing each window against itself does recover an association: holding the
 window fixed and varying only the model, a window became more unstable as its own
 prediction degraded
@@ -920,7 +804,7 @@ of a single converged model is restricted to, will tend to report no relationshi
 between prediction error and simulated outcome, not because no relationship exists
 but because that contrast cannot resolve one. Varying the model along its own
 training path supplies the contrast that can. Prediction error does propagate to
-whole-body behaviour, but the effect is small in comparison with window-to-window
+whole-body behavior, but the effect is small in comparison with window-to-window
 variation, and a benchmark constructed from comparisons between different windows
 is not a suitable instrument for detecting it.
 
@@ -947,7 +831,8 @@ Neither point is tested by this experiment, and the reported accuracy is not
 comparable with methods predicting from socket-available signals alone.
 
 The instability index is bounded, study-specific, and derived from XCoM margin; it
-is not a clinical fall-risk measure \cite{{hof2005,hof2008,curtze2024}}. Simulation
+is not a clinical fall-risk measure
+\cite{{hof2005,hof2008,gill2019,pickle2018,curtze2024}}. Simulation
 outcomes also depend on motion-match quality, which is why match errors are treated
 as covariates, and the conclusion holds for this evaluation
 rather than for every application of the model.
@@ -979,7 +864,7 @@ prediction error, such as stance-weighted RMSE or error aligned to support
 transitions, track simulated instability more closely than window-level RMSE
 does. The present result does not show that every summary of prediction error
 behaves this way. It shows that RMSE, which is the summary the field reports,
-stops tracking simulated behaviour below roughly
+stops tracking simulated behavior below roughly
 {deg(accuracy['breakpoint_rmse_deg'], 0)}$^{{\circ}}$.
 
 \section{{Conclusion}}\label{{sec:conclusion}}
@@ -995,7 +880,7 @@ inverted, because substituting the knee perturbs the body even when the
 substituted trajectory is correct, and because a partially fitted model
 regresses toward the participant mean, so it commands a flatter trajectory that
 moves the knee less than the recorded motion does. Root-mean-square error therefore tracked
-physical behaviour only above the turn, and the converged model evaluated here,
+physical behavior only above the turn, and the converged model evaluated here,
 at
 {deg(min(accuracy['mean_rmse_deg']), 2)}$^{{\circ}}$, sits below that band.
 
@@ -1061,7 +946,7 @@ signal that preserves its statistics but not its correspondence with the knee.
 \emph{{Circular shift}} rotates each participant-trial sEMG block against its own
 kinematics, preserving amplitudes, spectra, and cross-channel structure.
 \emph{{Participant swap}} gives each participant another participant's sEMG.
-\emph{{Phase randomisation}} replaces each channel with a surrogate of identical
+\emph{{Phase randomization}} replaces each channel with a surrogate of identical
 power spectrum and randomised Fourier phases \cite{{theiler1992}}. The kinematic
 stage is shared across all four conditions, so any difference between them is
 attributable to sEMG content alone.
@@ -1085,7 +970,7 @@ periodic-signal surrogate cannot be expected to do. {surrogate_sentence}.
 \begin{{table}}[!htbp]
 \caption{{sEMG ablation and its surrogate negative controls. Improvement is the
 participant-level reduction in held-out RMSE relative to the same fitted kinematic
-stage without a correction; positive favours the correction. Share is each
+stage without a correction; positive favors the correction. Share is each
 surrogate's effect as a fraction of the recorded one. The final column is the
 paired within-participant margin by which the recorded signal beats that
 surrogate. Both columns are two-sided paired $t$-tests on per-participant
