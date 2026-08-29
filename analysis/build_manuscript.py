@@ -535,7 +535,8 @@ between levels.
 Each query was matched to a level-walking reference from MoCapAct
 \cite{{wagener2022}}. Candidate snippets were aligned by a constant knee offset and
 either sign convention, without amplitude scaling. Knee RMSE determined the match
-rank; right-thigh pitch RMS was retained as a match-quality covariate. Mean
+rank; the RMS geodesic angle between the query and candidate right-thigh
+orientations was retained as a match-quality covariate. Mean
 matching knee error was {deg(matching['mean_knee_rmse_deg'], 2)}$^{{\circ}}$
 (median {deg(matching['median_knee_rmse_deg'], 2)}$^{{\circ}}$) and mean thigh
 orientation RMS {deg(matching['mean_thigh_rms_deg'], 2)}$^{{\circ}}$.
@@ -577,9 +578,9 @@ rather than by a replayed error.
 \subsection{{Evaluating simulations with an instability metric}}
 
 At each control step the convex hull of foot--ground contact points defined the
-support polygon, and XCoM extended horizontal center-of-mass position in the
-direction of its velocity. A bounded per-step instability index in $[0,1]$ was
-derived from the signed margin and its short-term trend, and integrated over the
+support polygon, and the XCoM extrapolated the horizontal center-of-mass
+position in the direction of its velocity. A bounded per-step instability index in $[0,1]$ was
+derived from the signed support margin and its short-term trend, and integrated over the
 window, giving a quantity in seconds. Absolute instability depends on how stable a
 matched reference already is,
 so the reported outcome is excess instability, $I'=I_{{\mathrm{{PRED}}}}-I_{{\mathrm{{REF}}}}$,
