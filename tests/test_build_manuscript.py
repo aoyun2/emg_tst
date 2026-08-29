@@ -146,6 +146,19 @@ class GeneratedManuscriptTests(unittest.TestCase):
             len(counts), 1, f"paper quotes conflicting window counts: {counts}"
         )
 
+    def test_the_complementary_analyses_are_counted_the_same_way_twice(self) -> None:
+        # The methods name them and the results introduce them again; the two
+        # counts describe one set and drifted apart once already.
+        methods = re.search(r"(\w+) complementary analyses are reported", self.tex)
+        results = re.search(r"(\w+) further comparisons were made", self.tex)
+        self.assertIsNotNone(methods, "methods no longer count the analyses")
+        self.assertIsNotNone(results, "results no longer count the comparisons")
+        self.assertEqual(
+            methods.group(1).lower(),
+            results.group(1).lower(),
+            "the methods and the results count the same analyses differently",
+        )
+
     def test_every_label_sits_inside_a_reference_command(self) -> None:
         # A command written into a non-raw Python string loses its backslash
         # and the letter after it, so "\\ref{sec:future}" prints as

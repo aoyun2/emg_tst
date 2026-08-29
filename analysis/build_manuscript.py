@@ -688,7 +688,7 @@ body less than the true motion does, and mean excess instability is
 correspondingly negative through the middle of the range, reaching
 {signed(min(accuracy['mean_excess_instability']), 4)}~s.
 
-Two further comparisons were made. Comparing windows against one another within a
+Three further comparisons were made. Comparing windows against one another within a
 single accuracy level recovers nothing at any level
 (Table~\ref{{tab:checkpoints}}).
 {within_sentence} Pooled across all {pooled['n_pairs']} checkpoint--window pairs
@@ -707,7 +707,7 @@ the match-adjusted association was
 \begin{{figure}}[!htbp]
 \centering
 \includegraphics[width=\linewidth]{{fig07_fwl}}
-\caption{{The match-adjusted analysis at the converged model. \textbf{{A}} Window prediction error against excess instability. \textbf{{B}} The same outcome against motion-match quality, the covariate being controlled. \textbf{{C}} Both variables residualized on ranked match knee error and thigh orientation RMS, whose correlation is the reported partial Spearman.}}\label{{fig:fwl}}
+\caption{{The match-adjusted analysis at the converged model. \textbf{{A}} Window prediction error against excess instability. \textbf{{B}} The same outcome against motion-match quality, the covariate being controlled. \textbf{{C}} Both variables residualized on ranked match knee error and thigh orientation RMS; the correlation between them is the reported partial Spearman.}}\label{{fig:fwl}}
 \end{{figure}}
 
 \begin{{figure}}[!htbp]
