@@ -82,6 +82,9 @@ def collect(runs: Path) -> dict[str, Any]:
     # The physics runner writes its matching gate under matching_preflight/.
     matching = load(runs / "panel" / "matching_preflight" / "summary.json")
     panel = load(runs / "panel" / "panel_manifest.json")
+    physics_protocol = load(
+        runs / "panel" / "physics_protocol.moving_target_pd_v2.json"
+    )
     return {
         "ablation": ablation,
         "protocol": protocol,
@@ -94,6 +97,7 @@ def collect(runs: Path) -> dict[str, Any]:
         "kinematic_check": kinematic_check,
         "matching": matching,
         "panel": panel,
+        "physics_protocol": physics_protocol,
     }
 
 
@@ -181,6 +185,9 @@ def build(data: dict[str, Any]) -> str:
     dropoff = correlation["dropoff"]
     accuracy = correlation["accuracy_level"]
     panel = data["panel"]
+    ORACLE_MAX_TRACKING_RMSE_DEG = float(
+        data["physics_protocol"]["oracle_preflight"]["maximum_tracking_rmse_deg"]
+    )
     physics = statistics["physics_comparison"]["paired_t"]
 
     surrogate_verdict = controls["verdict"]
@@ -368,7 +375,7 @@ EMG features, support vector methods, and relevance vector regression
 convolutional and recurrent networks can model time dependencies in continuous
 joint-angle prediction more effectively than many classical benchmarks,
 particularly when sEMG and kinematic information are combined into a temporally
-aware model \cite{{sun2022,zhang2022,zhu2022,moghadam2023,keles2023}}.
+aware model \cite{{sun2022,yi2022,zhang2022,zhu2022,moghadam2023,keles2023}}.
 Transformer-based models have also shown strong results in wearable biomechanics
 and myoelectric prediction, particularly where sequence length and cross-subject
 generalisation become central concerns
@@ -519,8 +526,10 @@ trial 5 was held out for testing.
 Every model was therefore fitted on earlier trials from the same participant it
 was later tested on. These accuracies are therefore what a model reaches after
 calibrating to an individual, not what it would reach for someone whose data it
-had never seen. Each participant contributed a single error
-value to every comparison.
+had never seen. Because prediction frames within a participant are
+not independent, each participant contributed a single error value to every
+comparison, and every interval and test was computed at the participant
+level \cite{{roberts2017}}.
 
 The released sEMG was sampled at 2000~Hz and the OpenSim joint angles at 100~Hz.
 Twelve right-leg sEMG channels were retained. Each was mean-centred, filtered with
@@ -531,9 +540,29 @@ Predictor inputs and targets were not interpolated or time-normalised.
 
 Each prediction example contained 60 knee-angle frames (600~ms) and the final 15
 sampled envelope frames (150~ms) from all 12 sEMG channels. The target was the
-recorded knee angle 100~ms after the final input frame.
+recorded knee angle 100~ms after the final input frame. That horizon is longer
+than the electromechanical delay between muscle activation and the resulting
+joint movement \cite{{cavanagh1979}}, so an sEMG sample can carry information
+about motion that has not yet happened, and it matches the horizon at which
+comparable work predicts future knee angle from myoelectric and kinematic
+signals \cite{{coker2021}}.
 
 \subsection{{Windowing, forecast horizon, and training}}
+
+The predictor is an instrument here rather than the object of study, and the
+design constrains what it can be. Locating the accuracy at which RMSE stops
+tracking simulated instability requires a model whose accuracy can be varied
+continuously across a wide range and returned to a reproducible endpoint. A
+convex objective with a closed-form solution provides both: descent runs from the
+participant mean to the exact analytic optimum, and that optimum is the terminal
+checkpoint rather than an approximation of it. Two separable stages also make the
+sEMG comparison exact, because setting the correction to zero removes the signal
+from a model that has already been fitted, instead of requiring a second fit whose
+capacity and initialisation would differ. A convolutional, recurrent or
+transformer predictor of the kind reviewed above would follow a stochastic
+training path to an endpoint that is not exactly reproducible, and its ablation
+would confound signal content with model capacity. The cost of this choice is
+that the result belongs to one model family, which is taken up below.
 
 One participant-balanced pair of ridge regressions was fitted to trials 1--3
 \cite{{hoerl1970}}. The first predicted standardised future knee angle from the
@@ -609,6 +638,11 @@ The fixed physics panel was drawn from confirmation trial 5 before matching or
 simulation outcomes were known. A seeded participant-balanced procedure selected
 {pooled['n_windows']} one-second windows, giving each eligible participant one
 window before assigning a second. Prediction error was not used for selection.
+The panel size was set by the simulation budget, since every window is replayed
+in both conditions at all
+{accuracy['n_accuracy_levels']} accuracy levels; because the same panel is used
+at every level, its size limits precision rather than biasing the comparison
+between levels.
 
 Each query was matched to a level-walking reference from MoCapAct
 \cite{{wagener2022}}. Candidate snippets were aligned by a constant knee offset and
@@ -628,6 +662,16 @@ offset and sign that the match established:
 \qquad q_{{\mathrm{{des}}}}(t)=\hat y(t).
 \label{{eq:control}}
 \end{{equation}}
+
+Proportional and derivative gains were $K_p=400$ and $K_d=20$ with the actuator
+force limited to 160, and the desired velocity was the causal backward difference
+of the commanded trajectory, zero at the first evaluation step. The gains were
+set on the apparatus rather than on any prediction: commanding a matched clip's
+own recorded trajectory has to reproduce that trajectory in joint space, and a
+position-only controller with no feedforward velocity trailed a fast knee badly
+enough to miss the {deg(ORACLE_MAX_TRACKING_RMSE_DEG, 0)}$^{{\circ}}$ tracking
+criterion used to check the apparatus. Adding the feedforward term brought
+tracking inside it.
 
 The paired reference condition ran the unmodified expert policy on the same
 snippet, initial state, warm-up, and controller. Nothing in either rollout reads
