@@ -515,7 +515,7 @@ converges. The reason is sampling resolution rather than stability: near that
 value the first steps collapse most of the error, so the high-error region is crossed between recorded points and cannot
 be sampled. Checkpoints were placed to tile the achieved training-RMSE range
 rather than the step index, because descent spends most of its steps near
-convergence. The reported path ran {path_protocol['descent_steps']} steps and
+convergence. The reported path ran {path_protocol['descent_steps']:,} steps and
 spanned {deg(path_protocol['train_rmse_first_deg'], 2)}$^{{\circ}}$ to
 {deg(path_protocol['train_rmse_last_deg'], 2)}$^{{\circ}}$ training RMSE across
 {len(ladder)} checkpoints.
@@ -584,8 +584,9 @@ derived from the signed margin and its short-term trend, and integrated over the
 window, giving a quantity in seconds. Absolute instability depends on how stable a
 matched reference already is,
 so the reported outcome is excess instability, $I'=I_{{\mathrm{{PRED}}}}-I_{{\mathrm{{REF}}}}$,
-measured against each window's own paired reference. The index is study-specific
-and has not been validated as a clinical stability or fall-risk measure.
+measured against each window's own paired reference. The index is derived from
+the XCoM margin, is specific to this study, and has not been validated as a
+clinical stability or fall-risk measure.
 
 \subsection{{Correlation study}}
 
@@ -823,8 +824,7 @@ contribution would matter more than the held-out share reported here, not less.
 Neither point is tested by this experiment, and the reported accuracy is not
 comparable with methods predicting from socket-available signals alone.
 
-The instability index is bounded, study-specific, and derived from XCoM margin; it
-is not a clinical fall-risk measure
+The instability index has not been validated against clinical outcomes
 \cite{{hof2005,hof2008,gill2019,pickle2018,curtze2024}}. Simulation
 outcomes also depend on motion-match quality, which is why match errors are treated
 as covariates, and the conclusion holds for this evaluation
