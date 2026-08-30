@@ -136,6 +136,25 @@ def main() -> None:
     args = parser.parse_args()
     runs = args.runs_dir.resolve()
 
+    # The raw timing record and the statistics derived from it live in
+    # different files. Shipping one from a superseded run and the other from the
+    # corrected one is how the supplement came to contradict the paper.
+    _tc = runs / "temporal_control" / "temporal_control_summary.json"
+    _ss = runs / "analysis" / "statistical_summary.json"
+    if _tc.exists() and _ss.exists():
+        _raw = json.loads(_tc.read_text(encoding="utf-8"))
+        _n = len(_raw["aligned_vs_lagged"]["improvement_deg"])
+        _df = int(
+            json.loads(_ss.read_text(encoding="utf-8"))
+            ["temporal_control"]["aligned_vs_lagged"]["paired_t"]["df"]
+        )
+        if _n != _df + 1:
+            raise SystemExit(
+                f"timing control disagrees with its summary: the record holds {_n} "
+                f"participants and the summary reports df={_df}. Regenerate the "
+                f"statistics from this record before building the archive."
+            )
+
     missing = []
     with zipfile.ZipFile(args.out, "w", zipfile.ZIP_DEFLATED) as z:
         for rel in CODE:

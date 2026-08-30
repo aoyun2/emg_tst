@@ -467,10 +467,14 @@ participant, trials 1--3 were used to fit the model and to compute the mean and
 standard deviation of that participant's twelve sEMG channels and knee angle,
 which standardize the inputs and the target. Trial 4 was reserved for checking
 the fit and is not reported. Trial 5 was held out and used
-for neither purpose, and is the trial every reported number comes from.
+for neither purpose, and supplies every held-out prediction score reported
+below. Training-path RMSE is measured on trials 1--3, and the matching and gain
+statistics come from the reference bank and the preflight windows.
 
-Each participant contributed one value to every analysis: the mean error over
-that participant's trial 5 \cite{{roberts2017}}.
+In the prediction analyses each participant contributed one value, the mean
+error over that participant's trial 5 \cite{{roberts2017}}. The physics panel is
+built from windows rather than participants, and the analyses that use it are
+described in Section~\ref{{sec:correlation}}.
 
 The released sEMG was sampled at 2000~Hz and the OpenSim joint angles at 100~Hz.
 Twelve right-leg sEMG channels were retained. Each was filtered with
@@ -528,8 +532,8 @@ Because penalties were fixed on a separate development cohort and every model wa
 scored on a later trial that no fit had seen, added capacity that
 fitted noise would raise held-out error rather than lower it. As a
 further check, three surrogate conditions repeated the whole confirmation fit with
-the sEMG replaced by a signal preserving its statistics but not its correspondence
-with the knee. Circular shift rotates each participant-trial sEMG block against
+the sEMG replaced by a signal that keeps some property of the recording while
+breaking its correspondence with the knee, each in a different way. Circular shift rotates each participant-trial sEMG block against
 its own kinematics. Participant swap gives each participant another
 participant's sEMG. Phase randomization replaces each channel with a surrogate
 of identical power spectrum and randomized Fourier phases
@@ -626,7 +630,8 @@ instability, and $K_p=400$ was the smallest stiffness that met the
 {deg(ORACLE_MAX_TRACKING_RMSE_DEG, 0)}$^{{\circ}}$ tracking criterion on every
 window. No prediction entered the choice, but the outcome measure did, so the
 gains are not independent of it. Commands were mapped into the clip's
-convention and clipped to $[0,170]^{{\circ}}$. Rollouts advanced at
+convention, resampled linearly from the 100~Hz recording grid onto the
+simulation grid, and clipped to $[0,170]^{{\circ}}$. Rollouts advanced at
 $\Delta t=0.03$~s, giving 34 samples across a one-second window.
 
 The paired reference condition ran the unmodified expert policy on the same
@@ -896,10 +901,15 @@ time, and RMSE summarizes all of them, so the association reported here belongs
 to one model's training path rather than to prediction error on its own.
 
 The sEMG correction improved held-out prediction, and the recorded signal beat
-all three surrogates for the same participants. Each surrogate keeps the
-signal's amplitude, spectral, and cross-channel structure and removes only its
-correspondence with the knee, so the improvement is attributable to sEMG content
-rather than to the extra model capacity an sEMG stage adds.
+all three surrogates for the same participants. The three break the correspondence differently. Circular shift leaves a
+participant's own signal intact and only rotates it in time, so it keeps
+amplitude, spectrum and cross-channel structure and retains whatever
+correspondence the gait cycle repeats. Participant swap substitutes another
+participant's recording, keeping realistic sEMG but no relation to this knee.
+Phase randomization keeps each channel's power spectrum and destroys its phase
+and its relation to the other channels. Since the kinematic stage is identical
+in all four conditions, the improvement is attributable to sEMG content rather
+than to the extra model capacity an sEMG stage adds.
 
 Comparisons drawn across windows and comparisons drawn within a window
 give different results. Comparing windows against one another
@@ -926,8 +936,8 @@ comparison drawn across windows, whereas holding the window fixed removes them.
 These observations bear on benchmark design. An evaluation that varies only the
 window, which is what a study
 of a single converged model is restricted to, will tend to report no relationship
-between prediction error and simulated outcome. The relationship is there, but
-that contrast cannot resolve it. Varying the model along its own
+between prediction error and simulated outcome, which that contrast cannot
+resolve either way. Varying the model along its own
 training path supplies the contrast that can. Prediction error does propagate to
 whole-body behavior, but the effect is small in comparison with window-to-window
 variation, and a benchmark constructed from comparisons between different windows
@@ -953,7 +963,8 @@ would achieve. Second, a deployed predictor whose output drives the knee
 would receive its own past commands as input, making the kinematic stage largely
 a propagator of its own trajectory. Under that arrangement the sEMG correction
 becomes the only term carrying new information about the wearer's intent, so its
-contribution would matter more than the held-out share reported here, not less.
+contribution could matter more than the held-out share reported here, though
+this experiment does not test that arrangement.
 Neither point is tested by this experiment, and the reported accuracy is not
 comparable with methods predicting from socket-available signals alone.
 
