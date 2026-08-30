@@ -420,16 +420,12 @@ To determine whether the XCoM is in an acceptable state, an area called the supp
 
 Functional evaluation in prosthetics research thus requires more than numerical predictive accuracy. Equally important to consider, if not more so, is the question of whether or not the knee angle derived from the prediction model remains compatible with gait, support, and balance in a full physical context. The literature has made strong progress improving on current numerical benchmarks, but a remaining gap can be found by questioning if those numerical benchmarks are accurate representations of functional success. RMSE can show that a model reconstructs a target angle accurately, but it cannot by itself show whether that angle would preserve the balance and the characteristics of the original motion as part of a physical system. This gap motivates simulation-based evaluation as the next step in assessing prosthetic regression models.
 
-Two features of how such evaluations are ordinarily built stand in the way of
-testing directly whether prediction accuracy corresponds to functional behavior. The first is where the predictor sits. A simulation tests what a deployed
-model would do only if the model generates the signal the simulated joint
-follows, which is the distinction Hargrove et al.\ \cite{{hargrove2007}} drew
-between offline scoring and real-time control. The second concerns the range of accuracy
-examined. A converged model occupies a narrow band of error, so there is
-little accuracy variation inside it for an association to be estimated from. A study that evaluates one
-trained model can only compare prediction windows against one another, where
-differences are dominated by which motion each window contains rather than by the
-predictor that drove it.
+Testing this directly is difficult because of the range of accuracy such an
+evaluation examines. A converged model occupies a narrow band of error, so there
+is little accuracy variation inside it for an association to be estimated from.
+A study that evaluates one trained model can only compare prediction windows
+against one another, where differences are dominated by which motion each window
+contains rather than by the predictor that drove it.
 
 The present study addresses the question by holding the evaluation panel fixed and
 varying the model instead (Fig.~\ref{{fig:overview}}). One fixed panel of walking windows is replayed at a
