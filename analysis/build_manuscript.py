@@ -773,9 +773,7 @@ RMSE spanned {deg(min(accuracy['mean_rmse_deg']), 2)}$^{{\circ}}$ to
 {pooled['n_windows']} windows and the same matched references. A single monotone
 coefficient over that whole range is uninformative
 ($\rho={signed(accuracy['overall_spearman_rho'], 3)}$), because the
-relationship is not monotone. No p-value is attached to it: the checkpoint
-means are smoothed states along one deterministic descent, not independent
-observations. Searching the sampled levels for the best two-segment split places
+relationship is not monotone. Searching the sampled levels for the best two-segment split places
 it between adjacent levels, at
 {deg(accuracy['breakpoint_rmse_deg'], 2)}$^{{\circ}}$ (95\% CI
 {ci(accuracy['breakpoint_95pct_ci'], 2)}$^{{\circ}}$); the split can therefore
