@@ -1054,8 +1054,11 @@ Condition & Improvement ($^{{\circ}}$) & 95\% CI & $p$ & Share & Margin ($^{{\ci
 \bmhead{{Ethics approval and consent to participate}}
 This work is a secondary analysis of publicly available, de-identified
 recordings and did not involve new human participants, so ethics approval was
-not required. Approval and participant consent for the original Gait120
-recordings are reported by the authors of that dataset \cite{{boo2025}}.
+not required. The original Gait120 recordings were approved by the
+Institutional Review Board of the Korea Advanced Institute of Science and
+Technology (KH2023-053), with written informed consent obtained from every
+participant and permission to share the anonymized data publicly
+\cite{{boo2025}}.
 
 \bmhead{{Consent for publication}}
 Not applicable.
