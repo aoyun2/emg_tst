@@ -11,10 +11,23 @@ from pathlib import Path
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+import pathlib
 from docx.shared import Inches, Pt
 
-TITLE = ("Towards the use of simulated environments to evaluate sEMG-inf"
-         "ormed knee-angle prediction: RMSE predicts simulated walking "
+import json
+import os
+
+_RUNS = pathlib.Path(os.environ.get("EMG_TST_RUNS", r"C:\Users\aaron\emg_data\runs"))
+_ACC = json.loads(
+    (_RUNS / "analysis" / "checkpoint_correlation.json").read_text(encoding="utf-8")
+)["accuracy_level"]
+_SPLIT = f"{_ACC['breakpoint_rmse_deg']:.2f}"
+_LO, _HI = (f"{v:.2f}" for v in _ACC["breakpoint_95pct_ci"])
+_ABOVE = f"{_ACC['above_breakpoint']['slope_per_degree']:+.5f}"
+_BELOW = f"{_ACC['below_breakpoint']['slope_per_degree']:+.5f}"
+
+TITLE = ("Toward the use of simulated environments to evaluate sEMG-inf"
+         "ormed knee-angle prediction: RMSE predicts simulated "
          "instability only above a threshold accuracy")
 
 BODY = [
@@ -42,20 +55,19 @@ BODY = [
     "knee.",
 
     "The relationship between prediction error and simulated instability was found "
-    "to be non-monotonic. A two-segment fit located a turn at 12.97 degrees "
-    "root-mean-square error (95% confidence interval 10.38 to 16.22). Above that "
+    "to be non-monotonic. An exploratory two-segment split falls at " + _SPLIT + " degrees "
+    "root-mean-square error (95% confidence interval " + _LO + " to " + _HI + "). Above that "
     "accuracy, worse prediction produced more simulated instability, with a slope "
-    "of +0.01304 score-seconds per degree. Below it the relationship inverted, with "
-    "a slope of -0.00707 score-seconds per degree, because substituting the knee "
-    "perturbs the body even when the substituted trajectory is correct and because "
-    "a less accurate model commands a gentler trajectory than the recorded one. "
-    "Both slopes were estimated by resampling windows within every accuracy level, "
-    "and both intervals exclude zero.",
+    "of " + _ABOVE + " seconds per degree. Below it the relationship inverted, with "
+    "a slope of " + _BELOW + " seconds per degree, which is consistent with a partially "
+    "fitted model commanding a flatter trajectory than the recorded one. "
+    "Both slopes were estimated by resampling participants and carrying each across "
+    "every accuracy level, and both intervals exclude zero.",
 
     "This result has a practical consequence for how prosthetic regression models "
     "are evaluated. A converged predictor operates in the range where further "
     "reduction in root-mean-square error no longer predicts better simulated "
-    "behaviour, and a null result obtained there should be expected rather than "
+    "behavior, and a null result obtained there should be expected rather than "
     "interpreted as evidence that accuracy is unimportant. The surface "
     "electromyography ablation reported in the manuscript serves as a quality gate "
     "confirming that the predictor was worth evaluating physically, rather than as "
