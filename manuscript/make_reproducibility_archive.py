@@ -1,9 +1,9 @@
 """Bundle the reproducibility supplement that accompanies the manuscript.
 
-Carries the derived records a reviewer needs to check every reported number,
-plus the code that produced them. The raw datasets and the 1,120 rollout
-recordings are excluded: Gait120 and MoCapAct are public and fetched by scripts
-in this bundle, and the recordings run to well over a hundred gigabytes.
+Carries the derived records a reviewer needs to check every reported number.
+The code is not bundled; the manuscript points at the repository for it. The
+raw datasets and the 1,120 rollout recordings are left out as well: Gait120 and
+MoCapAct are public, and the recordings run to well over a hundred gigabytes.
 """
 
 from __future__ import annotations
