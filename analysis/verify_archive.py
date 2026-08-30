@@ -1,102 +1,120 @@
-"""Run the reproducibility supplement's own instructions from a clean extraction.
+"""Check the reproducibility records against the run and the manuscript.
 
-The README puts the pipeline under code/ and then gives commands of the form
-"python -m analysis.<module>", which only resolve with code/ on the path. This
-extracts the archive, runs those commands the way its instructions read, and
-checks the records it carries against the run.
+The supplement carries derived records and makes no executable claim, so this
+checks the things it does promise: that every record it advertises is present,
+that the records agree with each other, and that the numbers in them are the
+numbers the paper reports.
+
+    python -m analysis.verify_archive
 """
 
+from __future__ import annotations
+
+import argparse
 import json
-import pathlib
 import shutil
-import subprocess
 import sys
 import tempfile
 import zipfile
-import re
+from pathlib import Path
 
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-
-REPO = pathlib.Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[1]
 ARCHIVE = REPO / "manuscript" / "Additional_file_reproducibility.zip"
-RUNS = pathlib.Path(r"C:\Users\aaron\emg_data\runs")
-PY = r"C:\Users\aaron\emg_data\predenv\Scripts\python.exe"
 
-fails, checks = [], []
+# every path the README names, and what it is for
+ADVERTISED = [
+    "results/analysis/per_window_rollouts.csv",
+    "results/analysis/participant_primary.csv",
+    "results/analysis/checkpoint_correlation.json",
+    "results/analysis/statistical_summary.json",
+    "results/prediction_confirmation/ablation_summary.json",
+    "results/prediction_development/ablation_summary.json",
+    "results/semg_controls/semg_controls.json",
+    "results/temporal_control/temporal_control_summary.json",
+    "results/kinematic_input_check/kinematic_input_check.json",
+    "results/physics/panel_manifest.json",
+    "results/physics/matching_summary.json",
+    "results/physics/oracle_preflight_summary.json",
+    "results/physics/physics_protocol.moving_target_pd_v2.json",
+    "results/training_path/protocol.json",
+    "results/training_path/checkpoints_manifest.json",
+]
 
 
-def check(name, ok, detail=""):
-    checks.append((name, ok, detail))
-    if not ok:
-        fails.append(name)
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--archive", type=Path, default=ARCHIVE)
+    parser.add_argument("--runs-dir", type=Path,
+                        default=Path(r"C:\Users\aaron\emg_data\runs"))
+    args = parser.parse_args()
+
+    failures: list[str] = []
+    passed = 0
+
+    def check(name: str, ok: bool, detail: str = "") -> None:
+        nonlocal passed
+        if ok:
+            passed += 1
+        else:
+            failures.append(name)
+        print(f"  {'PASS' if ok else 'FAIL'}  {name}" + (f"   [{detail}]" if detail else ""))
+
+    work = Path(tempfile.mkdtemp(prefix="verify_records_"))
+    with zipfile.ZipFile(args.archive) as bundle:
+        names = set(bundle.namelist())
+        bundle.extractall(work)
+    print(f"extracted {len(names)} files -> {work}\n")
+
+    try:
+        for rel in ADVERTISED:
+            check(f"present: {rel}", rel in names)
+
+        # the supplement must not ship code, since it promises none
+        check("ships no code tree", not any(n.startswith("code/") for n in names))
+
+        readme = (work / "README.txt").read_text(encoding="utf-8")
+        check("README makes no executable claim",
+              "python -m" not in readme and "cd code" not in readme)
+        check("README points at the repository", "github.com/aoyun2" in readme)
+
+        # the raw timing record and the derived summary must agree
+        raw = json.loads(
+            (work / "results/temporal_control/temporal_control_summary.json")
+            .read_text(encoding="utf-8"))
+        n_participants = len(raw["aligned_vs_lagged"]["improvement_deg"])
+        summary = json.loads(
+            (work / "results/analysis/statistical_summary.json").read_text(encoding="utf-8"))
+        df = int(summary["temporal_control"]["aligned_vs_lagged"]["paired_t"]["df"])
+        check("timing record agrees with its summary", n_participants == df + 1,
+              f"{n_participants} participants, df={df}")
+
+        # the records must be the ones the manuscript was built from
+        live = json.loads(
+            (args.runs_dir / "analysis" / "checkpoint_correlation.json")
+            .read_text(encoding="utf-8"))["accuracy_level"]
+        shipped = json.loads(
+            (work / "results/analysis/checkpoint_correlation.json")
+            .read_text(encoding="utf-8"))["accuracy_level"]
+        check("split point matches the run",
+              shipped["breakpoint_rmse_deg"] == live["breakpoint_rmse_deg"],
+              f"{shipped['breakpoint_rmse_deg']:.4f}")
+        check("split interval matches the run",
+              shipped["breakpoint_95pct_ci"] == live["breakpoint_95pct_ci"],
+              str([round(v, 3) for v in shipped["breakpoint_95pct_ci"]]))
+
+        # no machine-local paths survive
+        leaked = [
+            n for n in names
+            if n.endswith((".json", ".csv", ".txt"))
+            and "aaron" in (work / n).read_text(encoding="utf-8", errors="replace").lower()
+        ]
+        check("no machine-local paths", not leaked, ", ".join(leaked[:3]))
+
+        print(f"\n{passed}/{passed + len(failures)} passed")
+        return 1 if failures else 0
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
-work = pathlib.Path(tempfile.mkdtemp(prefix="verify_arch_"))
-with zipfile.ZipFile(ARCHIVE) as z:
-    names = z.namelist()
-    z.extractall(work)
-print(f"extracted {len(names)} files -> {work}\n")
-
-readme = (work / "README.txt").read_text(encoding="utf-8", errors="replace")
-code = work / "code"
-
-# the README names this file explicitly
-check("docs/EXPERIMENT_PROTOCOL.md present, as the README says",
-      (code / "docs" / "EXPERIMENT_PROTOCOL.md").exists()
-      or (work / "docs" / "EXPERIMENT_PROTOCOL.md").exists())
-
-# does the README tell the reader where to run from?
-check("README says to run from code/",
-      bool(re.search(r"cd\s+code|from\s+code/|inside\s+code/", readme)),
-      "no 'cd code' anywhere in the README")
-
-# every module the README invokes must resolve from code/, and so must every
-# runner the archive ships, since a reviewer rerunning the physics imports it
-modules = sorted(set(re.findall(r"python -m ([\w.]+)", readme)) | {
-    "mocap_phys_eval.run_gait120_residual_fusion",
-    "emg_tst.run_gait120_residual_fusion",
-    "emg_tst.run_gait120_temporal_control",
-    "analysis.gait120_conventional_paired_statistics",
-})
-for module in modules:
-    run = subprocess.run([PY, "-c", f"import {module}"], cwd=code,
-                         capture_output=True, text=True)
-    tail = [ln for ln in (run.stderr or "").strip().splitlines() if ln.strip()]
-    check(f"resolves from code/: {module}", run.returncode == 0,
-          tail[-1][:88] if run.returncode and tail else "")
-
-# actually run the first documented command end to end
-out = work / "regen"
-run = subprocess.run(
-    [PY, "-m", "analysis.gait120_checkpoint_correlation",
-     "--physics-run-dir", str(RUNS / "panel"), "--out-dir", str(out)],
-    cwd=code, capture_output=True, text=True)
-tail = [ln for ln in (run.stderr or "").strip().splitlines() if ln.strip()]
-check("the documented regeneration command runs", run.returncode == 0,
-      tail[-1][:88] if run.returncode and tail else "")
-
-if (out / "checkpoint_correlation.json").exists():
-    fresh = json.loads((out / "checkpoint_correlation.json").read_text(
-        encoding="utf-8"))["accuracy_level"]
-    live = json.loads((RUNS / "analysis" / "checkpoint_correlation.json").read_text(
-        encoding="utf-8"))["accuracy_level"]
-    check("regenerated split point matches the paper",
-          abs(fresh["breakpoint_rmse_deg"] - live["breakpoint_rmse_deg"]) < 1e-9,
-          f"{fresh['breakpoint_rmse_deg']:.4f}")
-    check("regenerated interval matches the paper",
-          max(abs(a - b) for a, b in zip(fresh["breakpoint_95pct_ci"],
-                                         live["breakpoint_95pct_ci"])) < 1e-9,
-          str([round(v, 3) for v in fresh["breakpoint_95pct_ci"]]))
-
-carried = next((work / n for n in names if n.endswith("checkpoint_correlation.json")), None)
-if carried:
-    arch = json.loads(carried.read_text(encoding="utf-8"))["accuracy_level"]
-    check("carried records are the corrected ones",
-          abs(arch["breakpoint_95pct_ci"][0] - 10.3817) > 0.01,
-          str([round(v, 3) for v in arch["breakpoint_95pct_ci"]]))
-
-for name, ok, detail in checks:
-    print(f"  {'PASS' if ok else 'FAIL'}  {name}" + (f"   [{detail}]" if detail else ""))
-print(f"\n{len(checks) - len(fails)}/{len(checks)} passed")
-shutil.rmtree(work, ignore_errors=True)
-sys.exit(1 if fails else 0)
+if __name__ == "__main__":
+    sys.exit(main())

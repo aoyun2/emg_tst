@@ -157,12 +157,6 @@ def main() -> None:
 
     missing = []
     with zipfile.ZipFile(args.out, "w", zipfile.ZIP_DEFLATED) as z:
-        for rel in CODE:
-            source = REPO / rel
-            if source.exists():
-                z.write(source, f"code/{rel}")
-            else:
-                missing.append(rel)
         for source_rel, target_rel in RESULTS:
             source = runs / source_rel
             if source.exists():
@@ -189,42 +183,47 @@ def main() -> None:
         )
 
 
-README = """Reproducibility supplement
-==========================
+README = """Reproducibility records
+=====================
 
-results/
-    Every derived record the manuscript quotes. per_window_rollouts.csv holds one
-    row for each simulated rollout in the analysed panel, and is sufficient to
-    recompute the association analyses without rerunning any physics.
+These are the derived records behind every number reported in the manuscript.
+They are sufficient to check the reported statistics without rerunning any
+physics.
 
-code/
-    The analysis pipeline. Gait120 is fetched by code/emg_tst/fetch_gait120.py;
-    the MoCapAct expert zoo is fetched on demand by code/mocap_phys_eval.
-    docs/EXPERIMENT_PROTOCOL.md states the cohort split, signal windows, model
-    comparison, simulation mapping, and outcome definitions.
+results/analysis/
+    per_window_rollouts.csv   one row per simulated rollout in the analysed
+                              panel: window, checkpoint, prediction error,
+                              both conditions' instability, and match quality
+    participant_primary.csv   the 80 panel windows with their participants
+    checkpoint_correlation.json   per-checkpoint, within-window, pooled and
+                              accuracy-level results
+    statistical_summary.json  the participant-level paired tests
 
-Not included: the Gait120 recordings and the MoCapAct expert policies, both
-public and downloaded by the scripts above, and the rollout recordings, which
-exceed 100 GB. Rollouts are deterministic (fixed seed, deterministic
-policy), so rerunning reproduces them exactly.
+results/prediction_confirmation/, prediction_development/
+    the held-out prediction scores and the development selection
 
-The physics runs that produced results/physics were made with the
-moving-target PD controller, recorded in
-results/physics/physics_protocol.moving_target_pd_v2.json. The runner requires
-the mode to be named:
+results/semg_controls/, temporal_control/, kinematic_input_check/
+    the surrogate controls, the 500 ms timing control, and the knee-input check
 
-    python -m mocap_phys_eval.run_gait120_residual_fusion \\
-        --moving-target-pd-v2 ...
+results/physics/
+    the panel manifest, the matching summary, the zero-error preflight, and the
+    physics protocol the reported rollouts were run under
 
-Regenerating the reported numbers and figures from results/.
-Run these from inside code/, which is where the packages live:
+results/training_path/
+    the descent protocol and the checkpoint manifest
 
-    cd code
-    python -m analysis.gait120_checkpoint_correlation --physics-run-dir <panel> \\
-        --out-dir <out>
-    python -m analysis.gait120_figures --runs-dir <runs> --out-dir <figures>
-    python -m analysis.build_manuscript --runs-dir <runs> --out-dir <manuscript>
+Not included, and why:
+    The analysis and simulation code, which is versioned and public at
+    https://github.com/aoyun2/emg_tst. Freezing a copy here would only create
+    a second version to keep in step with it.
+    Gait120 and the MoCapAct expert policies, which are public and are fetched
+    by the scripts in that repository.
+    The rollout recordings, which exceed 100 GB. Rollouts are deterministic
+    under a fixed seed, so rerunning reproduces them.
+
+Absolute paths in these records have been replaced with logical roots.
 """
+
 
 
 if __name__ == "__main__":
