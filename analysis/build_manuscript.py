@@ -291,9 +291,8 @@ def build(data: dict[str, Any]) -> str:
 \begin{{document}}
 
 \title[Simulation of knee-angle prediction]{{Toward the use of simulated
-environments to evaluate sEMG-informed knee-angle prediction: RMSE tracks
-simulated walking instability above a threshold accuracy and inverts below
-it}}
+environments to evaluate sEMG-informed knee-angle prediction: RMSE predicts
+simulated walking instability only above a threshold accuracy}}
 
 \author*[1]{{\fnm{{Aaron}} \sur{{Xiong}}}}
 \affil*[1]{{\orgname{{Spring Branch Academic Institute}}, \city{{Houston}}, \state{{Texas}}, \country{{United States}}}}
@@ -342,8 +341,8 @@ the relationship inverted
 
 \textbf{{Conclusions:}} Prediction RMSE tracked the simulated walking outcome
 above roughly {deg(accuracy['breakpoint_rmse_deg'], 0)}$^{{\circ}}$ and inverted
-below it, so the two are related across the whole sampled range rather than
-only part of it. The inversion arises because a partially fitted model regresses
+below it, so a lower value does not indicate a more stable simulated gait
+across the whole range. The inversion arises because a partially fitted model regresses
 toward the participant mean and so commands a flatter trajectory that moves the
 knee less than the recorded motion does. A converged predictor therefore sits in
 the regime where lower RMSE no longer implies better simulated behavior. The
