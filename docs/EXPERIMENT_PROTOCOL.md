@@ -70,8 +70,10 @@ models were evaluated on identical target rows.
 
 - Fixed panel: 80 one-second confirmation trial-5 windows selected in seeded,
   participant-balanced rounds before motion matching or simulation.
-- Reference bank: 157 MoCapAct snippets from 90 clips described as level
-  walking.
+- Reference bank: the whole MoCapAct expert zoo, roughly 2589 snippets. No
+  motion label restricts the candidates, since the released snippets carry
+  none, so the matched references are not confined to walking. The reported run
+  matched the 80 windows to 32 distinct snippets.
 - Matching: knee-angle RMSE ranked candidates. Right-thigh pitch RMSE was
   calculated afterward as a match-quality covariate. No amplitude scaling was
   allowed.
