@@ -475,7 +475,7 @@ The released sEMG was sampled at 2000~Hz and the OpenSim joint angles at 100~Hz.
 Twelve right-leg sEMG channels were retained. Each was filtered with
 a second-order 20--500-Hz Butterworth band-pass, rectified, and converted to a
 causal 250-sample (125-ms) root-mean-square envelope
-\cite{{chowdhury2013,phinyomark2018}}. No future sEMG entered an input frame. Figure~\ref{{fig:signals}} shows the
+\cite{{chowdhury2013,phinyomark2018}}. Figure~\ref{{fig:signals}} shows the
 recorded signals and the predictions for one panel window.
 Predictor inputs and targets were not interpolated or time-normalized.
 
@@ -523,10 +523,7 @@ absolute kinematic residual from trials 1--3.
 
 \subsection{{Attributing the improvement to sEMG}}
 
-Because penalties were fixed on a separate development cohort and every model was
-scored on a later trial that no fit had seen, added capacity that
-fitted noise would raise held-out error rather than lower it. As a
-further check, three surrogate conditions repeated the whole confirmation fit with
+Three surrogate conditions repeated the whole confirmation fit with
 the sEMG replaced by a signal that keeps some property of the recording while
 breaking its correspondence with the knee, each in a different way. Circular shift rotates each participant-trial sEMG block against
 its own kinematics. Participant swap gives each participant another
@@ -560,8 +557,7 @@ participant-balanced ridge objective, from a zero coefficient vector. At step ze
 each stage predicts the participant-balanced target mean, so the path begins with an error close to the
 standard deviation of the knee angle itself and descends to the closed-form
 solution,
-which is appended as the terminal checkpoint. The descent therefore ends on exactly
-the model the confirmation run reports.
+which is appended as the terminal checkpoint.
 
 The step size was set well below the largest value for which the descent still
 converges. The reason is sampling resolution: near that
@@ -595,10 +591,8 @@ either sign convention, without amplitude scaling. Knee RMSE determined the matc
 rank; the RMS difference between the query and candidate right-thigh pitch,
 after the same sign and offset alignment, was retained as a match-quality
 covariate. The {pooled['n_windows']} windows drew on {matched_clips} distinct
-snippets, the most frequent covering {matched_clip_max} of them. Because no
-motion label restricted the candidates, the matched references are not confined
-to walking, and the simulated outcome below is the stability of the matched
-motion rather than of walking in particular. Mean
+snippets, the most frequent covering {matched_clip_max} of them. The matched references are therefore not confined to walking, and the
+simulated outcome below is the stability of the matched motion. Mean
 matching knee error was {deg(matching['mean_knee_rmse_deg'], 2)}$^{{\circ}}$
 (median {deg(matching['median_knee_rmse_deg'], 2)}$^{{\circ}}$) and mean thigh
 pitch RMS {deg(matching['mean_thigh_rms_deg'], 2)}$^{{\circ}}$
@@ -637,9 +631,7 @@ It began from the same point in the clip after the same number of warm-up
 steps, which are simulation steps run
 before the evaluation window so that the policy is already tracking the clip
 when measurement starts. A paired rollout is shown in Fig.~\ref{{fig:simulation}}.
-Nothing in either rollout reads
-the recorded future knee angle, so the simulation is driven by the model output
-rather than by a replayed error.
+
 
 
 
@@ -677,10 +669,8 @@ The ramp endpoints and weights were set on reference walking and running so that
 unperturbed motion scores near zero. Where no finite margin remained anywhere in the trailing window, as in a
 flight phase, the index was set to $0.25$ for that step.
 
-Integrating $I$ over the window gives a quantity in seconds. A rollout stops as
-soon as either condition falls, and both conditions stop together, so the paired
-difference stays like-for-like while the interval it is integrated over
-shortens. {short_rollouts} of the {total_rollouts} rollouts ended before the
+Integrating $I$ over the window gives a quantity in seconds. A rollout stops as soon as either condition falls, and both conditions stop
+together, so the interval the difference is integrated over shortens. {short_rollouts} of the {total_rollouts} rollouts ended before the
 full {full_steps} steps, which shortens the outcome for the windows that
 destabilized most. Absolute instability depends on how stable a
 matched reference already is,
@@ -707,8 +697,9 @@ near-zero association from a near-zero spread.
 \emph{{Within window}} correlates each window's own accuracy against its own excess
 instability across checkpoints and combines results with a Fisher-$z$ one-sample
 test, which removes matched motion, snippet, and initial state as sources of
-variation. \emph{{Pooled}} uses every checkpoint--window pair with a window-level
-cluster bootstrap, since each window recurs once per checkpoint.
+variation. \emph{{Pooled}} uses every checkpoint--window pair with a
+participant-level cluster bootstrap, since each window recurs once per
+checkpoint and several participants contribute two windows.
 
 The two-segment description of the accuracy--instability curve was not
 prespecified. It was chosen after plotting the checkpoint means, on seeing that
@@ -733,8 +724,7 @@ paired $t({controls['conditions']['identity']['paired_t']['df']})={controls['con
 participants improved (Fig.~\ref{{fig:accuracy}}).
 
 In the timing control both residual models were fitted on the same rows and
-scored on the same target rows, so the two differ only in when the sEMG was
-read. Moving the same sEMG history 500~ms earlier raised participant RMSE by
+scored on the same target rows. Moving the same sEMG history 500~ms earlier raised participant RMSE by
 {deg(statistics['temporal_control']['aligned_vs_lagged']['paired_t']['mean'], 3)}$^{{\circ}}$
 relative to the aligned model (95\% CI
 {ci(statistics['temporal_control']['aligned_vs_lagged']['paired_t']['ci_95'], 3)}$^{{\circ}}$;
