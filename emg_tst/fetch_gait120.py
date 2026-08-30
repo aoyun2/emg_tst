@@ -158,9 +158,11 @@ def _extract(archive: Path, dest: Path) -> None:
             shutil.copy2(archive, target)
         return
     with zipfile.ZipFile(archive) as bundle:
+        root = dest.resolve()
         for member in bundle.namelist():
-            resolved = (dest / member).resolve()
-            if not str(resolved).startswith(str(dest.resolve())):
+            # A string prefix test also accepts a sibling directory whose name
+            # starts with the destination's, so ask for containment directly.
+            if not (dest / member).resolve().is_relative_to(root):
                 raise RuntimeError(f"Refusing archive member outside dest: {member}")
         bundle.extractall(dest)
 

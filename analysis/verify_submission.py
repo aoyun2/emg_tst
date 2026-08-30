@@ -62,8 +62,7 @@ check("page count", doc.page_count > 0, f"{doc.page_count} pages")
 
 log = (work / "main.log").read_text(encoding="utf-8", errors="replace") if (
     work / "main.log").exists() else ""
-check("no undefined references", "??" not in text and "Citation" not in
-      re.findall(r"LaTeX Warning: (Citation[^\n]*)", log).__str__()[:0] or True)
+check("no undefined references", "??" not in text)
 undef = re.findall(r"LaTeX Warning: Citation `([^']+)' on page", log)
 check("no undefined citations in log", not undef, ", ".join(sorted(set(undef))))
 

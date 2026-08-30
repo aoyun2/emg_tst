@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import zipfile
 from pathlib import Path
 
@@ -27,11 +28,21 @@ CODE = [
     "emg_tst/run_gait120_training_path.py",
     "emg_tst/run_gait120_temporal_control.py",
     "emg_tst/prepare_gait120_physics_panel.py",
+    # The whole package: the runner imports config, run, utils, reference_bank
+    # and bvh transitively, and a clean extraction cannot import it without them.
+    "mocap_phys_eval/__init__.py",
     "mocap_phys_eval/run_gait120_residual_fusion.py",
     "mocap_phys_eval/recording.py",
     "mocap_phys_eval/matching.py",
     "mocap_phys_eval/sim.py",
     "mocap_phys_eval/experts.py",
+    "mocap_phys_eval/config.py",
+    "mocap_phys_eval/run.py",
+    "mocap_phys_eval/utils.py",
+    "mocap_phys_eval/reference_bank.py",
+    "mocap_phys_eval/bvh.py",
+    "mocap_phys_eval/plots.py",
+    "mocap_phys_eval/level_walking.py",
     "analysis/gait120_checkpoint_correlation.py",
     "analysis/gait120_conventional_paired_statistics.py",
     "analysis/gait120_figures.py",
@@ -42,6 +53,24 @@ CODE = [
     "requirements.txt",
     "requirements-physics.txt",
 ]
+
+
+_LOCAL_PATH = re.compile(
+    r"[A-Za-z]:(?:\\\\|/)+(?:[^\"\\/]+(?:\\\\|/)+)*?"
+    r"(?P<root>emg_data|emg_tst)(?:\\\\|/)+",
+)
+_ANY_HOME = re.compile(r"[A-Za-z]:(?:\\\\|/)+Users(?:\\\\|/)+[^\"]*")
+
+
+def _scrub(text: str) -> str:
+    """Replace absolute local paths with logical roots.
+
+    Records are written as JSON, so the replacements use forward slashes and no
+    backslashes and cannot break the escaping.
+    """
+    text = _LOCAL_PATH.sub(lambda m: f"<{m.group('root')}>/", text)
+    return _ANY_HOME.sub("<local path removed>", text)
+
 
 RESULTS = [
     ("confirmation/ablation_summary.json", "prediction_confirmation/ablation_summary.json"),
@@ -56,6 +85,8 @@ RESULTS = [
      "kinematic_input_check/kinematic_input_check.json"),
     ("temporal_control/temporal_control_summary.json",
      "temporal_control/temporal_control_summary.json"),
+    ("panel/physics_protocol.moving_target_pd_v2.json",
+     "physics/physics_protocol.moving_target_pd_v2.json"),
     ("training_path/protocol.json", "training_path/protocol.json"),
     ("training_path/checkpoints/manifest.json", "training_path/checkpoints_manifest.json"),
     ("panel/panel_manifest.json", "physics/panel_manifest.json"),
@@ -116,7 +147,12 @@ def main() -> None:
         for source_rel, target_rel in RESULTS:
             source = runs / source_rel
             if source.exists():
-                z.write(source, f"results/{target_rel}")
+                # Records carry absolute paths from the machine that produced
+                # them, which name the account and mean nothing to a reviewer.
+                z.writestr(
+                    f"results/{target_rel}",
+                    _scrub(source.read_text(encoding="utf-8")),
+                )
             else:
                 missing.append(source_rel)
         z.writestr("results/analysis/per_window_rollouts.csv", per_window_table(runs))
@@ -124,8 +160,14 @@ def main() -> None:
 
     print(f"wrote {args.out} ({args.out.stat().st_size / 1e6:.2f} MB, "
           f"{len(zipfile.ZipFile(args.out).namelist())} files)")
-    for m in missing:
-        print("  missing:", m)
+    if missing:
+        # An archive that omits what its own README tells a reviewer to run is
+        # not a reproducibility supplement, so this is an error and not a note.
+        for m in missing:
+            print("  MISSING:", m)
+        raise SystemExit(
+            f"{len(missing)} listed input(s) were not found; the archive is incomplete"
+        )
 
 
 README = """Reproducibility supplement
@@ -146,6 +188,14 @@ Not included: the Gait120 recordings and the MoCapAct expert policies, both
 public and downloaded by the scripts above, and the rollout recordings, which
 exceed 100 GB. Rollouts are deterministic (fixed seed, deterministic
 policy), so rerunning reproduces them exactly.
+
+The physics runs that produced results/physics were made with the
+moving-target PD controller, recorded in
+results/physics/physics_protocol.moving_target_pd_v2.json. The runner requires
+the mode to be named:
+
+    python -m mocap_phys_eval.run_gait120_residual_fusion \\
+        --moving-target-pd-v2 ...
 
 Regenerating the reported numbers and figures from results/.
 Run these from inside code/, which is where the packages live:

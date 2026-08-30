@@ -51,10 +51,17 @@ def _lagged_emg_pair(
     if len(row_by_key) != len(keys):
         raise RuntimeError("Example identifiers are not unique")
 
+    # An example ending at frame e spans [e - INPUT_FRAMES + 1, e], and the
+    # lagged history is the EMG_FRAMES frames ending at e - LAG_FRAMES. Those
+    # frames are the leading EMG_FRAMES of the example ending this far back:
+    source_offset = LAG_FRAMES - (gait.INPUT_FRAMES - fusion.EMG_FRAMES)
+    if source_offset < 0:
+        raise RuntimeError("The lag is shorter than the unused part of the window")
+
     current_rows: list[int] = []
     source_rows: list[int] = []
     for row, (subject, trial, frame) in enumerate(keys):
-        source = row_by_key.get((subject, trial, frame - LAG_FRAMES))
+        source = row_by_key.get((subject, trial, frame - source_offset))
         if source is not None:
             current_rows.append(row)
             source_rows.append(source)
@@ -65,8 +72,10 @@ def _lagged_emg_pair(
     source_index = np.asarray(source_rows, dtype=np.int64)
     current = _subset(examples, current_index)
     lagged_x = np.asarray(current.x, dtype=np.float32).copy()
-    lagged_x[:, :, : gait.N_EMG] = np.asarray(
-        examples.x[source_index, :, : gait.N_EMG], dtype=np.float32
+    # Only the trailing EMG_FRAMES are read as features, so only those are
+    # replaced, with the leading frames of the source window.
+    lagged_x[:, -fusion.EMG_FRAMES :, : gait.N_EMG] = np.asarray(
+        examples.x[source_index, : fusion.EMG_FRAMES, : gait.N_EMG], dtype=np.float32
     )
     lagged = gait.ExampleSet(
         x=lagged_x,
@@ -79,10 +88,12 @@ def _lagged_emg_pair(
         input_end_frame=current.input_end_frame,
         target_frame=current.target_frame,
     )
-    observed_lag = (
-        current.input_end_frame
-        - np.asarray(examples.input_end_frame, dtype=np.int16)[source_index]
-    )
+    # Check the frame the history actually ends on, not the offset between the
+    # two example indices. The lagged features are the leading EMG_FRAMES of the
+    # source window, so they end at source_end - INPUT_FRAMES + EMG_FRAMES.
+    source_end = np.asarray(examples.input_end_frame, dtype=np.int64)[source_index]
+    lagged_last_frame = source_end - gait.INPUT_FRAMES + fusion.EMG_FRAMES
+    observed_lag = np.asarray(current.input_end_frame, dtype=np.int64) - lagged_last_frame
     if not np.all(observed_lag == LAG_FRAMES):
         raise RuntimeError("Temporal-control lag is not exactly 500 ms")
     return current, lagged
@@ -185,6 +196,18 @@ def main() -> None:
         alpha=residual_alpha,
     )
     fusion._save_model(run_dir / "lagged_emg_residual_model.npz", lagged_residual)
+
+    # The lagged model is fitted on the rows that have a 500 ms earlier history.
+    # Refit the aligned model on the same rows so the contrast between them is a
+    # contrast in input timing and not in how much data each one saw.
+    _, train_current_e = fusion._features(train_current)
+    aligned_residual = fusion._fit_ridge(
+        train_current_e,
+        train_residual,
+        train_current.subject_number,
+        alpha=residual_alpha,
+    )
+    fusion._save_model(run_dir / "aligned_emg_residual_model.npz", aligned_residual)
 
     aligned_validation, no_emg_validation, _, _ = fusion._evaluate(
         validation_current,

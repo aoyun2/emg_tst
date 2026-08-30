@@ -75,6 +75,13 @@ def collect(runs: Path) -> dict[str, Any]:
     path_protocol = load(runs / "training_path" / "protocol.json")
     checkpoints = load(runs / "training_path" / "checkpoints" / "manifest.json")
     correlation = load(runs / "analysis" / "checkpoint_correlation.json")
+    full_steps = int(round(max(
+        float(c["mean_expected_steps"]) for c in correlation["per_checkpoint"]
+    )))
+    short_rollouts = sum(
+        int(c["truncated_rollouts"]) for c in correlation["per_checkpoint"]
+    )
+    total_rollouts = sum(int(c["n_windows"]) for c in correlation["per_checkpoint"])
     panel_rows = (
         (runs / "analysis" / "participant_primary.csv")
         .read_text(encoding="utf-8").strip().splitlines()
@@ -92,6 +99,22 @@ def collect(runs: Path) -> dict[str, Any]:
     )
     # The physics runner writes its matching gate under matching_preflight/.
     matching = load(runs / "panel" / "matching_preflight" / "summary.json")
+    _snips: dict[str, int] = {}
+
+    def _count_snippets(node: Any) -> None:
+        if isinstance(node, dict):
+            snippet = node.get("snippet_id")
+            if isinstance(snippet, str):
+                _snips[snippet] = _snips.get(snippet, 0) + 1
+            for value in node.values():
+                _count_snippets(value)
+        elif isinstance(node, list):
+            for value in node:
+                _count_snippets(value)
+
+    _count_snippets(matching)
+    matched_clips = len(_snips)
+    matched_clip_max = max(_snips.values()) if _snips else 0
     oracle = load(runs / "panel" / "oracle_preflight" / "summary.json")
     panel = load(runs / "panel" / "panel_manifest.json")
     physics_protocol = load(
@@ -109,6 +132,11 @@ def collect(runs: Path) -> dict[str, Any]:
         "kinematic_check": kinematic_check,
         "matching": matching,
         "oracle": oracle,
+        "full_steps": full_steps,
+        "short_rollouts": short_rollouts,
+        "total_rollouts": total_rollouts,
+        "matched_clips": matched_clips,
+        "matched_clip_max": matched_clip_max,
         "panel_participants": panel_participants,
         "panel_repeats": panel_repeats,
         "panel": panel,
@@ -204,6 +232,11 @@ def build(data: dict[str, Any]) -> str:
     dropoff = correlation["dropoff"]
     accuracy = correlation["accuracy_level"]
     panel = data["panel"]
+    full_steps = data["full_steps"]
+    short_rollouts = data["short_rollouts"]
+    total_rollouts = data["total_rollouts"]
+    matched_clips = data["matched_clips"]
+    matched_clip_max = data["matched_clip_max"]
     panel_participants = data["panel_participants"]
     panel_repeats = data["panel_repeats"]
     ORACLE_MAX_TRACKING_RMSE_DEG = float(
@@ -266,10 +299,12 @@ def build(data: dict[str, Any]) -> str:
             f"Across the {within['n_windows']} windows, the within-window Spearman "
             f"correlation between a window's own accuracy and its own excess instability "
             f"averaged {signed(within['mean_spearman_rho_fisher_back_transformed'], 3)} "
+            f"over the {within['n_participants']} participants they come from "
             f"(95\\% CI {ci(within['ci_95pct_rho'], 3)}; "
-            f"$t({within['n_windows'] - 1})={within['t_statistic']:.2f}$, "
+            f"$t({within['n_participants'] - 1})={within['t_statistic']:.2f}$, "
             f"$p={pval(within['p_value_two_sided'])}$), with "
-            f"{within['positive_windows']} of {within['n_windows']} windows positive."
+            f"{within['positive_participants']} of {within['n_participants']} "
+            f"participants positive."
         )
         if not within.get("insufficient")
         else "Too few windows supported a within-window analysis."
@@ -292,7 +327,7 @@ def build(data: dict[str, Any]) -> str:
 
 \title[Simulation of knee-angle prediction]{{Toward the use of simulated
 environments to evaluate sEMG-informed knee-angle prediction: RMSE predicts
-simulated walking instability only above a threshold accuracy}}
+simulated instability only above a threshold accuracy}}
 
 \author*[1]{{\fnm{{Aaron}} \sur{{Xiong}}}}
 \affil*[1]{{\orgname{{Spring Branch Academic Institute}}, \city{{Houston}}, \state{{Texas}}, \country{{United States}}}}
@@ -301,7 +336,7 @@ simulated walking instability only above a threshold accuracy}}
 \abstract{{\textbf{{Background:}} Root-mean-square error (RMSE) measures the numerical
 accuracy of knee-angle prediction, but it does not establish that the remaining
 error changes whole-body motion. Whether a lower value corresponds to more stable
-walking has not been tested.
+simulated motion has not been tested.
 
 \textbf{{Methods:}} A prespecified residual-fusion model was evaluated on level
 walking from {ablation['participant_count']} healthy participants in Gait120.
@@ -327,8 +362,8 @@ participants improved).
 Relating accuracy to simulated outcome across {accuracy['n_accuracy_levels']}
 accuracy levels on the same fixed panel, RMSE and
 excess instability were not monotonically related over the sampled range
-($\rho={signed(accuracy['overall_spearman_rho'], 3)}$,
-$p={pval(accuracy['overall_p_value'])}$). An exploratory two-segment split, placed between adjacent
+($\rho={signed(accuracy['overall_spearman_rho'], 3)}$ across the
+{accuracy['n_accuracy_levels']} checkpoint means). An exploratory two-segment split, placed between adjacent
 levels, falls at {deg(accuracy['breakpoint_rmse_deg'], 2)}$^{{\circ}}$ (95\% CI
 {ci(accuracy['breakpoint_95pct_ci'], 2)}$^{{\circ}}$). Above it, worse prediction
 gave more instability (slope
@@ -339,11 +374,11 @@ the relationship inverted
 {signed(accuracy['below_breakpoint']['slope_per_degree'], 5)}, 95\% CI
 {ci(accuracy['below_breakpoint']['slope_95pct_ci'], 5)}).
 
-\textbf{{Conclusions:}} Prediction RMSE tracked the simulated walking outcome
+\textbf{{Conclusions:}} Prediction RMSE tracked the simulated outcome
 above roughly {deg(accuracy['breakpoint_rmse_deg'], 0)}$^{{\circ}}$ and inverted
-below it, so a lower value does not indicate a more stable simulated gait
-across the whole range. The inversion arises because a partially fitted model regresses
-toward the participant mean and so commands a flatter trajectory that moves the
+below it, so a lower value does not indicate a more stable simulated motion
+across the whole range. The inversion is consistent with a partially fitted model regressing
+toward the participant mean and so commanding a flatter trajectory that moves the
 knee less than the recorded motion does. A converged predictor therefore sits in
 the regime where lower RMSE no longer implies better simulated behavior. The
 sEMG correction itself, which improved prediction, did not detectably change the
@@ -361,7 +396,7 @@ Lower-limb amputation remains a substantial rehabilitation problem in the United
 The major challenge in transfemoral prosthetics is that direct information about the missing or mechanically replaced joint is unavailable to predictive solutions for the knee angle. A reconstructive algorithm must instead infer knee behavior from nearby available signals that are practical and preferably non-invasive to collect from the patient. Surface electromyography (sEMG) provides a window into muscle activations, while inertial measurement units (IMUs) give predictor models kinematic information from the limbs, such as acceleration, angular velocity, and position \cite{{deluca1997,farina2014}}. These signals are valuable for different reasons. sEMG contains neuromuscular intent, but is noisy, non-stationary, and sensitive to fatigue, variance in electrode placement, skin impedance, and inter-subject variability, which is why artificial intelligence and machine learning techniques are commonly used to process this rather volatile signal \cite{{huang2008,chowdhury2013,phinyomark2018}}. IMUs are comparatively stable, but encode the current physical state of the limbs and body rather than the direct intent of a patient to activate a specific muscle group. The task of prediction, or regression, as it is referred to in the literature, involves fusing the noisy sEMG signal with contextual kinematic data from IMUs to estimate the knee angle at some future horizon, typically tens to hundreds of milliseconds from the time the sEMG and IMU data are captured.
 
 \subsection{{Current methods for knee-angle prediction}}
-This major inference problem has been studied with both classical and deep methods in machine learning. Earlier work in myoelectric control relied heavily on feature-engineered models and pattern-recognition pipelines, including support vector methods, relevance vector regression, and handcrafted EMG features \cite{{hudgins1993,hargrove2007,lihb2023}}. More recent studies show that convolutional neural networks (CNNs) and long short-term memory networks (LSTMs) can model time dependencies in continuous joint-angle prediction more effectively than many classical benchmarks, particularly when sEMG and kinematic information are combined into a temporally aware model \cite{{sun2022,yi2022,zhang2022,zhu2022,moghadam2023,keles2023}}. Transformer-based models have also shown strong results in wearable biomechanics and myoelectric prediction, particularly when sequence length and cross-subject generalization become central concerns \cite{{zerveas2021,liang2023,lix2023,linhe2024,lin2025a,mollahossein2025}}. At the same time, systematic reviews of EMG-driven lower-limb prosthetic control still describe the field as methodologically evolving, with researchers trying novel techniques, especially with respect to preprocessing, validation strategy, and model architecture, to improve on current benchmarks \cite{{cimolato2022,ahkami2023}}.
+This major inference problem has been studied with both classical and deep methods in machine learning. Earlier work in myoelectric control relied heavily on feature-engineered models and pattern-recognition pipelines, including support vector methods, relevance vector regression, and handcrafted EMG features \cite{{hudgins1993,hargrove2007,lihb2023}}. More recent studies show that convolutional neural networks (CNNs) and long short-term memory networks (LSTMs), including attention-based variants \cite{{mollahossein2025}}, can model time dependencies in continuous joint-angle prediction more effectively than many classical benchmarks, particularly when sEMG and kinematic information are combined into a temporally aware model \cite{{sun2022,yi2022,zhang2022,zhu2022,moghadam2023,keles2023}}. Transformer-based models have also shown strong results in wearable biomechanics and myoelectric prediction, particularly when sequence length and cross-subject generalization become central concerns \cite{{zerveas2021,liang2023,lix2023,linhe2024,lin2025a}}. At the same time, systematic reviews of EMG-driven lower-limb prosthetic control still describe the field as methodologically evolving, with researchers trying novel techniques, especially with respect to preprocessing, validation strategy, and model architecture, to improve on current benchmarks \cite{{cimolato2022,ahkami2023}}.
 
 \subsection{{Simulation of virtual prosthetics}}
 The primary problem with the current evaluation metric, cross-validation Root Mean Squared Error (RMSE), is that prediction accuracy alone does not guarantee the prosthetic's true usefulness in an actual kinematic context. Joint-angle regressors, such as the methods described above, are only valuable if their outputs are biomechanically plausible when considered in the context of whole-body motion. This gap between statistical error and real-time function has already been examined in myoelectric control research. Hargrove et al.\ \cite{{hargrove2007}}, for example, evaluated a pattern-recognition controller through a real-time virtual environment rather than solely reporting classifier accuracy. Similarly, Krasoulis et al.\ \cite{{krasoulis2019}} showed that prosthetic finger performance improved with user practice and could not be reliably inferred from machine learning statistics alone. Together, these studies suggest that a low RMSE could hide functionally poor control of the prosthetic.
@@ -398,13 +433,13 @@ differences are dominated by which motion each window contains rather than by th
 predictor that drove it.
 
 The present study addresses the question by holding the evaluation panel fixed and
-varying the model instead. One fixed panel of walking windows is replayed at a
+varying the model instead (Fig.~\ref{{fig:overview}}). One fixed panel of walking windows is replayed at a
 series of accuracy levels sampled along a single model's own gradient-descent
 training path, with the predicted knee angle serving as the tracking target of the
 simulated joint throughout. Because the windows, the matched reference motions,
 and the initial states are identical at every level, the only thing that differs
 between them is the model. That makes it possible to ask whether
-RMSE and simulated walking instability are related at all, and if so, across which
+RMSE and simulated instability are related at all, and if so, across which
 part of the accuracy range.
 
 
@@ -441,7 +476,8 @@ The released sEMG was sampled at 2000~Hz and the OpenSim joint angles at 100~Hz.
 Twelve right-leg sEMG channels were retained. Each was filtered with
 a second-order 20--500-Hz Butterworth band-pass, rectified, and converted to a
 causal 250-sample (125-ms) root-mean-square envelope
-\cite{{chowdhury2013,phinyomark2018}}. No future sEMG entered an input frame.
+\cite{{chowdhury2013,phinyomark2018}}. No future sEMG entered an input frame. Figure~\ref{{fig:signals}} shows the
+recorded signals and the predictions for one panel window.
 Predictor inputs and targets were not interpolated or time-normalized.
 
 \subsection{{Windowing, forecast horizon, and training}}
@@ -557,11 +593,17 @@ its expert policy. No motion label restricted the candidates, since the released
 snippets carry none; a match was selected on knee-trajectory agreement alone,
 and the agreement achieved is reported below and carried as a covariate. Candidate snippets were aligned by a constant knee offset and
 either sign convention, without amplitude scaling. Knee RMSE determined the match
-rank; the RMS geodesic angle between the query and candidate right-thigh
-orientations was retained as a match-quality covariate. Mean
+rank; the RMS difference between the query and candidate right-thigh pitch,
+after the same sign and offset alignment, was retained as a match-quality
+covariate. The {pooled['n_windows']} windows drew on {matched_clips} distinct
+snippets, the most frequent covering {matched_clip_max} of them. Because no
+motion label restricted the candidates, the matched references are not confined
+to walking, and the simulated outcome below is the stability of the matched
+motion rather than of walking in particular. Mean
 matching knee error was {deg(matching['mean_knee_rmse_deg'], 2)}$^{{\circ}}$
 (median {deg(matching['median_knee_rmse_deg'], 2)}$^{{\circ}}$) and mean thigh
-orientation RMS {deg(matching['mean_thigh_rms_deg'], 2)}$^{{\circ}}$.
+pitch RMS {deg(matching['mean_thigh_rms_deg'], 2)}$^{{\circ}}$
+(Fig.~\ref{{fig:matching}}).
 
 In the prediction condition the model's predicted knee angle was the tracking
 target of a proportional-derivative override on the right knee actuator. The
@@ -576,17 +618,26 @@ offset and sign that the match established:
 
 Proportional and derivative gains were $K_p=400$ and $K_d=20$ with the actuator
 force limited to 160, and the desired velocity was the causal backward difference
-of the commanded trajectory, zero at the first evaluation step. The gains were
-set by requiring that commanding a matched clip's own recorded trajectory
-reproduce that trajectory in joint space to within
-{deg(ORACLE_MAX_TRACKING_RMSE_DEG, 0)}$^{{\circ}}$; no prediction was used to
-set them.
+of the commanded trajectory, zero at the first evaluation step. Gains were chosen from a grid of four settings scored on ten preflight
+windows in which the commanded trajectory was the clip's own recording, so
+prediction error was zero and any tracking error or added instability came from
+the override. The grid was scored on both mean tracking error and mean added
+instability, and $K_p=400$ was the smallest stiffness that met the
+{deg(ORACLE_MAX_TRACKING_RMSE_DEG, 0)}$^{{\circ}}$ tracking criterion on every
+window. No prediction entered the choice, but the outcome measure did, so the
+gains are not independent of it. Commands were mapped into the clip's
+convention and clipped to $[0,170]^{{\circ}}$. Rollouts advanced at
+$\Delta t=0.03$~s, giving 34 samples across a one-second window.
 
 The paired reference condition ran the unmodified expert policy on the same
-snippet, initial state, and controller, and began from the same point in the
-clip after the same number of warm-up steps, which are simulation steps run
+snippet and initial state, retaining the walker's native knee actuator: the
+retuning above is applied to the prediction condition only, so the two
+conditions differ in the knee target and in the knee actuator that follows it.
+It began from the same point in the clip after the same number of warm-up
+steps, which are simulation steps run
 before the evaluation window so that the policy is already tracking the clip
-when measurement starts. Nothing in either rollout reads
+when measurement starts. A paired rollout is shown in Fig.~\ref{{fig:simulation}}.
+Nothing in either rollout reads
 the recorded future knee angle, so the simulation is driven by the model output
 rather than by a replayed error.
 
@@ -600,9 +651,12 @@ rather than by a replayed error.
 
 \subsection{{Evaluating simulations with an instability metric}}
 
-At each control step the convex hull of foot--ground contact points defined the
-support polygon, and the XCoM extrapolated the horizontal center-of-mass
-position in the direction of its velocity. Let $m$ be the signed distance from the
+At each control step the support polygon was the convex hull of the
+foot--ground contact points, each contacting foot contributing a rectangle of
+half-width $0.05$~m rather than a single point. The XCoM extrapolated the
+horizontal center-of-mass position along its velocity, $\mathrm{{XCoM}} =
+\mathbf{{r}} + \dot{{\mathbf{{r}}}}/\omega_0$, with $\omega_0 = 3.13$ per
+second. Let $m$ be the signed distance from the
 XCoM to the boundary of that polygon, in meters, positive when the XCoM lies
 inside it.
 
@@ -620,24 +674,30 @@ $I=0.55\,r_{{\mathrm{{min}}}}+0.25\,r_{{\mathrm{{end}}}}+0.20\,r_{{s}}$, again
 clipped to $[0,1]$. Each term is zero while the XCoM stays near or inside the
 support polygon and reaches one when it is far outside it or leaving it quickly.
 The ramp endpoints and weights were set on reference walking and running so that
-unperturbed motion scores near zero. Steps at which no support margin could be
-computed, such as flight phases, were given $I=0.25$.
+unperturbed motion scores near zero. Where no finite margin remained anywhere in the trailing window, as in a
+flight phase, the index was set to $0.25$ for that step.
 
-Integrating $I$ over the window gives a quantity in seconds. Absolute instability depends on how stable a
+Integrating $I$ over the window gives a quantity in seconds. A rollout stops as
+soon as either condition falls, and both conditions stop together, so the paired
+difference stays like-for-like while the interval it is integrated over
+shortens. {short_rollouts} of the {total_rollouts} rollouts ended before the
+full {full_steps} steps, which shortens the outcome for the windows that
+destabilized most. Absolute instability depends on how stable a
 matched reference already is,
-so the reported outcome is excess instability, $I'=I_{{\mathrm{{PRED}}}}-I_{{\mathrm{{REF}}}}$,
-measured against each window's own paired reference. The index is derived from
+so the reported outcome is excess instability, the difference of the two
+integrals, $A'=\int I_{{\mathrm{{PRED}}}}\,dt-\int I_{{\mathrm{{REF}}}}\,dt$,
+measured in seconds against each window's own paired reference. The index is derived from
 the XCoM margin, is specific to this study, and has not been validated as a
 clinical stability or fall-risk measure. It falls whenever the commanded
 trajectory perturbs the body less, which a trajectory that moves the knee less
 than the recording also does, so a smoother or flatter command scores well
-without necessarily being better gait.
+without necessarily being better motion.
 
 \subsection{{Correlation study}}
 
 The primary association was a partial Spearman correlation between window
 prediction RMSE and excess instability, controlling for matching knee RMSE and
-thigh orientation RMS, following Frisch--Waugh--Lovell residualization on ranked
+thigh pitch RMS, following Frisch--Waugh--Lovell residualization on ranked
 variables \cite{{spearman1904,frisch1933,lovell1963}}, and is called the
 match-adjusted association below.
 
@@ -670,15 +730,14 @@ paired improvement was {deg(ablation['mean_improvement_deg'])}$^{{\circ}}$ (95\%
 bootstrap CI {ci(ablation['bootstrap_95pct_ci_deg'])}$^{{\circ}}$; two-sided
 paired $t({controls['conditions']['identity']['paired_t']['df']})={controls['conditions']['identity']['paired_t']['t']:.2f}$, $p={pval(controls['conditions']['identity']['paired_t']['p_two_sided'])}$), and
 {ablation['positive_participants']} of {ablation['participant_count']}
-participants improved.
+participants improved (Fig.~\ref{{fig:accuracy}}).
 
-The timing control is computed on the
-{statistics['temporal_control']['aligned_vs_lagged']['paired_t']['df'] + 1} participants
-whose trials contain a row 500~ms earlier for every target row, so the shifted
-and aligned models are scored on identical data. Moving the same sEMG history
-500~ms earlier changed participant RMSE by {deg(aligned['mean_improvement_deg'], 3)}$^{{\circ}}$
+In the timing control both residual models were fitted on the same rows and
+scored on the same target rows, so the two differ only in when the sEMG was
+read. Moving the same sEMG history 500~ms earlier raised participant RMSE by
+{deg(statistics['temporal_control']['aligned_vs_lagged']['paired_t']['mean'], 3)}$^{{\circ}}$
 relative to the aligned model (95\% CI
-{ci(aligned['bootstrap_95pct_ci_deg'], 3)}$^{{\circ}}$;
+{ci(statistics['temporal_control']['aligned_vs_lagged']['paired_t']['ci_95'], 3)}$^{{\circ}}$;
 $t({statistics['temporal_control']['aligned_vs_lagged']['paired_t']['df']})={statistics['temporal_control']['aligned_vs_lagged']['paired_t']['t']:.2f}$, $p={pval(statistics['temporal_control']['aligned_vs_lagged']['paired_t']['p_two_sided'])}$). Three surrogate
 controls are reported in Table~\ref{{tab:controls}}.
 {surrogate_sentence}. The circular-shift surrogate retained
@@ -707,7 +766,7 @@ detectable change in the simulated outcome.
 \begin{{figure}}[!htbp]
 \centering
 \includegraphics[width=\linewidth]{{fig05_motion_matching}}
-\caption{{Motion-match quality over the fixed panel. \textbf{{A}} Knee against thigh-orientation matching error for each window, with the panel mean. \textbf{{B}} Both errors sorted across windows.}}\label{{fig:matching}}
+\caption{{Motion-match quality over the fixed panel. \textbf{{A}} Knee against thigh-pitch matching error for each window, with the panel mean. \textbf{{B}} Both errors sorted across windows.}}\label{{fig:matching}}
 \end{{figure}}
 
 \subsection{{Prediction error vs. excess instability}}
@@ -720,13 +779,15 @@ RMSE spanned {deg(min(accuracy['mean_rmse_deg']), 2)}$^{{\circ}}$ to
 {deg(max(accuracy['mean_rmse_deg']), 2)}$^{{\circ}}$ on the same
 {pooled['n_windows']} windows and the same matched references. A single monotone
 coefficient over that whole range is uninformative
-($\rho={signed(accuracy['overall_spearman_rho'], 3)}$,
-$p={pval(accuracy['overall_p_value'])}$), because the relationship is not
-monotone. Searching the sampled levels for the best two-segment split places
+($\rho={signed(accuracy['overall_spearman_rho'], 3)}$), because the
+relationship is not monotone. No p-value is attached to it: the checkpoint
+means are smoothed states along one deterministic descent, not independent
+observations. Searching the sampled levels for the best two-segment split places
 it between adjacent levels, at
 {deg(accuracy['breakpoint_rmse_deg'], 2)}$^{{\circ}}$ (95\% CI
 {ci(accuracy['breakpoint_95pct_ci'], 2)}$^{{\circ}}$); the split can therefore
-take only as many values as there are gaps between levels.
+take only as many values as there are gaps between levels
+(Fig.~\ref{{fig:primary}}).
 
 Above that accuracy, worse prediction produces more simulated instability across
 the {accuracy['above_breakpoint']['n_levels']} levels in that segment (slope
@@ -756,11 +817,12 @@ correspondingly negative through the middle of the range, reaching
 
 Three further comparisons were made. Comparing windows against one another within a
 single accuracy level recovers nothing at any level
-(Table~\ref{{tab:checkpoints}}).
+(Table~\ref{{tab:checkpoints}} and Fig.~\ref{{fig:perlevel}}).
 {within_sentence} Pooled across all {pooled['n_pairs']} checkpoint--window pairs
 the match-adjusted association was
 {signed(pooled['partial_spearman_rho'], 3)} (window-level cluster bootstrap 95\% CI
-{ci(pooled['cluster_bootstrap_95pct_ci'], 3)}).
+{ci(pooled['cluster_bootstrap_95pct_ci'], 3)}). Figure~\ref{{fig:fwl}} shows the
+residualization at the converged model.
 
 
 
@@ -773,7 +835,7 @@ the match-adjusted association was
 \begin{{figure}}[!htbp]
 \centering
 \includegraphics[width=\linewidth]{{fig07_fwl}}
-\caption{{The match-adjusted analysis at the converged model. \textbf{{A}} Window prediction error against excess instability. \textbf{{B}} The same outcome against motion-match quality, the covariate being controlled. \textbf{{C}} Both variables residualized on ranked match knee error and thigh orientation RMS; the correlation between them is the reported partial Spearman.}}\label{{fig:fwl}}
+\caption{{The match-adjusted analysis at the converged model. \textbf{{A}} Window prediction error against excess instability. \textbf{{B}} The same outcome against motion-match quality, the covariate being controlled. \textbf{{C}} Both variables residualized on ranked match knee error and thigh pitch RMS; the correlation between them is the reported partial Spearman.}}\label{{fig:fwl}}
 \end{{figure}}
 
 \begin{{figure}}[!htbp]
@@ -797,11 +859,11 @@ Descent step & $n$ & Mean RMSE ($^{{\circ}}$) & SD ($^{{\circ}}$) & Mean excess 
 
 \section{{Discussion}}\label{{sec:discussion}}
 
-The central finding is that prediction error and simulated walking instability are
+The central finding is that prediction error and simulated instability are
 related across the whole sampled range, with the sign of the relationship
 reversing partway along it. Above
 {deg(accuracy['breakpoint_rmse_deg'], 2)}$^{{\circ}}$ of prediction
-error, a less accurate model produced a less stable simulated walker, and the
+error, a less accurate model left the simulated body less stable, and the
 slope is positive across that region. Below that point the
 relationship inverted, so that further improvements in accuracy were accompanied by
 slightly more excess instability rather than less. RMSE is therefore not a general
@@ -813,7 +875,7 @@ evaluated here reached {deg(min(accuracy['mean_rmse_deg']), 2)}$^{{\circ}}$, whi
 lies below the turn. Because knee-angle regression models are ordinarily compared
 with one another only after convergence, the regime in which they are compared is
 also the regime in which further reduction in RMSE no longer predicts a more stable
-simulated gait. A study confined to that regime samples only the inverted portion of
+simulated motion. A study confined to that regime samples only the inverted portion of
 the relationship, where lower error is accompanied by slightly more simulated
 instability, so it cannot recover the positive relationship that holds above the
 turn. This supplies a possible
@@ -828,7 +890,7 @@ validation strategy.
 The mechanism behind the inversion does not imply that accuracy is undesirable.
 It indicates that the mapping from accuracy to whole-body behavior
 is not monotone, and that training a model to minimize RMSE does not by itself
-produce a more stable simulated gait. Moving along the training path changes the
+produce a more stable simulated motion. Moving along the training path changes the
 amplitude, smoothness, phase, and bias of the predicted trajectory at the same
 time, and RMSE summarizes all of them, so the association reported here belongs
 to one model's training path rather than to prediction error on its own.
@@ -853,7 +915,8 @@ window fixed and varying only the model, a window became more unstable as its ow
 prediction degraded
 ({signed(within['mean_spearman_rho_fisher_back_transformed'], 3)},
 95\% CI {ci(within['ci_95pct_rho'], 3)}, $p={pval(within['p_value_two_sided'])}$,
-{within['positive_windows']} of {within['n_windows']} windows positive). The
+{within['positive_participants']} of {within['n_participants']} participants
+positive). The
 difference arises because between-window variation in excess instability is
 dominated by which motion a window was matched to, where in the gait cycle that
 window falls, and how stable the matched reference already was. Those sources of
@@ -934,12 +997,13 @@ tracks simulated behavior in opposite directions either side of roughly
 
 Replaying one fixed panel of walking windows at
 {accuracy['n_accuracy_levels']} accuracy levels sampled along a model's own
-training path shows that prediction error predicts simulated walking instability
+training path shows that prediction error predicts simulated instability
 in opposite directions either side of a split in the accuracy range. Above
 {deg(accuracy['breakpoint_rmse_deg'], 2)}$^{{\circ}}$ (95\% CI
 {ci(accuracy['breakpoint_95pct_ci'], 2)}$^{{\circ}}$) a less accurate model
-produced a less stable simulated walker. Below that point the relationship
-inverted, because a partially fitted model regresses toward the participant mean
+left the simulated body less stable. Below that point the relationship
+inverted, which is consistent with a partially fitted model regressing toward the
+participant mean
 and so commands a flatter trajectory that moves the knee less than the recorded
 motion does. Root-mean-square error therefore tracked
 simulated behavior in the expected direction only above the turn, and the
@@ -950,7 +1014,7 @@ at
 The practical consequence is for how prosthetic regression models are evaluated.
 Since such models are ordinarily compared after convergence, they are compared in
 the regime where further reduction in error no longer predicts a more stable
-simulated gait. The contrast a study chooses
+simulated motion. The contrast a study chooses
 matters as much as the metric: comparing prediction windows against one another,
 which is all a single converged model permits, recovered no relationship at any
 accuracy level, whereas comparing each window against itself across accuracy

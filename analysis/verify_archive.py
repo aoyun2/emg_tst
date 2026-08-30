@@ -50,8 +50,14 @@ check("README says to run from code/",
       bool(re.search(r"cd\s+code|from\s+code/|inside\s+code/", readme)),
       "no 'cd code' anywhere in the README")
 
-# every module the README invokes must resolve from code/
-modules = sorted(set(re.findall(r"python -m ([\w.]+)", readme)))
+# every module the README invokes must resolve from code/, and so must every
+# runner the archive ships, since a reviewer rerunning the physics imports it
+modules = sorted(set(re.findall(r"python -m ([\w.]+)", readme)) | {
+    "mocap_phys_eval.run_gait120_residual_fusion",
+    "emg_tst.run_gait120_residual_fusion",
+    "emg_tst.run_gait120_temporal_control",
+    "analysis.gait120_conventional_paired_statistics",
+})
 for module in modules:
     run = subprocess.run([PY, "-c", f"import {module}"], cwd=code,
                          capture_output=True, text=True)

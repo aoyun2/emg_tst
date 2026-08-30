@@ -599,7 +599,14 @@ def main() -> None:
     parser.add_argument("--artifacts-dir", type=Path, required=True)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--runtime-probe-only", action="store_true")
-    parser.add_argument("--moving-target-pd-v2", action="store_true")
+    # The reported simulations used the moving-target controller. Leaving it
+    # optional meant the obvious command silently ran the older mode, so the
+    # mode has to be stated.
+    controller = parser.add_mutually_exclusive_group(required=True)
+    controller.add_argument("--moving-target-pd-v2", action="store_true",
+                            help="the controller the reported results used")
+    controller.add_argument("--static-target-pd", action="store_true",
+                            help="the superseded static-target controller")
     parser.add_argument("--panel-source-dir", type=Path)
     parser.add_argument("--controller-validation-dir", type=Path)
     args = parser.parse_args()

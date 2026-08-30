@@ -4,3 +4,5 @@ scipy>=1.16,<1.17
 pandas>=3.0,<3.1
 matplotlib>=3.10,<3.11
 opencv-python>=4.12,<4.13
+# analysis/verify_*.py read the compiled PDF
+pymupdf>=1.24

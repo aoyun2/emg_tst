@@ -303,15 +303,28 @@ def _within_window_result(rows: list[WindowRow]) -> dict[str, Any]:
         return {"n_windows": len(per_window), "insufficient": True}
 
     rho = np.asarray([row["spearman_rho"] for row in per_window], dtype=np.float64)
+    # Several participants contribute two windows, so the windows are averaged
+    # within participant before combining. Testing all of them together would
+    # count those participants twice.
+    subject_of = {row.query_id: row.subject for row in rows}
+    by_subject: dict[str, list[float]] = {}
+    for entry in per_window:
+        by_subject.setdefault(subject_of[entry["query_id"]], []).append(
+            entry["spearman_rho"]
+        )
+    subject_rho = np.asarray(
+        [float(np.mean(v)) for _, v in sorted(by_subject.items())], dtype=np.float64
+    )
     # Fisher-z stabilizes the variance of a correlation before averaging.
-    z = np.arctanh(np.clip(rho, -0.999999, 0.999999))
+    z = np.arctanh(np.clip(subject_rho, -0.999999, 0.999999))
     test = stats.ttest_1samp(z, 0.0)
     mean_z = float(np.mean(z))
     half_width = float(
         stats.t.ppf(0.975, df=z.size - 1) * np.std(z, ddof=1) / np.sqrt(z.size)
     )
     return {
-        "n_windows": int(z.size),
+        "n_participants": int(z.size),
+        "n_windows": len(per_window),
         "mean_spearman_rho_fisher_back_transformed": float(np.tanh(mean_z)),
         "ci_95pct_rho": [
             float(np.tanh(mean_z - half_width)),
@@ -320,6 +333,7 @@ def _within_window_result(rows: list[WindowRow]) -> dict[str, Any]:
         "t_statistic": float(test.statistic),
         "p_value_two_sided": float(test.pvalue),
         "positive_windows": int(np.sum(rho > 0.0)),
+        "positive_participants": int(np.sum(subject_rho > 0.0)),
         "per_window": per_window,
     }
 
