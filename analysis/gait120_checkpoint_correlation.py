@@ -178,11 +178,22 @@ def _bootstrap_ci(
     controls: np.ndarray,
     rng: np.random.Generator,
     draws: int = BOOTSTRAP_DRAWS,
+    subjects: np.ndarray | None = None,
 ) -> tuple[float, float]:
     n = int(predictor.size)
+    # Windows are nested within participants, so a draw takes whole
+    # participants. Drawing windows would count twice those who contribute two.
+    groups: list[np.ndarray] | None = None
+    if subjects is not None:
+        unique = np.unique(np.asarray(subjects))
+        groups = [np.flatnonzero(np.asarray(subjects) == s) for s in unique.tolist()]
     values: list[float] = []
     for _ in range(int(draws)):
-        index = rng.integers(0, n, size=n)
+        if groups is None:
+            index = rng.integers(0, n, size=n)
+        else:
+            drawn = rng.integers(0, len(groups), size=len(groups))
+            index = np.concatenate([groups[i] for i in drawn.tolist()])
         value = partial_spearman(predictor[index], outcome[index], controls[index])
         if np.isfinite(value):
             values.append(float(value))
@@ -234,7 +245,8 @@ def _checkpoint_result(
     raw = float(stats.spearmanr(predictor, outcome).statistic) if n >= 3 else float("nan")
     rho = partial_spearman(predictor, outcome, controls) if n >= 5 else float("nan")
     lower, upper = (
-        _bootstrap_ci(predictor, outcome, controls, rng, bootstrap_draws)
+        _bootstrap_ci(predictor, outcome, controls, rng, bootstrap_draws,
+                      subjects=np.asarray([r.subject for r in rows]))
         if n >= 5
         else (np.nan, np.nan)
     )
@@ -339,7 +351,7 @@ def _within_window_result(rows: list[WindowRow]) -> dict[str, Any]:
 
 
 def _pooled_result(rows: list[WindowRow], rng: np.random.Generator) -> dict[str, Any]:
-    """Pool every checkpoint-window pair, with a window-level cluster bootstrap."""
+    """Pool every checkpoint-window pair, clustering the bootstrap on participants."""
     predictor = np.asarray([r.prediction_rmse_deg for r in rows], dtype=np.float64)
     outcome = np.asarray([r.excess_instability_auc for r in rows], dtype=np.float64)
     controls = np.column_stack(
@@ -349,7 +361,10 @@ def _pooled_result(rows: list[WindowRow], rng: np.random.Generator) -> dict[str,
         ]
     )
     finite = np.isfinite(predictor) & np.isfinite(outcome) & np.all(np.isfinite(controls), axis=1)
-    queries = np.asarray([r.query_id for r in rows])[finite]
+    # The bootstrap clusters on the participant; the reported window count is
+    # still the number of windows, which is not the number of clusters.
+    windows = np.asarray([r.query_id for r in rows])[finite]
+    queries = np.asarray([r.subject for r in rows])[finite]
     predictor, outcome, controls = predictor[finite], outcome[finite], controls[finite]
     rho = partial_spearman(predictor, outcome, controls)
 
@@ -368,7 +383,8 @@ def _pooled_result(rows: list[WindowRow], rng: np.random.Generator) -> dict[str,
         lower = upper = float("nan")
     return {
         "n_pairs": int(predictor.size),
-        "n_windows": int(unique.size),
+        "n_windows": int(np.unique(windows).size),
+        "n_participants": int(unique.size),
         "prediction_rmse_range_deg": [float(np.min(predictor)), float(np.max(predictor))],
         "prediction_rmse_sd_deg": float(np.std(predictor, ddof=1)),
         "partial_spearman_rho": float(rho),

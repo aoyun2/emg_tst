@@ -50,14 +50,14 @@ excess instability were not monotonically related over the sampled range
 ($\rho=+0.327$ across the
 14 checkpoint means). An exploratory two-segment split, placed between adjacent
 levels, falls at 12.97$^{\circ}$ (95\% CI
-12.00 to 14.24$^{\circ}$). Above it, worse prediction
+12.04 to 14.25$^{\circ}$). Above it, worse prediction
 gave more instability (slope
 +0.01304~s per
-degree, 95\% CI 0.01005 to 0.01696). Below it
+degree, 95\% CI 0.00986 to 0.01699). Below it
 the relationship inverted
 (slope
 -0.00707, 95\% CI
--0.00967 to -0.00467).
+-0.00978 to -0.00466).
 
 \textbf{Conclusions:} Prediction RMSE tracked the simulated outcome
 above roughly 13$^{\circ}$ and inverted
@@ -475,19 +475,19 @@ means are smoothed states along one deterministic descent, not independent
 observations. Searching the sampled levels for the best two-segment split places
 it between adjacent levels, at
 12.97$^{\circ}$ (95\% CI
-12.00 to 14.24$^{\circ}$); the split can therefore
+12.04 to 14.25$^{\circ}$); the split can therefore
 take only as many values as there are gaps between levels
 (Fig.~\ref{fig:primary}).
 
 Above that accuracy, worse prediction produces more simulated instability across
 the 7 levels in that segment (slope
 +0.01304~s per
-degree, 95\% CI 0.01005 to 0.01696).
+degree, 95\% CI 0.00986 to 0.01699).
 
 Below it the sign inverts: models that are more accurate produce \emph{more} excess
 instability across the 7 levels in that
 segment (slope -0.00707,
-95\% CI -0.00967 to -0.00467). Both intervals exclude
+95\% CI -0.00978 to -0.00466). Both intervals exclude
 zero under a bootstrap whose draws resample participants and carry each drawn
 participant's windows across every accuracy level, since the same windows are
 replayed at all of them; the checkpoint means themselves are smooth by
@@ -510,8 +510,8 @@ single accuracy level recovers nothing at any level
 (Table~\ref{tab:checkpoints} and Fig.~\ref{fig:perlevel}).
 Across the 80 windows, the within-window Spearman correlation between a window's own accuracy and its own excess instability averaged +0.150 over the 65 participants they come from (95\% CI 0.013 to 0.280; $t(64)=2.19$, $p=0.032$), with 44 of 65 participants positive. Pooled across all 1120 checkpoint--window pairs
 the match-adjusted association was
-+0.063 (window-level cluster bootstrap 95\% CI
--0.025 to 0.160). Figure~\ref{fig:fwl} shows the
++0.063 (participant-level cluster bootstrap 95\% CI
+-0.019 to 0.150). Figure~\ref{fig:fwl} shows the
 residualization at the converged model.
 
 
@@ -542,20 +542,20 @@ Excess instability is measured against each window's own paired reference.}\labe
 \toprule
 Descent step & $n$ & Mean RMSE ($^{\circ}$) & SD ($^{\circ}$) & Mean excess (s) & Partial $\rho$ & 95\% CI \\
 \midrule
-400001 & 80 & 5.09 & 1.28 & +0.0267 & -0.004 & -0.205 to 0.195 \\
-28246 & 80 & 6.56 & 1.78 & +0.0184 & -0.054 & -0.277 to 0.167 \\
-2457 & 80 & 8.05 & 1.82 & +0.0061 & -0.014 & -0.235 to 0.204 \\
-521 & 80 & 9.54 & 2.04 & -0.0143 & +0.051 & -0.186 to 0.282 \\
-216 & 80 & 11.05 & 2.20 & -0.0158 & -0.085 & -0.308 to 0.139 \\
-106 & 80 & 11.75 & 2.05 & -0.0202 & -0.028 & -0.246 to 0.193 \\
-74 & 80 & 12.51 & 1.85 & -0.0230 & +0.076 & -0.144 to 0.297 \\
-55 & 80 & 13.43 & 1.71 & -0.0247 & -0.007 & -0.226 to 0.217 \\
-41 & 80 & 14.46 & 1.65 & -0.0148 & +0.001 & -0.208 to 0.216 \\
-30 & 80 & 15.56 & 1.66 & -0.0074 & -0.089 & -0.280 to 0.108 \\
-21 & 80 & 16.69 & 1.74 & +0.0126 & -0.071 & -0.281 to 0.147 \\
-13 & 80 & 17.88 & 1.87 & +0.0313 & -0.007 & -0.241 to 0.218 \\
-6 & 80 & 19.09 & 2.05 & +0.0466 & -0.093 & -0.309 to 0.134 \\
-0 & 80 & 20.25 & 2.23 & +0.0605 & -0.071 & -0.294 to 0.162 \\
+400001 & 80 & 5.09 & 1.28 & +0.0267 & -0.004 & -0.209 to 0.206 \\
+28246 & 80 & 6.56 & 1.78 & +0.0184 & -0.054 & -0.279 to 0.191 \\
+2457 & 80 & 8.05 & 1.82 & +0.0061 & -0.014 & -0.228 to 0.208 \\
+521 & 80 & 9.54 & 2.04 & -0.0143 & +0.051 & -0.188 to 0.292 \\
+216 & 80 & 11.05 & 2.20 & -0.0158 & -0.085 & -0.324 to 0.175 \\
+106 & 80 & 11.75 & 2.05 & -0.0202 & -0.028 & -0.236 to 0.184 \\
+74 & 80 & 12.51 & 1.85 & -0.0230 & +0.076 & -0.148 to 0.299 \\
+55 & 80 & 13.43 & 1.71 & -0.0247 & -0.007 & -0.251 to 0.228 \\
+41 & 80 & 14.46 & 1.65 & -0.0148 & +0.001 & -0.223 to 0.218 \\
+30 & 80 & 15.56 & 1.66 & -0.0074 & -0.089 & -0.287 to 0.119 \\
+21 & 80 & 16.69 & 1.74 & +0.0126 & -0.071 & -0.290 to 0.165 \\
+13 & 80 & 17.88 & 1.87 & +0.0313 & -0.007 & -0.271 to 0.247 \\
+6 & 80 & 19.09 & 2.05 & +0.0466 & -0.093 & -0.323 to 0.158 \\
+0 & 80 & 20.25 & 2.23 & +0.0605 & -0.071 & -0.318 to 0.194 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -709,7 +709,7 @@ Replaying one fixed panel of walking windows at
 training path shows that prediction error predicts simulated instability
 in opposite directions either side of a split in the accuracy range. Above
 12.97$^{\circ}$ (95\% CI
-12.00 to 14.24$^{\circ}$) a less accurate model
+12.04 to 14.25$^{\circ}$) a less accurate model
 left the simulated body less stable. Below that point the relationship
 inverted, which is consistent with a partially fitted model regressing toward the
 participant mean

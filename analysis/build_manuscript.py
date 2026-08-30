@@ -825,7 +825,7 @@ single accuracy level recovers nothing at any level
 (Table~\ref{{tab:checkpoints}} and Fig.~\ref{{fig:perlevel}}).
 {within_sentence} Pooled across all {pooled['n_pairs']} checkpoint--window pairs
 the match-adjusted association was
-{signed(pooled['partial_spearman_rho'], 3)} (window-level cluster bootstrap 95\% CI
+{signed(pooled['partial_spearman_rho'], 3)} (participant-level cluster bootstrap 95\% CI
 {ci(pooled['cluster_bootstrap_95pct_ci'], 3)}). Figure~\ref{{fig:fwl}} shows the
 residualization at the converged model.
 

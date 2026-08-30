@@ -36,51 +36,46 @@ BODY = [
     "I am submitting the enclosed manuscript, titled \"" + TITLE + ",\" for "
     "consideration as an original research article.",
 
-    "Root-mean-square error is the standard reported metric for continuous "
-    "knee-angle prediction, and it is generally treated as though a lower value "
-    "implies a more useful controller. That assumption has not been tested "
-    "directly, because a study that evaluates a single converged model can only "
-    "compare prediction windows against one another, and differences between "
-    "windows are dominated by factors unrelated to the predictor.",
+    "Root-mean-square error is the standard metric for continuous knee-angle "
+    "prediction and is generally treated as though a lower value implies a more "
+    "useful controller. That assumption is hard to test, because a study of a "
+    "single converged model can only compare prediction windows against one "
+    "another, where differences are dominated by factors unrelated to the "
+    "predictor.",
 
-    "The present study addresses this by holding the evaluation panel fixed and "
-    "varying the model instead. Eighty one-second walking windows were matched to "
-    "MoCapAct reference motions and replayed in paired MuJoCo simulations at "
-    "fourteen accuracy levels sampled along the model's own gradient-descent "
-    "training path, giving 1,120 rollouts over an accuracy range from 22 to 4.9 "
-    "degrees. In each rollout the predicted knee angle was the tracking target of "
-    "a proportional-derivative override on the right knee, and the paired "
-    "reference condition ran the unmodified expert policy on the same matched "
-    "motion, so that the two conditions differed only in the target given to the "
-    "knee.",
+    "The present study holds the evaluation panel fixed and varies the model "
+    "instead. Eighty one-second walking windows were matched to MoCapAct "
+    "reference motions and replayed in paired MuJoCo simulations at fourteen "
+    "accuracy levels along the model's own gradient-descent training path, "
+    "giving 1,120 rollouts. In the prediction condition the predicted knee angle "
+    "was the tracking target of a proportional-derivative override on the right "
+    "knee; the paired reference ran the unmodified expert policy on the same "
+    "matched motion and initial state, retaining its native knee actuator.",
 
     "The relationship between prediction error and simulated instability was found "
     "to be non-monotonic. An exploratory two-segment split falls at " + _SPLIT + " degrees "
-    "root-mean-square error (95% confidence interval " + _LO + " to " + _HI + "). Above that "
-    "accuracy, worse prediction produced more simulated instability, with a slope "
-    "of " + _ABOVE + " seconds per degree. Below it the relationship inverted, with "
-    "a slope of " + _BELOW + " seconds per degree, which is consistent with a partially "
-    "fitted model commanding a flatter trajectory than the recorded one. "
-    "Both slopes were estimated by resampling participants and carrying each across "
-    "every accuracy level, and both intervals exclude zero.",
+    "root-mean-square error (95% confidence interval " + _LO + " to " + _HI + "). At "
+    "larger errors than that, worse prediction produced more simulated "
+    "instability (" + _ABOVE + " seconds per degree). At smaller errors the "
+    "relationship inverted (" + _BELOW + " seconds per degree), which is consistent "
+    "with a partially fitted model commanding a flatter trajectory than the "
+    "recorded one. Both slopes were estimated by resampling participants, and "
+    "both intervals exclude zero.",
 
-    "This result has a practical consequence for how prosthetic regression models "
-    "are evaluated. A converged predictor operates in the range where further "
-    "reduction in root-mean-square error no longer predicts better simulated "
-    "behavior, and a null result obtained there should be expected rather than "
-    "interpreted as evidence that accuracy is unimportant. The surface "
-    "electromyography ablation reported in the manuscript serves as a quality gate "
-    "confirming that the predictor was worth evaluating physically, rather than as "
-    "a contribution in itself; mean participant error was 4.748 degrees with the "
-    "correction and 5.093 degrees without it, and 70 of 90 participants improved.",
+    "The consequence is for how these models are evaluated. A converged predictor "
+    "sits in the range where further reduction in error no longer predicts better "
+    "simulated behavior, so a null result obtained there should be expected "
+    "rather than read as evidence that accuracy is unimportant. The surface "
+    "electromyography ablation is a quality gate rather than a contribution in "
+    "itself: 4.748 degrees with the correction against 5.093 without it, and 70 "
+    "of 90 participants improved.",
 
     "The manuscript has not been published elsewhere and is not under "
-    "consideration by any other journal. The study used only publicly available "
-    "datasets and did not involve new human or animal participants, so ethical "
-    "approval was not required. I am the sole author, I declare no competing "
-    "interests, and I received no funding for this work. The analysis code, the "
-    "unattended run pipeline, and the script that generates every reported figure "
-    "and numerical value are available in the project repository.",
+    "consideration by any other journal. The study is a secondary analysis of "
+    "public, de-identified recordings and did not involve new participants. I am "
+    "the sole author, declare no competing interests, and received no funding. "
+    "The analysis code and the generator that produces every reported number are "
+    "available in the project repository.",
 
     "Thank you for your consideration.",
 ]
