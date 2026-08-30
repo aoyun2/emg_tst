@@ -420,7 +420,7 @@ differences are dominated by which motion each window contains rather than by th
 predictor that drove it.
 
 The present study addresses the question by holding the evaluation panel fixed and
-varying the model instead. One fixed panel of walking windows is replayed at a
+varying the model instead (Fig.~\ref{{fig:overview}}). One fixed panel of walking windows is replayed at a
 series of accuracy levels sampled along a single model's own gradient-descent
 training path, with the predicted knee angle serving as the tracking target of the
 simulated joint throughout. Because the windows, the matched reference motions,
@@ -463,7 +463,8 @@ The released sEMG was sampled at 2000~Hz and the OpenSim joint angles at 100~Hz.
 Twelve right-leg sEMG channels were retained. Each was filtered with
 a second-order 20--500-Hz Butterworth band-pass, rectified, and converted to a
 causal 250-sample (125-ms) root-mean-square envelope
-\cite{{chowdhury2013,phinyomark2018}}. No future sEMG entered an input frame.
+\cite{{chowdhury2013,phinyomark2018}}. No future sEMG entered an input frame. Figure~\ref{{fig:signals}} shows the
+recorded signals and the predictions for one panel window.
 Predictor inputs and targets were not interpolated or time-normalized.
 
 \subsection{{Windowing, forecast horizon, and training}}
@@ -579,15 +580,17 @@ its expert policy. No motion label restricted the candidates, since the released
 snippets carry none; a match was selected on knee-trajectory agreement alone,
 and the agreement achieved is reported below and carried as a covariate. Candidate snippets were aligned by a constant knee offset and
 either sign convention, without amplitude scaling. Knee RMSE determined the match
-rank; the RMS geodesic angle between the query and candidate right-thigh
-orientations was retained as a match-quality covariate. The {pooled['n_windows']} windows drew on {matched_clips} distinct
+rank; the RMS difference between the query and candidate right-thigh pitch,
+after the same sign and offset alignment, was retained as a match-quality
+covariate. The {pooled['n_windows']} windows drew on {matched_clips} distinct
 snippets, the most frequent covering {matched_clip_max} of them. Because no
 motion label restricted the candidates, the matched references are not confined
 to walking, and the simulated outcome below is the stability of the matched
 motion rather than of walking in particular. Mean
 matching knee error was {deg(matching['mean_knee_rmse_deg'], 2)}$^{{\circ}}$
 (median {deg(matching['median_knee_rmse_deg'], 2)}$^{{\circ}}$) and mean thigh
-orientation RMS {deg(matching['mean_thigh_rms_deg'], 2)}$^{{\circ}}$.
+pitch RMS {deg(matching['mean_thigh_rms_deg'], 2)}$^{{\circ}}$
+(Fig.~\ref{{fig:matching}}).
 
 In the prediction condition the model's predicted knee angle was the tracking
 target of a proportional-derivative override on the right knee actuator. The
@@ -612,7 +615,8 @@ The paired reference condition ran the unmodified expert policy on the same
 snippet, initial state, and controller, and began from the same point in the
 clip after the same number of warm-up steps, which are simulation steps run
 before the evaluation window so that the policy is already tracking the clip
-when measurement starts. Nothing in either rollout reads
+when measurement starts. A paired rollout is shown in Fig.~\ref{{fig:simulation}}.
+Nothing in either rollout reads
 the recorded future knee angle, so the simulation is driven by the model output
 rather than by a replayed error.
 
@@ -663,7 +667,7 @@ without necessarily being better motion.
 
 The primary association was a partial Spearman correlation between window
 prediction RMSE and excess instability, controlling for matching knee RMSE and
-thigh orientation RMS, following Frisch--Waugh--Lovell residualization on ranked
+thigh pitch RMS, following Frisch--Waugh--Lovell residualization on ranked
 variables \cite{{spearman1904,frisch1933,lovell1963}}, and is called the
 match-adjusted association below.
 
@@ -696,7 +700,7 @@ paired improvement was {deg(ablation['mean_improvement_deg'])}$^{{\circ}}$ (95\%
 bootstrap CI {ci(ablation['bootstrap_95pct_ci_deg'])}$^{{\circ}}$; two-sided
 paired $t({controls['conditions']['identity']['paired_t']['df']})={controls['conditions']['identity']['paired_t']['t']:.2f}$, $p={pval(controls['conditions']['identity']['paired_t']['p_two_sided'])}$), and
 {ablation['positive_participants']} of {ablation['participant_count']}
-participants improved.
+participants improved (Fig.~\ref{{fig:accuracy}}).
 
 In the timing control both residual models were fitted on the same rows and
 scored on the same target rows, so the two differ only in when the sEMG was
@@ -732,7 +736,7 @@ detectable change in the simulated outcome.
 \begin{{figure}}[!htbp]
 \centering
 \includegraphics[width=\linewidth]{{fig05_motion_matching}}
-\caption{{Motion-match quality over the fixed panel. \textbf{{A}} Knee against thigh-orientation matching error for each window, with the panel mean. \textbf{{B}} Both errors sorted across windows.}}\label{{fig:matching}}
+\caption{{Motion-match quality over the fixed panel. \textbf{{A}} Knee against thigh-pitch matching error for each window, with the panel mean. \textbf{{B}} Both errors sorted across windows.}}\label{{fig:matching}}
 \end{{figure}}
 
 \subsection{{Prediction error vs. excess instability}}
@@ -751,7 +755,8 @@ monotone. Searching the sampled levels for the best two-segment split places
 it between adjacent levels, at
 {deg(accuracy['breakpoint_rmse_deg'], 2)}$^{{\circ}}$ (95\% CI
 {ci(accuracy['breakpoint_95pct_ci'], 2)}$^{{\circ}}$); the split can therefore
-take only as many values as there are gaps between levels.
+take only as many values as there are gaps between levels
+(Fig.~\ref{{fig:primary}}).
 
 Above that accuracy, worse prediction produces more simulated instability across
 the {accuracy['above_breakpoint']['n_levels']} levels in that segment (slope
@@ -781,11 +786,12 @@ correspondingly negative through the middle of the range, reaching
 
 Three further comparisons were made. Comparing windows against one another within a
 single accuracy level recovers nothing at any level
-(Table~\ref{{tab:checkpoints}}).
+(Table~\ref{{tab:checkpoints}} and Fig.~\ref{{fig:perlevel}}).
 {within_sentence} Pooled across all {pooled['n_pairs']} checkpoint--window pairs
 the match-adjusted association was
 {signed(pooled['partial_spearman_rho'], 3)} (window-level cluster bootstrap 95\% CI
-{ci(pooled['cluster_bootstrap_95pct_ci'], 3)}).
+{ci(pooled['cluster_bootstrap_95pct_ci'], 3)}). Figure~\ref{{fig:fwl}} shows the
+residualization at the converged model.
 
 
 
@@ -798,7 +804,7 @@ the match-adjusted association was
 \begin{{figure}}[!htbp]
 \centering
 \includegraphics[width=\linewidth]{{fig07_fwl}}
-\caption{{The match-adjusted analysis at the converged model. \textbf{{A}} Window prediction error against excess instability. \textbf{{B}} The same outcome against motion-match quality, the covariate being controlled. \textbf{{C}} Both variables residualized on ranked match knee error and thigh orientation RMS; the correlation between them is the reported partial Spearman.}}\label{{fig:fwl}}
+\caption{{The match-adjusted analysis at the converged model. \textbf{{A}} Window prediction error against excess instability. \textbf{{B}} The same outcome against motion-match quality, the covariate being controlled. \textbf{{C}} Both variables residualized on ranked match knee error and thigh pitch RMS; the correlation between them is the reported partial Spearman.}}\label{{fig:fwl}}
 \end{{figure}}
 
 \begin{{figure}}[!htbp]

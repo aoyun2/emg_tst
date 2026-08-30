@@ -118,7 +118,7 @@ differences are dominated by which motion each window contains rather than by th
 predictor that drove it.
 
 The present study addresses the question by holding the evaluation panel fixed and
-varying the model instead. One fixed panel of walking windows is replayed at a
+varying the model instead (Fig.~\ref{fig:overview}). One fixed panel of walking windows is replayed at a
 series of accuracy levels sampled along a single model's own gradient-descent
 training path, with the predicted knee angle serving as the tracking target of the
 simulated joint throughout. Because the windows, the matched reference motions,
@@ -161,7 +161,8 @@ The released sEMG was sampled at 2000~Hz and the OpenSim joint angles at 100~Hz.
 Twelve right-leg sEMG channels were retained. Each was filtered with
 a second-order 20--500-Hz Butterworth band-pass, rectified, and converted to a
 causal 250-sample (125-ms) root-mean-square envelope
-\cite{chowdhury2013,phinyomark2018}. No future sEMG entered an input frame.
+\cite{chowdhury2013,phinyomark2018}. No future sEMG entered an input frame. Figure~\ref{fig:signals} shows the
+recorded signals and the predictions for one panel window.
 Predictor inputs and targets were not interpolated or time-normalized.
 
 \subsection{Windowing, forecast horizon, and training}
@@ -277,15 +278,17 @@ its expert policy. No motion label restricted the candidates, since the released
 snippets carry none; a match was selected on knee-trajectory agreement alone,
 and the agreement achieved is reported below and carried as a covariate. Candidate snippets were aligned by a constant knee offset and
 either sign convention, without amplitude scaling. Knee RMSE determined the match
-rank; the RMS geodesic angle between the query and candidate right-thigh
-orientations was retained as a match-quality covariate. The 80 windows drew on 32 distinct
+rank; the RMS difference between the query and candidate right-thigh pitch,
+after the same sign and offset alignment, was retained as a match-quality
+covariate. The 80 windows drew on 32 distinct
 snippets, the most frequent covering 15 of them. Because no
 motion label restricted the candidates, the matched references are not confined
 to walking, and the simulated outcome below is the stability of the matched
 motion rather than of walking in particular. Mean
 matching knee error was 3.78$^{\circ}$
 (median 3.44$^{\circ}$) and mean thigh
-orientation RMS 4.10$^{\circ}$.
+pitch RMS 4.10$^{\circ}$
+(Fig.~\ref{fig:matching}).
 
 In the prediction condition the model's predicted knee angle was the tracking
 target of a proportional-derivative override on the right knee actuator. The
@@ -310,7 +313,8 @@ The paired reference condition ran the unmodified expert policy on the same
 snippet, initial state, and controller, and began from the same point in the
 clip after the same number of warm-up steps, which are simulation steps run
 before the evaluation window so that the policy is already tracking the clip
-when measurement starts. Nothing in either rollout reads
+when measurement starts. A paired rollout is shown in Fig.~\ref{fig:simulation}.
+Nothing in either rollout reads
 the recorded future knee angle, so the simulation is driven by the model output
 rather than by a replayed error.
 
@@ -361,7 +365,7 @@ without necessarily being better motion.
 
 The primary association was a partial Spearman correlation between window
 prediction RMSE and excess instability, controlling for matching knee RMSE and
-thigh orientation RMS, following Frisch--Waugh--Lovell residualization on ranked
+thigh pitch RMS, following Frisch--Waugh--Lovell residualization on ranked
 variables \cite{spearman1904,frisch1933,lovell1963}, and is called the
 match-adjusted association below.
 
@@ -394,7 +398,7 @@ paired improvement was 0.345$^{\circ}$ (95\%
 bootstrap CI 0.254 to 0.436$^{\circ}$; two-sided
 paired $t(89)=7.39$, $p=7.50\times10^{-11}$), and
 70 of 90
-participants improved.
+participants improved (Fig.~\ref{fig:accuracy}).
 
 In the timing control both residual models were fitted on the same rows and
 scored on the same target rows, so the two differ only in when the sEMG was
@@ -430,7 +434,7 @@ detectable change in the simulated outcome.
 \begin{figure}[!htbp]
 \centering
 \includegraphics[width=\linewidth]{fig05_motion_matching}
-\caption{Motion-match quality over the fixed panel. \textbf{A} Knee against thigh-orientation matching error for each window, with the panel mean. \textbf{B} Both errors sorted across windows.}\label{fig:matching}
+\caption{Motion-match quality over the fixed panel. \textbf{A} Knee against thigh-pitch matching error for each window, with the panel mean. \textbf{B} Both errors sorted across windows.}\label{fig:matching}
 \end{figure}
 
 \subsection{Prediction error vs. excess instability}
@@ -449,7 +453,8 @@ monotone. Searching the sampled levels for the best two-segment split places
 it between adjacent levels, at
 12.97$^{\circ}$ (95\% CI
 12.00 to 14.24$^{\circ}$); the split can therefore
-take only as many values as there are gaps between levels.
+take only as many values as there are gaps between levels
+(Fig.~\ref{fig:primary}).
 
 Above that accuracy, worse prediction produces more simulated instability across
 the 7 levels in that segment (slope
@@ -479,11 +484,12 @@ correspondingly negative through the middle of the range, reaching
 
 Three further comparisons were made. Comparing windows against one another within a
 single accuracy level recovers nothing at any level
-(Table~\ref{tab:checkpoints}).
+(Table~\ref{tab:checkpoints} and Fig.~\ref{fig:perlevel}).
 Across the 80 windows, the within-window Spearman correlation between a window's own accuracy and its own excess instability averaged +0.150 over the 65 participants they come from (95\% CI 0.013 to 0.280; $t(64)=2.19$, $p=0.032$), with 44 of 65 participants positive. Pooled across all 1120 checkpoint--window pairs
 the match-adjusted association was
 +0.063 (window-level cluster bootstrap 95\% CI
--0.025 to 0.160).
+-0.025 to 0.160). Figure~\ref{fig:fwl} shows the
+residualization at the converged model.
 
 
 
@@ -496,7 +502,7 @@ the match-adjusted association was
 \begin{figure}[!htbp]
 \centering
 \includegraphics[width=\linewidth]{fig07_fwl}
-\caption{The match-adjusted analysis at the converged model. \textbf{A} Window prediction error against excess instability. \textbf{B} The same outcome against motion-match quality, the covariate being controlled. \textbf{C} Both variables residualized on ranked match knee error and thigh orientation RMS; the correlation between them is the reported partial Spearman.}\label{fig:fwl}
+\caption{The match-adjusted analysis at the converged model. \textbf{A} Window prediction error against excess instability. \textbf{B} The same outcome against motion-match quality, the covariate being controlled. \textbf{C} Both variables residualized on ranked match knee error and thigh pitch RMS; the correlation between them is the reported partial Spearman.}\label{fig:fwl}
 \end{figure}
 
 \begin{figure}[!htbp]
