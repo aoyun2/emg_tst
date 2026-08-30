@@ -698,7 +698,7 @@ trajectory perturbs the body less, which a trajectory that moves the knee less
 than the recording also does, so a smoother or flatter command scores well
 without necessarily being better motion.
 
-\subsection{{Correlation study}}
+\subsection{{Correlation study}}\label{{sec:correlation}}
 
 The primary association was a partial Spearman correlation between window
 prediction RMSE and excess instability, controlling for matching knee RMSE and
