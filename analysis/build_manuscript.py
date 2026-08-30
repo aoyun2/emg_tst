@@ -75,6 +75,13 @@ def collect(runs: Path) -> dict[str, Any]:
     path_protocol = load(runs / "training_path" / "protocol.json")
     checkpoints = load(runs / "training_path" / "checkpoints" / "manifest.json")
     correlation = load(runs / "analysis" / "checkpoint_correlation.json")
+    full_steps = int(round(max(
+        float(c["mean_expected_steps"]) for c in correlation["per_checkpoint"]
+    )))
+    short_rollouts = sum(
+        int(c["truncated_rollouts"]) for c in correlation["per_checkpoint"]
+    )
+    total_rollouts = sum(int(c["n_windows"]) for c in correlation["per_checkpoint"])
     panel_rows = (
         (runs / "analysis" / "participant_primary.csv")
         .read_text(encoding="utf-8").strip().splitlines()
@@ -125,6 +132,9 @@ def collect(runs: Path) -> dict[str, Any]:
         "kinematic_check": kinematic_check,
         "matching": matching,
         "oracle": oracle,
+        "full_steps": full_steps,
+        "short_rollouts": short_rollouts,
+        "total_rollouts": total_rollouts,
         "matched_clips": matched_clips,
         "matched_clip_max": matched_clip_max,
         "panel_participants": panel_participants,
@@ -222,6 +232,9 @@ def build(data: dict[str, Any]) -> str:
     dropoff = correlation["dropoff"]
     accuracy = correlation["accuracy_level"]
     panel = data["panel"]
+    full_steps = data["full_steps"]
+    short_rollouts = data["short_rollouts"]
+    total_rollouts = data["total_rollouts"]
     matched_clips = data["matched_clips"]
     matched_clip_max = data["matched_clip_max"]
     panel_participants = data["panel_participants"]
@@ -605,15 +618,23 @@ offset and sign that the match established:
 
 Proportional and derivative gains were $K_p=400$ and $K_d=20$ with the actuator
 force limited to 160, and the desired velocity was the causal backward difference
-of the commanded trajectory, zero at the first evaluation step. The gains were
-set by requiring that commanding a matched clip's own recorded trajectory
-reproduce that trajectory in joint space to within
-{deg(ORACLE_MAX_TRACKING_RMSE_DEG, 0)}$^{{\circ}}$; no prediction was used to
-set them.
+of the commanded trajectory, zero at the first evaluation step. Gains were chosen from a grid of four settings scored on ten preflight
+windows in which the commanded trajectory was the clip's own recording, so
+prediction error was zero and any tracking error or added instability came from
+the override. The grid was scored on both mean tracking error and mean added
+instability, and $K_p=400$ was the smallest stiffness that met the
+{deg(ORACLE_MAX_TRACKING_RMSE_DEG, 0)}$^{{\circ}}$ tracking criterion on every
+window. No prediction entered the choice, but the outcome measure did, so the
+gains are not independent of it. Commands were mapped into the clip's
+convention and clipped to $[0,170]^{{\circ}}$. Rollouts advanced at
+$\Delta t=0.03$~s, giving 34 samples across a one-second window.
 
 The paired reference condition ran the unmodified expert policy on the same
-snippet, initial state, and controller, and began from the same point in the
-clip after the same number of warm-up steps, which are simulation steps run
+snippet and initial state, retaining the walker's native knee actuator: the
+retuning above is applied to the prediction condition only, so the two
+conditions differ in the knee target and in the knee actuator that follows it.
+It began from the same point in the clip after the same number of warm-up
+steps, which are simulation steps run
 before the evaluation window so that the policy is already tracking the clip
 when measurement starts. A paired rollout is shown in Fig.~\ref{{fig:simulation}}.
 Nothing in either rollout reads
@@ -630,9 +651,12 @@ rather than by a replayed error.
 
 \subsection{{Evaluating simulations with an instability metric}}
 
-At each control step the convex hull of foot--ground contact points defined the
-support polygon, and the XCoM extrapolated the horizontal center-of-mass
-position in the direction of its velocity. Let $m$ be the signed distance from the
+At each control step the support polygon was the convex hull of the
+foot--ground contact points, each contacting foot contributing a rectangle of
+half-width $0.05$~m rather than a single point. The XCoM extrapolated the
+horizontal center-of-mass position along its velocity, $\mathrm{{XCoM}} =
+\mathbf{{r}} + \dot{{\mathbf{{r}}}}/\omega_0$, with $\omega_0 = 3.13$ per
+second. Let $m$ be the signed distance from the
 XCoM to the boundary of that polygon, in meters, positive when the XCoM lies
 inside it.
 
@@ -650,10 +674,15 @@ $I=0.55\,r_{{\mathrm{{min}}}}+0.25\,r_{{\mathrm{{end}}}}+0.20\,r_{{s}}$, again
 clipped to $[0,1]$. Each term is zero while the XCoM stays near or inside the
 support polygon and reaches one when it is far outside it or leaving it quickly.
 The ramp endpoints and weights were set on reference walking and running so that
-unperturbed motion scores near zero. Steps at which no support margin could be
-computed, such as flight phases, were given $I=0.25$.
+unperturbed motion scores near zero. Where no finite margin remained anywhere in the trailing window, as in a
+flight phase, the index was set to $0.25$ for that step.
 
-Integrating $I$ over the window gives a quantity in seconds. Absolute instability depends on how stable a
+Integrating $I$ over the window gives a quantity in seconds. A rollout stops as
+soon as either condition falls, and both conditions stop together, so the paired
+difference stays like-for-like while the interval it is integrated over
+shortens. {short_rollouts} of the {total_rollouts} rollouts ended before the
+full {full_steps} steps, which shortens the outcome for the windows that
+destabilized most. Absolute instability depends on how stable a
 matched reference already is,
 so the reported outcome is excess instability, $I'=I_{{\mathrm{{PRED}}}}-I_{{\mathrm{{REF}}}}$,
 measured against each window's own paired reference. The index is derived from
