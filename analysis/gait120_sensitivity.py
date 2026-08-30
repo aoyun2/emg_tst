@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from dataclasses import replace
 
 from analysis.gait120_checkpoint_correlation import (
     _load_rows,
@@ -74,6 +75,39 @@ def main() -> int:
             ),
         },
     }
+
+    # Equal weight per participant: the fifteen who contribute two windows
+    # would otherwise count twice at every checkpoint.
+    from collections import defaultdict
+    by_subject = defaultdict(list)
+    for r in rows:
+        by_subject[(r.subject, r.checkpoint)].append(r)
+    balanced = []
+    for (_subject, _ckpt), group in by_subject.items():
+        first = group[0]
+        if len(group) == 1:
+            balanced.append(first)
+        else:
+            merged = replace(
+                first,
+                prediction_rmse_deg=float(np.mean([g.prediction_rmse_deg for g in group])),
+                excess_instability_auc=float(
+                    np.mean([g.excess_instability_auc for g in group])),
+            )
+            balanced.append(merged)
+    report["equal_participant_weight"] = _refit(
+        balanced, "one value per participant per checkpoint", args.seed
+    )
+
+    # Excess instability as a rate per recorded second, which removes the
+    # shortening that early termination introduces.
+    rated = [
+        replace(r, excess_instability_auc=r.excess_instability_auc / r.recorded_steps)
+        for r in rows if r.recorded_steps > 0
+    ]
+    report["duration_normalized"] = _refit(
+        rated, "excess instability per recorded step", args.seed
+    )
 
     oracle = args.physics_run_dir / "oracle_preflight" / "summary.json"
     if oracle.exists():

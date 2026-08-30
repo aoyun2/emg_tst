@@ -29,7 +29,7 @@ Three views are reported:
 ``pooled``
     All checkpoint-window pairs together, which uses the full accuracy range but
     reuses each window once per checkpoint; its interval is reported from a
-    window-level cluster bootstrap rather than assuming independence.
+    participant-level cluster bootstrap rather than assuming independence.
 
 against mean accuracy, alongside the simpler statement of which checkpoints had
 intervals excluding zero.
@@ -390,7 +390,7 @@ def _pooled_result(rows: list[WindowRow], rng: np.random.Generator) -> dict[str,
         "cluster_bootstrap_95pct_ci": [float(lower), float(upper)],
         "note": (
             "Each window contributes once per checkpoint; the interval is a "
-            "window-level cluster bootstrap, not an independent-sample interval."
+            "participant-level cluster bootstrap, not an independent-sample interval."
         ),
     }
 

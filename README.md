@@ -40,7 +40,6 @@ device or estimate clinical fall risk.
 | `mocap_phys_eval/run_gait120_residual_fusion.py` | Motion matching and model-driven paired MuJoCo rollouts |
 | `analysis/gait120_checkpoint_correlation.py` | Association along the training path and its drop-off |
 | `analysis/gait120_conventional_paired_statistics.py` | Participant-level inferential summaries |
-| `analysis/gait120_submission_figures.py` | Eight manuscript figures from archived results |
 | `docs/EXPERIMENT_PROTOCOL.md` | Human-readable analysis protocol |
 | `tests/` | Deterministic unit and repository-integrity checks |
 
@@ -106,7 +105,6 @@ evidence supplement:
 ```bash
 python -m analysis.gait120_conventional_paired_statistics --help
 python -m analysis.gait120_checkpoint_correlation --help
-python -m analysis.gait120_submission_figures --help
 ```
 
 See [the protocol](docs/EXPERIMENT_PROTOCOL.md) for the cohort split, signal
