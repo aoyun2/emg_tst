@@ -27,11 +27,21 @@ CODE = [
     "emg_tst/run_gait120_training_path.py",
     "emg_tst/run_gait120_temporal_control.py",
     "emg_tst/prepare_gait120_physics_panel.py",
+    # The whole package: the runner imports config, run, utils, reference_bank
+    # and bvh transitively, and a clean extraction cannot import it without them.
+    "mocap_phys_eval/__init__.py",
     "mocap_phys_eval/run_gait120_residual_fusion.py",
     "mocap_phys_eval/recording.py",
     "mocap_phys_eval/matching.py",
     "mocap_phys_eval/sim.py",
     "mocap_phys_eval/experts.py",
+    "mocap_phys_eval/config.py",
+    "mocap_phys_eval/run.py",
+    "mocap_phys_eval/utils.py",
+    "mocap_phys_eval/reference_bank.py",
+    "mocap_phys_eval/bvh.py",
+    "mocap_phys_eval/plots.py",
+    "mocap_phys_eval/level_walking.py",
     "analysis/gait120_checkpoint_correlation.py",
     "analysis/gait120_conventional_paired_statistics.py",
     "analysis/gait120_figures.py",
@@ -124,8 +134,14 @@ def main() -> None:
 
     print(f"wrote {args.out} ({args.out.stat().st_size / 1e6:.2f} MB, "
           f"{len(zipfile.ZipFile(args.out).namelist())} files)")
-    for m in missing:
-        print("  missing:", m)
+    if missing:
+        # An archive that omits what its own README tells a reviewer to run is
+        # not a reproducibility supplement, so this is an error and not a note.
+        for m in missing:
+            print("  MISSING:", m)
+        raise SystemExit(
+            f"{len(missing)} listed input(s) were not found; the archive is incomplete"
+        )
 
 
 README = """Reproducibility supplement
