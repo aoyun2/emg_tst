@@ -421,17 +421,12 @@ To determine whether the XCoM is in an acceptable state, an area called the supp
 Functional evaluation in prosthetics research thus requires more than numerical predictive accuracy. Equally important to consider, if not more so, is the question of whether or not the knee angle derived from the prediction model remains compatible with gait, support, and balance in a full physical context. The literature has made strong progress improving on current numerical benchmarks, but a remaining gap can be found by questioning if those numerical benchmarks are accurate representations of functional success. RMSE can show that a model reconstructs a target angle accurately, but it cannot by itself show whether that angle would preserve the balance and the characteristics of the original motion as part of a physical system. This gap motivates simulation-based evaluation as the next step in assessing prosthetic regression models.
 
 Two features of how such evaluations are ordinarily built stand in the way of
-testing directly whether prediction accuracy corresponds to functional behavior. The first concerns where the predictor sits. Hargrove et
-al.\ \cite{{hargrove2007}} drew a distinction between offline scoring and
-real-time control, and the same distinction applies to simulation: a rollout that
-reproduces a recorded error by displacing a reference trajectory has to be handed
-the recorded future target in order to do so, and a controller supplied with the
-answer is replaying a recording rather than controlling. Only a predictor placed inside the
-control loop, generating the signal that the simulated joint actually follows,
-tests what a deployed model would do. The second concerns the range of accuracy
-examined. A converged model occupies a narrow band of error, and an association
-estimated inside that band cannot separate the possibility that error does not
-matter from the possibility that error did not vary. A study that evaluates one
+testing directly whether prediction accuracy corresponds to functional behavior. The first is where the predictor sits. A simulation tests what a deployed
+model would do only if the model generates the signal the simulated joint
+follows, which is the distinction Hargrove et al.\ \cite{{hargrove2007}} drew
+between offline scoring and real-time control. The second concerns the range of accuracy
+examined. A converged model occupies a narrow band of error, so there is
+little accuracy variation inside it for an association to be estimated from. A study that evaluates one
 trained model can only compare prediction windows against one another, where
 differences are dominated by which motion each window contains rather than by the
 predictor that drove it.
