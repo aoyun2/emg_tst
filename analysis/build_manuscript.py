@@ -362,8 +362,8 @@ participants improved).
 Relating accuracy to simulated outcome across {accuracy['n_accuracy_levels']}
 accuracy levels on the same fixed panel, RMSE and
 excess instability were not monotonically related over the sampled range
-($\rho={signed(accuracy['overall_spearman_rho'], 3)}$,
-$p={pval(accuracy['overall_p_value'])}$). An exploratory two-segment split, placed between adjacent
+($\rho={signed(accuracy['overall_spearman_rho'], 3)}$ across the
+{accuracy['n_accuracy_levels']} checkpoint means). An exploratory two-segment split, placed between adjacent
 levels, falls at {deg(accuracy['breakpoint_rmse_deg'], 2)}$^{{\circ}}$ (95\% CI
 {ci(accuracy['breakpoint_95pct_ci'], 2)}$^{{\circ}}$). Above it, worse prediction
 gave more instability (slope
@@ -377,8 +377,8 @@ the relationship inverted
 \textbf{{Conclusions:}} Prediction RMSE tracked the simulated outcome
 above roughly {deg(accuracy['breakpoint_rmse_deg'], 0)}$^{{\circ}}$ and inverted
 below it, so a lower value does not indicate a more stable simulated motion
-across the whole range. The inversion arises because a partially fitted model regresses
-toward the participant mean and so commands a flatter trajectory that moves the
+across the whole range. The inversion is consistent with a partially fitted model regressing
+toward the participant mean and so commanding a flatter trajectory that moves the
 knee less than the recorded motion does. A converged predictor therefore sits in
 the regime where lower RMSE no longer implies better simulated behavior. The
 sEMG correction itself, which improved prediction, did not detectably change the
@@ -779,9 +779,10 @@ RMSE spanned {deg(min(accuracy['mean_rmse_deg']), 2)}$^{{\circ}}$ to
 {deg(max(accuracy['mean_rmse_deg']), 2)}$^{{\circ}}$ on the same
 {pooled['n_windows']} windows and the same matched references. A single monotone
 coefficient over that whole range is uninformative
-($\rho={signed(accuracy['overall_spearman_rho'], 3)}$,
-$p={pval(accuracy['overall_p_value'])}$), because the relationship is not
-monotone. Searching the sampled levels for the best two-segment split places
+($\rho={signed(accuracy['overall_spearman_rho'], 3)}$), because the
+relationship is not monotone. No p-value is attached to it: the checkpoint
+means are smoothed states along one deterministic descent, not independent
+observations. Searching the sampled levels for the best two-segment split places
 it between adjacent levels, at
 {deg(accuracy['breakpoint_rmse_deg'], 2)}$^{{\circ}}$ (95\% CI
 {ci(accuracy['breakpoint_95pct_ci'], 2)}$^{{\circ}}$); the split can therefore
@@ -1001,7 +1002,8 @@ in opposite directions either side of a split in the accuracy range. Above
 {deg(accuracy['breakpoint_rmse_deg'], 2)}$^{{\circ}}$ (95\% CI
 {ci(accuracy['breakpoint_95pct_ci'], 2)}$^{{\circ}}$) a less accurate model
 left the simulated body less stable. Below that point the relationship
-inverted, because a partially fitted model regresses toward the participant mean
+inverted, which is consistent with a partially fitted model regressing toward the
+participant mean
 and so commands a flatter trajectory that moves the knee less than the recorded
 motion does. Root-mean-square error therefore tracked
 simulated behavior in the expected direction only above the turn, and the
