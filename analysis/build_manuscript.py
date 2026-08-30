@@ -286,10 +286,12 @@ def build(data: dict[str, Any]) -> str:
             f"Across the {within['n_windows']} windows, the within-window Spearman "
             f"correlation between a window's own accuracy and its own excess instability "
             f"averaged {signed(within['mean_spearman_rho_fisher_back_transformed'], 3)} "
+            f"over the {within['n_participants']} participants they come from "
             f"(95\\% CI {ci(within['ci_95pct_rho'], 3)}; "
-            f"$t({within['n_windows'] - 1})={within['t_statistic']:.2f}$, "
+            f"$t({within['n_participants'] - 1})={within['t_statistic']:.2f}$, "
             f"$p={pval(within['p_value_two_sided'])}$), with "
-            f"{within['positive_windows']} of {within['n_windows']} windows positive."
+            f"{within['positive_participants']} of {within['n_participants']} "
+            f"participants positive."
         )
         if not within.get("insufficient")
         else "Too few windows supported a within-window analysis."
@@ -877,7 +879,8 @@ window fixed and varying only the model, a window became more unstable as its ow
 prediction degraded
 ({signed(within['mean_spearman_rho_fisher_back_transformed'], 3)},
 95\% CI {ci(within['ci_95pct_rho'], 3)}, $p={pval(within['p_value_two_sided'])}$,
-{within['positive_windows']} of {within['n_windows']} windows positive). The
+{within['positive_participants']} of {within['n_participants']} participants
+positive). The
 difference arises because between-window variation in excess instability is
 dominated by which motion a window was matched to, where in the gait cycle that
 window falls, and how stable the matched reference already was. Those sources of

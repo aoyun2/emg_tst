@@ -93,9 +93,19 @@ def main() -> None:
         }
 
     physics = pd.read_csv(evidence / "analysis" / "participant_primary.csv")
-    physics_difference = (
+    # The panel holds more windows than participants, and several participants
+    # contribute two. Averaging within participant first keeps the test at the
+    # level the difference is defined on.
+    _subject = next(c for c in physics.columns if "subject" in c.lower())
+    _per_window = (
         physics["no_emg_excess_auc"].to_numpy(dtype=float)
         - physics["fused_excess_auc"].to_numpy(dtype=float)
+    )
+    physics_difference = (
+        pd.DataFrame({"subject": physics[_subject], "d": _per_window})
+        .groupby("subject")["d"]
+        .mean()
+        .to_numpy(dtype=float)
     )
 
     report = {
@@ -112,7 +122,8 @@ def main() -> None:
         "temporal_control": temporal_results,
         "physics_comparison": {
             "difference_definition": (
-                "without-sEMG excess AUC minus residual-fusion excess AUC"
+                "without-sEMG excess AUC minus residual-fusion excess AUC, "
+            "averaged within participant before testing"
             ),
             "paired_t": one_sample_t(physics_difference),
             "diagnostic_and_sensitivity": diagnostic_and_sensitivity(

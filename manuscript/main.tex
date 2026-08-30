@@ -67,8 +67,8 @@ toward the participant mean and so commands a flatter trajectory that moves the
 knee less than the recorded motion does. A converged predictor therefore sits in
 the regime where lower RMSE no longer implies better simulated behavior. The
 sEMG correction itself, which improved prediction, did not detectably change the
-simulated outcome (+0.0084~s, 95\% CI
--0.0032 to 0.0199; $p=0.153$).}
+simulated outcome (+0.0053~s, 95\% CI
+-0.0069 to 0.0175; $p=0.386$).}
 
 \keywords{surface electromyography, knee-angle prediction, prosthetic control,
 biomechanics, MuJoCo, motion matching, extrapolated center of mass}
@@ -421,8 +421,8 @@ a rotated block still lands on some phase of the same gait cycle.
 \subsection{Motion matching and paired simulation}
 
 Across the fixed panel, the paired difference in excess instability between
-the residual-fusion and no-sEMG conditions was +0.0084~s (95\% CI -0.0032 to 0.0199;
-$t(79)=1.44$, $p=0.153$). The
+the residual-fusion and no-sEMG conditions was +0.0053~s (95\% CI -0.0069 to 0.0175;
+$t(64)=0.87$, $p=0.386$). The
 prediction improvement attributable to sEMG was therefore not accompanied by a
 detectable change in the simulated outcome.
 
@@ -481,7 +481,7 @@ correspondingly negative through the middle of the range, reaching
 Three further comparisons were made. Comparing windows against one another within a
 single accuracy level recovers nothing at any level
 (Table~\ref{tab:checkpoints}).
-Across the 80 windows, the within-window Spearman correlation between a window's own accuracy and its own excess instability averaged +0.171 (95\% CI 0.018 to 0.316; $t(79)=2.23$, $p=0.029$), with 53 of 80 windows positive. Pooled across all 1120 checkpoint--window pairs
+Across the 80 windows, the within-window Spearman correlation between a window's own accuracy and its own excess instability averaged +0.150 over the 65 participants they come from (95\% CI 0.013 to 0.280; $t(64)=2.19$, $p=0.032$), with 44 of 65 participants positive. Pooled across all 1120 checkpoint--window pairs
 the match-adjusted association was
 +0.063 (window-level cluster bootstrap 95\% CI
 -0.025 to 0.160).
@@ -588,9 +588,10 @@ and the same null appears when the outcome is normalized by rollout duration.
 Comparing each window against itself does recover an association: holding the
 window fixed and varying only the model, a window became more unstable as its own
 prediction degraded
-(+0.171,
-95\% CI 0.018 to 0.316, $p=0.029$,
-53 of 80 windows positive). The
+(+0.150,
+95\% CI 0.013 to 0.280, $p=0.032$,
+44 of 65 participants
+positive). The
 difference arises because between-window variation in excess instability is
 dominated by which motion a window was matched to, where in the gait cycle that
 window falls, and how stable the matched reference already was. Those sources of
@@ -699,8 +700,8 @@ The sEMG correction produced a small improvement in later-trial knee-angle
 prediction that survived three surrogate controls. That improvement did not
 carry through to the simulated outcome: against the same panel and the same
 paired references, the residual-fusion and no-sEMG conditions differed by
-+0.0084~s in excess instability (95\% CI
--0.0032 to 0.0199; $p=0.153$), which is the same
++0.0053~s in excess instability (95\% CI
+-0.0069 to 0.0175; $p=0.386$), which is the same
 point the accuracy range makes, measured directly.
 
 \backmatter
