@@ -58,3 +58,13 @@ Thumbs.db
 manuscript/main.pdf
 manuscript/*.zip
 manuscript/*.docx
+
+# Manuscript and submission tooling. The repository is the experiment; the
+# paper, its generator, its figures and the submission verifiers live outside
+# it so the two are not kept in step with each other.
+manuscript/
+analysis/build_manuscript.py
+analysis/gait120_figures.py
+analysis/gait120_submission_figures.py
+analysis/verify_*.py
+tests/test_build_manuscript.py

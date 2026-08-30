@@ -19,17 +19,14 @@ class RepositoryIntegrityTests(unittest.TestCase):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertNotIn("final_submission/", readme)
 
-    def test_current_figure_generator_replaces_obsolete_version(self) -> None:
-        current = ROOT / "analysis" / "gait120_submission_figures.py"
-        obsolete = ROOT / "analysis" / "gait120_submission_figures_original_style.py"
-        self.assertTrue(current.is_file(), f"Missing figure generator: {current}")
-        self.assertFalse(obsolete.exists(), f"Obsolete figure generator remains: {obsolete}")
-
     def test_figure_dependencies_are_isolated_from_prediction_dependencies(self) -> None:
+        # The figure and manuscript tooling lives outside this repository, so
+        # the only requirement here is that the prediction environment stays
+        # free of plotting dependencies.
         base = (ROOT / "requirements.txt").read_text(encoding="utf-8")
         figures = (ROOT / "requirements-figures.txt").read_text(encoding="utf-8")
-        self.assertNotIn("opencv-python", base)
-        self.assertIn("opencv-python", figures)
+        self.assertNotIn("matplotlib", base)
+        self.assertIn("matplotlib", figures)
         self.assertIn("numpy>=2.2,<2.3", figures)
 
 
