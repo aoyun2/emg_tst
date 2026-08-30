@@ -92,6 +92,22 @@ def collect(runs: Path) -> dict[str, Any]:
     )
     # The physics runner writes its matching gate under matching_preflight/.
     matching = load(runs / "panel" / "matching_preflight" / "summary.json")
+    _snips: dict[str, int] = {}
+
+    def _count_snippets(node: Any) -> None:
+        if isinstance(node, dict):
+            snippet = node.get("snippet_id")
+            if isinstance(snippet, str):
+                _snips[snippet] = _snips.get(snippet, 0) + 1
+            for value in node.values():
+                _count_snippets(value)
+        elif isinstance(node, list):
+            for value in node:
+                _count_snippets(value)
+
+    _count_snippets(matching)
+    matched_clips = len(_snips)
+    matched_clip_max = max(_snips.values()) if _snips else 0
     oracle = load(runs / "panel" / "oracle_preflight" / "summary.json")
     panel = load(runs / "panel" / "panel_manifest.json")
     physics_protocol = load(
@@ -109,6 +125,8 @@ def collect(runs: Path) -> dict[str, Any]:
         "kinematic_check": kinematic_check,
         "matching": matching,
         "oracle": oracle,
+        "matched_clips": matched_clips,
+        "matched_clip_max": matched_clip_max,
         "panel_participants": panel_participants,
         "panel_repeats": panel_repeats,
         "panel": panel,
@@ -204,6 +222,8 @@ def build(data: dict[str, Any]) -> str:
     dropoff = correlation["dropoff"]
     accuracy = correlation["accuracy_level"]
     panel = data["panel"]
+    matched_clips = data["matched_clips"]
+    matched_clip_max = data["matched_clip_max"]
     panel_participants = data["panel_participants"]
     panel_repeats = data["panel_repeats"]
     ORACLE_MAX_TRACKING_RMSE_DEG = float(
@@ -292,7 +312,7 @@ def build(data: dict[str, Any]) -> str:
 
 \title[Simulation of knee-angle prediction]{{Toward the use of simulated
 environments to evaluate sEMG-informed knee-angle prediction: RMSE predicts
-simulated walking instability only above a threshold accuracy}}
+simulated instability only above a threshold accuracy}}
 
 \author*[1]{{\fnm{{Aaron}} \sur{{Xiong}}}}
 \affil*[1]{{\orgname{{Spring Branch Academic Institute}}, \city{{Houston}}, \state{{Texas}}, \country{{United States}}}}
@@ -301,7 +321,7 @@ simulated walking instability only above a threshold accuracy}}
 \abstract{{\textbf{{Background:}} Root-mean-square error (RMSE) measures the numerical
 accuracy of knee-angle prediction, but it does not establish that the remaining
 error changes whole-body motion. Whether a lower value corresponds to more stable
-walking has not been tested.
+simulated motion has not been tested.
 
 \textbf{{Methods:}} A prespecified residual-fusion model was evaluated on level
 walking from {ablation['participant_count']} healthy participants in Gait120.
@@ -339,9 +359,9 @@ the relationship inverted
 {signed(accuracy['below_breakpoint']['slope_per_degree'], 5)}, 95\% CI
 {ci(accuracy['below_breakpoint']['slope_95pct_ci'], 5)}).
 
-\textbf{{Conclusions:}} Prediction RMSE tracked the simulated walking outcome
+\textbf{{Conclusions:}} Prediction RMSE tracked the simulated outcome
 above roughly {deg(accuracy['breakpoint_rmse_deg'], 0)}$^{{\circ}}$ and inverted
-below it, so a lower value does not indicate a more stable simulated gait
+below it, so a lower value does not indicate a more stable simulated motion
 across the whole range. The inversion arises because a partially fitted model regresses
 toward the participant mean and so commands a flatter trajectory that moves the
 knee less than the recorded motion does. A converged predictor therefore sits in
@@ -404,7 +424,7 @@ training path, with the predicted knee angle serving as the tracking target of t
 simulated joint throughout. Because the windows, the matched reference motions,
 and the initial states are identical at every level, the only thing that differs
 between them is the model. That makes it possible to ask whether
-RMSE and simulated walking instability are related at all, and if so, across which
+RMSE and simulated instability are related at all, and if so, across which
 part of the accuracy range.
 
 
@@ -558,7 +578,11 @@ snippets carry none; a match was selected on knee-trajectory agreement alone,
 and the agreement achieved is reported below and carried as a covariate. Candidate snippets were aligned by a constant knee offset and
 either sign convention, without amplitude scaling. Knee RMSE determined the match
 rank; the RMS geodesic angle between the query and candidate right-thigh
-orientations was retained as a match-quality covariate. Mean
+orientations was retained as a match-quality covariate. The {pooled['n_windows']} windows drew on {matched_clips} distinct
+snippets, the most frequent covering {matched_clip_max} of them. Because no
+motion label restricted the candidates, the matched references are not confined
+to walking, and the simulated outcome below is the stability of the matched
+motion rather than of walking in particular. Mean
 matching knee error was {deg(matching['mean_knee_rmse_deg'], 2)}$^{{\circ}}$
 (median {deg(matching['median_knee_rmse_deg'], 2)}$^{{\circ}}$) and mean thigh
 orientation RMS {deg(matching['mean_thigh_rms_deg'], 2)}$^{{\circ}}$.
@@ -631,7 +655,7 @@ the XCoM margin, is specific to this study, and has not been validated as a
 clinical stability or fall-risk measure. It falls whenever the commanded
 trajectory perturbs the body less, which a trajectory that moves the knee less
 than the recording also does, so a smoother or flatter command scores well
-without necessarily being better gait.
+without necessarily being better motion.
 
 \subsection{{Correlation study}}
 
@@ -797,11 +821,11 @@ Descent step & $n$ & Mean RMSE ($^{{\circ}}$) & SD ($^{{\circ}}$) & Mean excess 
 
 \section{{Discussion}}\label{{sec:discussion}}
 
-The central finding is that prediction error and simulated walking instability are
+The central finding is that prediction error and simulated instability are
 related across the whole sampled range, with the sign of the relationship
 reversing partway along it. Above
 {deg(accuracy['breakpoint_rmse_deg'], 2)}$^{{\circ}}$ of prediction
-error, a less accurate model produced a less stable simulated walker, and the
+error, a less accurate model left the simulated body less stable, and the
 slope is positive across that region. Below that point the
 relationship inverted, so that further improvements in accuracy were accompanied by
 slightly more excess instability rather than less. RMSE is therefore not a general
@@ -813,7 +837,7 @@ evaluated here reached {deg(min(accuracy['mean_rmse_deg']), 2)}$^{{\circ}}$, whi
 lies below the turn. Because knee-angle regression models are ordinarily compared
 with one another only after convergence, the regime in which they are compared is
 also the regime in which further reduction in RMSE no longer predicts a more stable
-simulated gait. A study confined to that regime samples only the inverted portion of
+simulated motion. A study confined to that regime samples only the inverted portion of
 the relationship, where lower error is accompanied by slightly more simulated
 instability, so it cannot recover the positive relationship that holds above the
 turn. This supplies a possible
@@ -828,7 +852,7 @@ validation strategy.
 The mechanism behind the inversion does not imply that accuracy is undesirable.
 It indicates that the mapping from accuracy to whole-body behavior
 is not monotone, and that training a model to minimize RMSE does not by itself
-produce a more stable simulated gait. Moving along the training path changes the
+produce a more stable simulated motion. Moving along the training path changes the
 amplitude, smoothness, phase, and bias of the predicted trajectory at the same
 time, and RMSE summarizes all of them, so the association reported here belongs
 to one model's training path rather than to prediction error on its own.
@@ -934,11 +958,11 @@ tracks simulated behavior in opposite directions either side of roughly
 
 Replaying one fixed panel of walking windows at
 {accuracy['n_accuracy_levels']} accuracy levels sampled along a model's own
-training path shows that prediction error predicts simulated walking instability
+training path shows that prediction error predicts simulated instability
 in opposite directions either side of a split in the accuracy range. Above
 {deg(accuracy['breakpoint_rmse_deg'], 2)}$^{{\circ}}$ (95\% CI
 {ci(accuracy['breakpoint_95pct_ci'], 2)}$^{{\circ}}$) a less accurate model
-produced a less stable simulated walker. Below that point the relationship
+left the simulated body less stable. Below that point the relationship
 inverted, because a partially fitted model regresses toward the participant mean
 and so commands a flatter trajectory that moves the knee less than the recorded
 motion does. Root-mean-square error therefore tracked
@@ -950,7 +974,7 @@ at
 The practical consequence is for how prosthetic regression models are evaluated.
 Since such models are ordinarily compared after convergence, they are compared in
 the regime where further reduction in error no longer predicts a more stable
-simulated gait. The contrast a study chooses
+simulated motion. The contrast a study chooses
 matters as much as the metric: comparing prediction windows against one another,
 which is all a single converged model permits, recovered no relationship at any
 accuracy level, whereas comparing each window against itself across accuracy
