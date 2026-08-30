@@ -524,12 +524,29 @@ def accuracy_level_analysis(
     below = stats.spearmanr(x[x < point], y[x < point])
     above = stats.spearmanr(x[x >= point], y[x >= point])
 
+    # The same windows recur at every checkpoint, so a draw has to select whole
+    # participants once and carry them across all of them. Resampling inside
+    # each checkpoint separately would treat one window's observations as
+    # independent of one another and understate the spread of the curve.
+    windows_by_subject: dict[str, list[str]] = {}
+    for row in by_checkpoint[labels[0]]:
+        windows_by_subject.setdefault(row.subject, []).append(row.query_id)
+    subjects = sorted(windows_by_subject)
+    indexed = {
+        label: {row.query_id: row for row in rows}
+        for label, rows in by_checkpoint.items()
+    }
+
     points, lows, highs = [], [], []
     for _ in range(int(draws)):
+        drawn = [subjects[i] for i in rng.integers(0, len(subjects), size=len(subjects))]
+        query_ids = [q for subject in drawn for q in windows_by_subject[subject]]
         sample = {
-            label: [group[i] for i in rng.integers(0, len(group), size=len(group))]
-            for label, group in by_checkpoint.items()
+            label: [indexed[label][q] for q in query_ids if q in indexed[label]]
+            for label in labels
         }
+        if any(len(rows) < 3 for rows in sample.values()):
+            continue
         bx, by = summarize(sample)
         try:
             bp, ls, hs = breakpoint(bx, by)
@@ -566,10 +583,14 @@ def accuracy_level_analysis(
             "slope_per_degree": high_slope,
             "slope_95pct_ci": interval(highs),
         },
+        "split_is_grid_midpoint": True,
         "note": (
-            "Checkpoint means are smooth by construction, so the within-level "
-            "Spearman p-values understate uncertainty. The bootstrap intervals, "
-            "which resample windows inside every checkpoint, are the honest ones."
+            "The split is located by searching checkpoint positions and is "
+            "reported as the midpoint of the two adjacent checkpoint means, so "
+            "it takes one of a few discrete values rather than being a fitted "
+            "changepoint. Its interval is a bootstrap distribution over that "
+            "grid. Draws select whole participants and carry them across every "
+            "checkpoint, because the same windows recur at all of them."
         ),
     }
 

@@ -147,7 +147,10 @@ public and downloaded by the scripts above, and the rollout recordings, which
 exceed 100 GB. Rollouts are deterministic (fixed seed, deterministic
 policy), so rerunning reproduces them exactly.
 
-Regenerating the reported numbers and figures from results/:
+Regenerating the reported numbers and figures from results/.
+Run these from inside code/, which is where the packages live:
+
+    cd code
     python -m analysis.gait120_checkpoint_correlation --physics-run-dir <panel> \\
         --out-dir <out>
     python -m analysis.gait120_figures --runs-dir <runs> --out-dir <figures>
