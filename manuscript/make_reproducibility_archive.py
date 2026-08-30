@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import zipfile
 from pathlib import Path
 
@@ -52,6 +53,24 @@ CODE = [
     "requirements.txt",
     "requirements-physics.txt",
 ]
+
+
+_LOCAL_PATH = re.compile(
+    r"[A-Za-z]:(?:\\\\|/)+(?:[^\"\\/]+(?:\\\\|/)+)*?"
+    r"(?P<root>emg_data|emg_tst)(?:\\\\|/)+",
+)
+_ANY_HOME = re.compile(r"[A-Za-z]:(?:\\\\|/)+Users(?:\\\\|/)+[^\"]*")
+
+
+def _scrub(text: str) -> str:
+    """Replace absolute local paths with logical roots.
+
+    Records are written as JSON, so the replacements use forward slashes and no
+    backslashes and cannot break the escaping.
+    """
+    text = _LOCAL_PATH.sub(lambda m: f"<{m.group('root')}>/", text)
+    return _ANY_HOME.sub("<local path removed>", text)
+
 
 RESULTS = [
     ("confirmation/ablation_summary.json", "prediction_confirmation/ablation_summary.json"),
@@ -126,7 +145,12 @@ def main() -> None:
         for source_rel, target_rel in RESULTS:
             source = runs / source_rel
             if source.exists():
-                z.write(source, f"results/{target_rel}")
+                # Records carry absolute paths from the machine that produced
+                # them, which name the account and mean nothing to a reviewer.
+                z.writestr(
+                    f"results/{target_rel}",
+                    _scrub(source.read_text(encoding="utf-8")),
+                )
             else:
                 missing.append(source_rel)
         z.writestr("results/analysis/per_window_rollouts.csv", per_window_table(runs))
