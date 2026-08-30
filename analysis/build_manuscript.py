@@ -698,13 +698,12 @@ paired $t({controls['conditions']['identity']['paired_t']['df']})={controls['con
 {ablation['positive_participants']} of {ablation['participant_count']}
 participants improved.
 
-The timing control is computed on the
-{statistics['temporal_control']['aligned_vs_lagged']['paired_t']['df'] + 1} participants
-whose trials contain a row 500~ms earlier for every target row, so the shifted
-and aligned models are scored on identical data. Moving the same sEMG history
-500~ms earlier changed participant RMSE by {deg(aligned['mean_improvement_deg'], 3)}$^{{\circ}}$
+In the timing control both residual models were fitted on the same rows and
+scored on the same target rows, so the two differ only in when the sEMG was
+read. Moving the same sEMG history 500~ms earlier raised participant RMSE by
+{deg(statistics['temporal_control']['aligned_vs_lagged']['paired_t']['mean'], 3)}$^{{\circ}}$
 relative to the aligned model (95\% CI
-{ci(aligned['bootstrap_95pct_ci_deg'], 3)}$^{{\circ}}$;
+{ci(statistics['temporal_control']['aligned_vs_lagged']['paired_t']['ci_95'], 3)}$^{{\circ}}$;
 $t({statistics['temporal_control']['aligned_vs_lagged']['paired_t']['df']})={statistics['temporal_control']['aligned_vs_lagged']['paired_t']['t']:.2f}$, $p={pval(statistics['temporal_control']['aligned_vs_lagged']['paired_t']['p_two_sided'])}$). Three surrogate
 controls are reported in Table~\ref{{tab:controls}}.
 {surrogate_sentence}. The circular-shift surrogate retained
