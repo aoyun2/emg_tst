@@ -59,12 +59,20 @@ manuscript/main.pdf
 manuscript/*.zip
 manuscript/*.docx
 
-# Manuscript and submission tooling. The repository is the experiment; the
-# paper, its generator, its figures and the submission verifiers live outside
-# it so the two are not kept in step with each other.
-manuscript/
-analysis/build_manuscript.py
-analysis/gait120_figures.py
-analysis/gait120_submission_figures.py
-analysis/verify_*.py
-tests/test_build_manuscript.py
+# Generated artifacts, not sources. The paper itself, its figures and the
+# packaged bundles are produced by the generators below and are not tracked.
+manuscript/main.tex
+manuscript/figures/
+manuscript/*.pdf
+manuscript/*.zip
+manuscript/*.docx
+manuscript/*.aux
+manuscript/*.log
+manuscript/*.bbl
+manuscript/*.blg
+manuscript/*.out
+
+# The generators themselves are tracked. They are the machinery that turns the
+# experiment into the reported tables, figures, statistics and archive, so
+# losing them would lose the record of how the results were produced. Machine
+# paths come from EMG_TST_RUNS and EMG_TST_ARTIFACTS, not from these files.
