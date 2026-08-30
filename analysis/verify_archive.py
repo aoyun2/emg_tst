@@ -11,6 +11,7 @@ numbers the paper reports.
 from __future__ import annotations
 
 import os
+import re
 import argparse
 import json
 import shutil
@@ -103,11 +104,14 @@ def main() -> int:
               shipped["breakpoint_95pct_ci"] == live["breakpoint_95pct_ci"],
               str([round(v, 3) for v in shipped["breakpoint_95pct_ci"]]))
 
-        # no machine-local paths survive
+        # No machine-local paths survive. This looks for the shape of a home
+        # directory rather than any particular account, so the check carries no
+        # user name of its own.
+        home = re.compile(r"[A-Za-z]:[\\/]+Users[\\/]|/home/|/Users/", re.I)
         leaked = [
             n for n in names
             if n.endswith((".json", ".csv", ".txt"))
-            and "aaron" in (work / n).read_text(encoding="utf-8", errors="replace").lower()
+            and home.search((work / n).read_text(encoding="utf-8", errors="replace"))
         ]
         check("no machine-local paths", not leaked, ", ".join(leaked[:3]))
 
