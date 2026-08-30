@@ -875,16 +875,15 @@ slightly more excess instability rather than less. RMSE is therefore not a gener
 proxy for the simulated outcome. It behaves as a proxy within a band, and the boundary
 of that band falls inside the range of accuracies that contemporary models occupy.
 
-That last point is what gives the result practical weight. The most accurate model
-evaluated here reached {deg(min(accuracy['mean_rmse_deg']), 2)}$^{{\circ}}$, which
+The most accurate model evaluated here reached {deg(min(accuracy['mean_rmse_deg']), 2)}$^{{\circ}}$, which
 lies below the turn. Because knee-angle regression models are ordinarily compared
 with one another only after convergence, the regime in which they are compared is
 also the regime in which further reduction in RMSE no longer predicts a more stable
 simulated motion. A study confined to that regime samples only the inverted portion of
 the relationship, where lower error is accompanied by slightly more simulated
 instability, so it cannot recover the positive relationship that holds above the
-turn. This supplies a possible
-mechanism for the more general observation, made in myoelectric control by Hargrove
+turn. That may be one reason for the more general observation, made in
+myoelectric control by Hargrove
 et al. \cite{{hargrove2007}} and by Krasoulis et al. \cite{{krasoulis2019}}, that
 offline model scores do not reliably predict functional performance. It also
 suggests that the methodological evolution described in recent reviews of
@@ -933,7 +932,7 @@ window falls, and how stable the matched reference already was. Those sources of
 variation are large beside the effect of prediction error and obscure it in any
 comparison drawn across windows, whereas holding the window fixed removes them.
 
-These observations bear on benchmark design. An evaluation that varies only the
+An evaluation that varies only the
 window, which is what a study
 of a single converged model is restricted to, will tend to report no relationship
 between prediction error and simulated outcome, which that contrast cannot
@@ -1023,9 +1022,8 @@ at
 {deg(min(accuracy['mean_rmse_deg']), 2)}$^{{\circ}}$, sits below the turn.
 
 The practical consequence is for how prosthetic regression models are evaluated.
-Since such models are ordinarily compared after convergence, they are compared in
-the regime where further reduction in error no longer predicts a more stable
-simulated motion. The contrast a study chooses
+Such models are ordinarily compared after convergence, which is where that no
+longer holds. The contrast a study chooses
 matters as much as the metric: comparing prediction windows against one another,
 which is all a single converged model permits, recovered no relationship at any
 accuracy level, whereas comparing each window against itself across accuracy
