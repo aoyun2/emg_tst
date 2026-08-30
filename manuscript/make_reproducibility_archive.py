@@ -85,6 +85,8 @@ RESULTS = [
      "kinematic_input_check/kinematic_input_check.json"),
     ("temporal_control/temporal_control_summary.json",
      "temporal_control/temporal_control_summary.json"),
+    ("panel/physics_protocol.moving_target_pd_v2.json",
+     "physics/physics_protocol.moving_target_pd_v2.json"),
     ("training_path/protocol.json", "training_path/protocol.json"),
     ("training_path/checkpoints/manifest.json", "training_path/checkpoints_manifest.json"),
     ("panel/panel_manifest.json", "physics/panel_manifest.json"),
@@ -186,6 +188,14 @@ Not included: the Gait120 recordings and the MoCapAct expert policies, both
 public and downloaded by the scripts above, and the rollout recordings, which
 exceed 100 GB. Rollouts are deterministic (fixed seed, deterministic
 policy), so rerunning reproduces them exactly.
+
+The physics runs that produced results/physics were made with the
+moving-target PD controller, recorded in
+results/physics/physics_protocol.moving_target_pd_v2.json. The runner requires
+the mode to be named:
+
+    python -m mocap_phys_eval.run_gait120_residual_fusion \\
+        --moving-target-pd-v2 ...
 
 Regenerating the reported numbers and figures from results/.
 Run these from inside code/, which is where the packages live:
