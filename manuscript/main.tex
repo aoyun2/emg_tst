@@ -179,8 +179,7 @@ The design places two requirements on the predictor. The first is that the model
 continuously across a wide range and returned to the same endpoint every time,
 which is what locating the turn depends on. A convex objective with a closed-form
 solution gives that: descent runs from the participant mean to the exact analytic
-optimum, and that optimum is the terminal checkpoint rather than an approximation
-of it. The second is that the sEMG contribution can be removed exactly, because setting the correction to zero removes the signal
+optimum. The second is that the sEMG contribution can be removed exactly, because setting the correction to zero removes the signal
 from a model that has already been fitted, instead of requiring a second fit whose
 capacity and initialization would differ. A convolutional, recurrent, or
 transformer predictor of the kind reviewed above would follow a stochastic
@@ -214,8 +213,12 @@ scored on a later trial that no fit had seen, added capacity that
 fitted noise would raise held-out error rather than lower it. As a
 further check, three surrogate conditions repeated the whole confirmation fit with
 the sEMG replaced by a signal preserving its statistics but not its correspondence
-with the knee; these are reported in the supplementary analysis of surrogate
-controls. Every paired
+with the knee. Circular shift rotates each participant-trial sEMG block against
+its own kinematics. Participant swap gives each participant another
+participant's sEMG. Phase randomization replaces each channel with a surrogate
+of identical power spectrum and randomized Fourier phases
+\cite{theiler1992}. The kinematic stage is shared across all four conditions,
+so any difference between them comes from sEMG content alone. Every paired
 comparison was tested with a two-sided paired $t$-test on the per-participant
 differences.
 
@@ -243,10 +246,10 @@ each stage predicts the participant-balanced target mean, so the path begins wit
 standard deviation of the knee angle itself and descends to the closed-form
 solution,
 which is appended as the terminal checkpoint. The descent therefore ends on exactly
-the model the confirmation run reports rather than near it.
+the model the confirmation run reports.
 
 The step size was set well below the largest value for which the descent still
-converges. The reason is sampling resolution rather than stability: near that
+converges. The reason is sampling resolution: near that
 value the first steps collapse most of the error, so the high-error region is crossed between recorded points and cannot
 be sampled. Checkpoints were placed to tile the achieved training-RMSE range
 rather than the step index, because descent spends most of its steps near
@@ -398,7 +401,10 @@ relative to the aligned model (95\% CI
 -0.202 to 0.030$^{\circ}$;
 $t(65)=-1.42$, $p=0.160$). Three surrogate
 controls are reported in Table~\ref{tab:controls}.
-The recorded signal outperformed all three surrogates in paired within-participant comparisons (smallest margin 0.288$^{\circ}$, all $p\leq1.68\times10^{-7}$).
+The recorded signal outperformed all three surrogates in paired within-participant comparisons (smallest margin 0.288$^{\circ}$, all $p\leq1.68\times10^{-7}$). The circular-shift surrogate retained
+0.17 of the
+recorded effect, because walking is periodic with a cycle close to one second and
+a rotated block still lands on some phase of the same gait cycle.
 
 
 
@@ -686,9 +692,7 @@ real but small, so a benchmark built on comparisons between windows will report 
 relationship whether or not one exists.
 
 The sEMG correction produced a small improvement in later-trial knee-angle
-prediction that survived three surrogate controls, and is therefore attributable to
-signal content rather than to added model capacity. The predictor evaluated in
-simulation draws on genuine myoelectric information. That improvement did not
+prediction that survived three surrogate controls. That improvement did not
 carry through to the simulated outcome: against the same panel and the same
 paired references, the residual-fusion and no-sEMG conditions differed by
 +0.0084~s in excess instability (95\% CI
@@ -696,69 +700,6 @@ paired references, the residual-fusion and no-sEMG conditions differed by
 point the accuracy range makes, measured directly.
 
 \backmatter
-
-\bmhead{Supplementary analysis: sensitivity to knee-angle input}
-
-The kinematic stage forecasts knee angle from knee-angle history, which invites
-the objection that a low RMSE mostly reflects trajectory smoothness -- the knee
-predicting its own near future -- rather than information recovered from the
-walker. The objection concerns what the reported accuracy measures rather than
-whether the signal would be available: a microprocessor knee carries a joint
-angle encoder, so knee-angle history exists at inference.
-
-The same model was therefore refitted with the kinematic stage reading only the
-surrounding body -- thigh pitch and full thigh orientation, with no channel
-observing the knee -- holding the windows, horizon, ridge pair, penalties, and
-trial split fixed. With the sEMG correction switched off in both, knee-angle
-history gave 5.093$^{\circ}$ and
-the surrounding body alone gave
-5.128$^{\circ}$, a difference of
-0.035$^{\circ}$.
-
-Removing every knee-derived input therefore costs almost nothing. The information
-needed to forecast the knee is already present in the surrounding kinematics, so
-the knee channel is a compact carrier of it rather than a shortcut, and the
-reported accuracy does not rest on the knee predicting its own future.
-
-With sEMG active, the surrounding-body model reached
-4.959$^{\circ}$ against
-4.748$^{\circ}$ for knee history.
-Both penalties were the ones selected for the knee-history configuration, so this
-comparison is conservative toward the surrounding-body arm.
-
-\bmhead{Supplementary analysis: sEMG surrogate controls}
-
-The reported ablation removes the sEMG correction from a model whose penalties
-were fixed on a separate development cohort and whose scores come from a held-out
-later trial that no fit had seen. Under that design, extra fitted capacity
-raises held-out error rather than lowering it, so the comparison already speaks to
-sEMG rather than to model size. The surrogates below are a further check against
-subtler possibilities, such as an sEMG channel correlating with the target through
-the recording setup rather than through physiology.
-
-Each surrogate repeats the entire confirmation fit with the sEMG replaced by a
-signal that preserves its statistics but not its correspondence with the knee.
-\emph{Circular shift} rotates each participant-trial sEMG block against its own
-kinematics, preserving amplitudes, spectra, and cross-channel structure.
-\emph{Participant swap} gives each participant another participant's sEMG.
-\emph{Phase randomization} replaces each channel with a surrogate of identical
-power spectrum and randomized Fourier phases \cite{theiler1992}. The kinematic
-stage is shared across all four conditions, so any difference between them is
-attributable to sEMG content alone.
-
-The circular-shift surrogate retained
-0.17 of the recorded
-effect. Walking is periodic with a cycle close to one second, so rotating a block
-of sEMG against its own kinematics does not remove the correspondence entirely:
-whatever offset the rotation lands on is still a phase of the same repeating gait
-cycle. Its residual effect measures how much of the sEMG benefit is recoverable
-from gait periodicity alone. The two surrogates that break
-the correspondence without relying on a time offset both returned effects
-indistinguishable from zero.
-
-Attribution is therefore judged by a paired within-participant contrast, whether
-the recorded signal beats each surrogate for the same participant. This was
-because a periodic surrogate does not fall to zero on its own. The recorded signal outperformed all three surrogates in paired within-participant comparisons (smallest margin 0.288$^{\circ}$, all $p\leq1.68\times10^{-7}$).
 
 \begin{table}[!htbp]
 \caption{sEMG ablation and its surrogate negative controls. Improvement is the
