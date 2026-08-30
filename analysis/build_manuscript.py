@@ -821,20 +821,17 @@ validation strategy.
 
 The mechanism behind the inversion does not imply that accuracy is undesirable.
 It indicates that the mapping from accuracy to whole-body behavior
-is not monotone, and that the quantity being minimized during training is not the
-quantity that determines stability once the prediction is placed in a body.
-Moving along the training path changes the amplitude, smoothness, phase and bias
-of the predicted trajectory together, and RMSE is a summary of all of them, so
-what is reported here is an association along one model's path rather than an
-effect of prediction error considered on its own.
+is not monotone, and that training a model to minimize RMSE does not by itself
+produce a more stable simulated gait. Moving along the training path changes the
+amplitude, smoothness, phase, and bias of the predicted trajectory at the same
+time, and RMSE summarizes all of them, so the association reported here belongs
+to one model's training path rather than to prediction error on its own.
 
-The sEMG correction improved held-out prediction, and that improvement survived
-three surrogate controls which preserved the signal's amplitude, spectral, and
-cross-channel structure while destroying its correspondence with the knee. That is
-a stronger test than an ablation alone provides, since an ablation cannot separate
-signal content from the additional model capacity that accompanies it. The
-predictor driving the simulations therefore draws on genuine myoelectric
-information rather than on model size.
+The sEMG correction improved held-out prediction, and the recorded signal beat
+all three surrogates for the same participants. Each surrogate keeps the
+signal's amplitude, spectral, and cross-channel structure and removes only its
+correspondence with the knee, so the improvement is attributable to sEMG content
+rather than to the extra model capacity an sEMG stage adds.
 
 Comparisons drawn across windows and comparisons drawn within a window
 give different results. Comparing windows against one another
@@ -860,8 +857,8 @@ comparison drawn across windows, whereas holding the window fixed removes them.
 These observations bear on benchmark design. An evaluation that varies only the
 window, which is what a study
 of a single converged model is restricted to, will tend to report no relationship
-between prediction error and simulated outcome, not because no relationship exists
-but because that contrast cannot resolve one. Varying the model along its own
+between prediction error and simulated outcome. The relationship is there, but
+that contrast cannot resolve it. Varying the model along its own
 training path supplies the contrast that can. Prediction error does propagate to
 whole-body behavior, but the effect is small in comparison with window-to-window
 variation, and a benchmark constructed from comparisons between different windows
@@ -1018,19 +1015,17 @@ attributable to sEMG content alone.
 
 The circular-shift surrogate retained
 {contrasts['circular_shift']['surrogate_share_of_real_effect']:.2f} of the recorded
-effect, which is expected rather than anomalous. Walking is periodic with a cycle
-close to one second, so rotating a block of sEMG against its own kinematics cannot
-remove the correspondence entirely: whatever offset the rotation lands on is still
-a phase of the same repeating gait cycle. A surrogate of this kind sets a floor,
-not a zero, and its residual effect quantifies how much of the apparent sEMG
-benefit is recoverable from gait periodicity alone. The two surrogates that break
+effect. Walking is periodic with a cycle close to one second, so rotating a block
+of sEMG against its own kinematics does not remove the correspondence entirely:
+whatever offset the rotation lands on is still a phase of the same repeating gait
+cycle. Its residual effect measures how much of the sEMG benefit is recoverable
+from gait periodicity alone. The two surrogates that break
 the correspondence without relying on a time offset both returned effects
 indistinguishable from zero.
 
-Attribution is therefore judged by a paired within-participant contrast -- whether
-the recorded signal beats each surrogate for the same participant -- rather than
-by whether each surrogate independently fails a significance threshold, which a
-periodic-signal surrogate cannot be expected to do. {surrogate_sentence}.
+Attribution is therefore judged by a paired within-participant contrast, whether
+the recorded signal beats each surrogate for the same participant. This was
+because a periodic surrogate does not fall to zero on its own. {surrogate_sentence}.
 
 \begin{{table}}[!htbp]
 \caption{{sEMG ablation and its surrogate negative controls. Improvement is the
