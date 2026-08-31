@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import platform
 import time
@@ -69,11 +70,28 @@ def _json_default(value: Any) -> Any:
     raise TypeError(type(value).__name__)
 
 
+def _finite_only(value: Any) -> Any:
+    """Replace non-finite floats with None so the result is valid JSON."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _finite_only(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_finite_only(v) for v in value]
+    return value
+
+
 def _atomic_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(
-        json.dumps(value, indent=2, sort_keys=True, default=_json_default),
+        json.dumps(
+            _finite_only(value),
+            indent=2,
+            sort_keys=True,
+            default=_json_default,
+            allow_nan=False,
+        ),
         encoding="utf-8",
     )
     os.replace(temporary, path)

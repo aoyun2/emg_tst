@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
@@ -135,7 +136,6 @@ def load_multiclip_policy(ckpt_path: str, *, device: str = "cpu") -> Any:
 
 def load_expert_policy(model_dir: str | Path, *, device: str = "cpu") -> Any:
     """Load a per-snippet MoCapAct expert (SB3 PPO) from an extracted model zoo directory."""
-    from pathlib import Path
     import sys
 
     model_dir = Path(model_dir)

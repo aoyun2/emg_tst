@@ -543,7 +543,8 @@ def _load_tst_fold_models_if_available(
         raise RuntimeError(
             "Found training runs, but none are compatible with the current samples_dataset feature layout. "
             f"Current samples_dataset has F={expected_n_features} features. "
-            "Re-run `python -m emg_tst.run_experiment` after rebuilding samples_dataset.npy. "
+            "That trainer is not part of this repository; the Gait120 study does not use "
+            "this path. "
             f"Available `_all` runs: {', '.join(details)}"
         )
 
@@ -656,7 +657,7 @@ def _load_tst_model_if_available(*, device: str, expected_n_features: int | None
 
     Selection policy (no CLI flags):
     - Prefer the latest training run directory that ends with `_all` (the default
-      "ALL FEATURES" model produced by emg_tst/run_experiment.py).
+      "ALL FEATURES" model of the earlier Georgia Tech workflow).
     - Within that run, pick the fold with the lowest `metrics.json.best_rmse`.
     - If no metrics are available, fall back to the most recently modified checkpoint.
     """
@@ -1461,7 +1462,7 @@ def main() -> None:
         if loaded is None:
             raise RuntimeError(
                 "Found samples_dataset.npy, but no trained LOFO `_all` run with fold checkpoints was found. "
-                "Run `python -m emg_tst.run_experiment` first so the evaluator can follow the benchmark protocol exactly."
+                "That trainer is not part of this repository; the Gait120 study does not use this path."
             )
         training_run_dir, sample_to_fold = loaded
         target_successes = int(max(1, int(getattr(cfg, "benchmark_eval_n_trials", 80))))

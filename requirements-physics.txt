@@ -7,7 +7,9 @@ dm-control==1.0.7
 stable-baselines3==2.6.0
 gymnasium>=1.0,<1.2
 shimmy>=2,<3
-mocapact
+# Installed from the official repository at the revision used for every
+# reported rollout; the name alone resolves to a different package index.
+mocapact @ git+https://github.com/microsoft/MoCapAct.git@ccbe6e6b186273f168b1db68c0290e8250ebcdb3
 h5py>=3.14,<4
 ml-collections>=1.1,<2
 cloudpickle>=2.2,<4
