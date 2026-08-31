@@ -91,6 +91,39 @@ class WindowRow:
     dt: float = float("nan")
 
 
+def _load_rows_from_csv(path: Path) -> list[WindowRow]:
+    """Read the per-window table shipped with the reproducibility supplement."""
+    with path.open(newline="", encoding="utf-8") as handle:
+        records = list(csv.DictReader(handle))
+    if not records:
+        raise RuntimeError(f"No rows in {path}")
+    missing = {
+        "checkpoint", "query_id", "subject", "panel_index", "prediction_rmse_deg",
+        "reference_auc", "fused_auc", "excess_instability_auc",
+        "match_knee_rmse_deg", "match_thigh_rms_deg", "recorded_steps",
+        "expected_steps",
+    } - set(records[0])
+    if missing:
+        raise RuntimeError(f"{path} is missing columns: {sorted(missing)}")
+    return [
+        WindowRow(
+            checkpoint=r["checkpoint"],
+            query_id=r["query_id"],
+            subject=r["subject"],
+            panel_index=int(r["panel_index"]),
+            prediction_rmse_deg=float(r["prediction_rmse_deg"]),
+            excess_instability_auc=float(r["excess_instability_auc"]),
+            reference_auc=float(r["reference_auc"]),
+            fused_auc=float(r["fused_auc"]),
+            match_knee_rmse_deg=float(r["match_knee_rmse_deg"]),
+            match_thigh_rms_deg=float(r["match_thigh_rms_deg"]),
+            recorded_steps=float(r["recorded_steps"]),
+            expected_steps=float(r["expected_steps"]),
+        )
+        for r in records
+    ]
+
+
 def _load_rows(physics_run_dir: Path) -> list[WindowRow]:
     rows: list[WindowRow] = []
     for summary_path in sorted(physics_run_dir.rglob("summary.json")):
@@ -223,6 +256,7 @@ def _checkpoint_result(
         & np.isfinite(outcome)
         & np.all(np.isfinite(controls), axis=1)
     )
+    subjects = np.asarray([r.subject for r in rows])[finite]
     predictor, outcome, controls = predictor[finite], outcome[finite], controls[finite]
     n = int(predictor.size)
 
@@ -245,7 +279,7 @@ def _checkpoint_result(
     rho = partial_spearman(predictor, outcome, controls) if n >= 5 else float("nan")
     lower, upper = (
         _bootstrap_ci(predictor, outcome, controls, rng, bootstrap_draws,
-                      subjects=np.asarray([r.subject for r in rows]))
+                      subjects=subjects)
         if n >= 5
         else (np.nan, np.nan)
     )
@@ -572,11 +606,20 @@ def accuracy_level_analysis(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--physics-run-dir", type=Path, required=True)
+    parser.add_argument("--physics-run-dir", type=Path, required=False, default=None)
+    parser.add_argument(
+        "--per-window-csv", type=Path, default=None,
+        help="per_window_rollouts.csv from the reproducibility supplement",
+    )
     parser.add_argument("--out-dir", type=Path, required=True)
     args = parser.parse_args()
 
-    rows = _load_rows(args.physics_run_dir.resolve())
+    if args.per_window_csv is not None:
+        rows = _load_rows_from_csv(args.per_window_csv.resolve())
+    elif args.physics_run_dir is not None:
+        rows = _load_rows(args.physics_run_dir.resolve())
+    else:
+        raise SystemExit("pass --physics-run-dir or --per-window-csv")
     rng = np.random.default_rng(SEED)
 
     by_checkpoint: dict[str, list[WindowRow]] = {}
@@ -591,7 +634,9 @@ def main() -> None:
 
     result = {
         "version": VERSION,
-        "physics_run_dir": str(args.physics_run_dir.resolve()),
+        "source": (str(args.per_window_csv.resolve())
+                   if args.per_window_csv is not None
+                   else str(args.physics_run_dir.resolve())),
         "predictor": "window prediction RMSE (degrees), residual fusion",
         "outcome": "excess instability AUC (fused minus paired reference)",
         "controls": ["motion-match knee RMSE", "motion-match thigh orientation RMS"],

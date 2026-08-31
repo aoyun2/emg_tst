@@ -56,9 +56,11 @@ The final analysis uses level walking from:
 - [Gait120 data descriptor](https://doi.org/10.1038/s41597-025-05391-0)
 - [MoCapAct](https://microsoft.github.io/MoCapAct/)
 
-Predictor inputs and targets are not interpolated or time-normalized. The only
-sampling-rate conversion is used when matching 100-Hz Gait120 queries to the
-200-Hz MoCapAct reference grid.
+Predictor inputs and targets are not interpolated or time-normalized. Three
+rate conversions occur elsewhere: the 2000-Hz sEMG envelope contributes its
+final sample in each 20-sample frame block, 100-Hz Gait120 queries are matched
+against the 200-Hz MoCapAct reference grid, and 100-Hz commands are resampled
+onto the 0.03-s simulation grid.
 
 ## Environments
 
@@ -100,13 +102,16 @@ checkpoints the panel is built against, and the panel is what the simulation
 replays. `emg_tst.fetch_gait120` downloads about 16.5 GB; the MoCapAct reference
 bank and experts are fetched on demand by the simulation runner.
 
-Participant-level statistics and figures are regenerated from an extracted
-evidence supplement:
+Participant-level statistics are regenerated from an extracted evidence
+supplement. Both commands read the supplement directly:
 
 ```bash
-python -m analysis.gait120_conventional_paired_statistics --help
-python -m analysis.gait120_checkpoint_correlation --help
+python -m analysis.gait120_conventional_paired_statistics --evidence <extracted>/results --output summary.json
+python -m analysis.gait120_checkpoint_correlation --per-window-csv <extracted>/results/analysis/per_window_rollouts.csv --out-dir out
 ```
+
+The figures are not regenerable from the supplement: they need per-checkpoint
+prediction arrays and rollout recordings that the archive does not carry.
 
 See [the protocol](docs/EXPERIMENT_PROTOCOL.md) for the cohort split, signal
 windows, model comparison, simulation mapping, and outcome definitions.

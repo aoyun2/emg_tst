@@ -8,7 +8,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-import matplotlib.pyplot as plt
 import numpy as np
 from scipy import stats
 
@@ -353,6 +352,8 @@ def _write_plot(
     n: int,
     rollout: str,
 ) -> str | None:
+    import matplotlib.pyplot as plt
+
     fig, ax = plt.subplots(figsize=(6.0, 4.5))
     ax.scatter(x, y, s=40, alpha=0.85, edgecolors="none")
     if n >= 2 and np.unique(x).size >= 2:
