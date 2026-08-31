@@ -53,18 +53,17 @@ Thumbs.db
 .idea/
 .vscode/
 
-# Manuscript build products (regenerate with analysis/build_manuscript.py,
-# analysis/gait120_figures.py and the manuscript/make_*.py scripts)
-manuscript/main.pdf
-manuscript/*.zip
-manuscript/*.docx
-
-# Manuscript and submission tooling. The repository is the experiment; the
-# paper, its generator, its figures and the submission verifiers live outside
-# it so the two are not kept in step with each other.
+# Manuscript, Springer Nature class files, and the scripts that build and check
+# the submission documents
 manuscript/
 analysis/build_manuscript.py
-analysis/gait120_figures.py
-analysis/gait120_submission_figures.py
-analysis/verify_*.py
+analysis/verify_submission.py
+analysis/verify_tables.py
+analysis/verify_references.py
+analysis/verify_archive.py
 tests/test_build_manuscript.py
+
+# LaTeX and packaging build products, wherever they land
+*.pdf
+*.zip
+*.docx

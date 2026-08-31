@@ -83,7 +83,9 @@ models were evaluated on identical target rows.
   simulation is driven by the model output itself and never reads the recorded
   future target.
 - Paired conditions shared the reference snippet, initial state, expert policy,
-  warm-up, and knee controller. The reference condition ran the unmodified
+  and warm-up. They do not share the knee actuator: only the prediction
+  condition retunes it, and the reference keeps the walker's native one. The
+  reference condition ran the unmodified
   expert.
 - Accuracy range: checkpoints sampled along the gradient-descent training path of
   the same model, from a zero initialization that predicts the participant mean
@@ -116,7 +118,8 @@ effect. `within_window` correlates each window's own accuracy against its own
 excess instability across checkpoints and combines the results with a Fisher-z
 one-sample test, which removes matched motion, snippet, and initial state as
 sources of variation. `pooled` uses every checkpoint-window pair with a
-window-level cluster bootstrap, since each window recurs once per checkpoint.
+participant-level cluster bootstrap, since each window recurs once per
+checkpoint and several participants contribute two windows.
 
 The drop-off estimate is a descriptive two-segment fit of the per-checkpoint
 association against mean accuracy. It locates where the sampled association

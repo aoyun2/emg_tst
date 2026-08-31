@@ -103,44 +103,6 @@ class CheckpointCorrelationTests(unittest.TestCase):
                 row.excess_instability_auc, row.fused_auc - row.reference_auc, places=12
             )
 
-    def test_dropoff_is_located_where_the_association_disappears(self) -> None:
-        """A ladder that is coupled above 4 degrees and null below should say so."""
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            for index, level in enumerate([1.0, 2.0, 3.0, 4.0]):
-                _write_panel(
-                    root,
-                    checkpoints=[(f"c{index:02d}", level)],
-                    coupling=0.0,
-                    seed=100 + index,
-                )
-            for index, level in enumerate([6.0, 8.0, 10.0, 12.0], start=4):
-                _write_panel(
-                    root,
-                    checkpoints=[(f"c{index:02d}", level)],
-                    coupling=6.0,
-                    seed=100 + index,
-                )
-
-            rows = cc._load_rows(root)
-            rng = np.random.default_rng(0)
-            by_checkpoint: dict[str, list[cc.WindowRow]] = {}
-            for row in rows:
-                by_checkpoint.setdefault(row.checkpoint, []).append(row)
-            per_checkpoint = [
-                _fast(by_checkpoint[label], rng, label=label)
-                for label in sorted(by_checkpoint)
-            ]
-            per_checkpoint.sort(key=lambda r: r["mean_prediction_rmse_deg"])
-            dropoff = cc._dropoff(per_checkpoint)
-
-        self.assertTrue(dropoff["estimated"])
-        self.assertGreater(dropoff["breakpoint_mean_rmse_deg"], 4.0)
-        self.assertLess(dropoff["breakpoint_mean_rmse_deg"], 7.0)
-        self.assertGreater(
-            dropoff["high_error_segment_mean_rho"],
-            dropoff["low_error_segment_mean_rho"],
-        )
 
     def test_spread_is_reported_so_a_null_can_be_interpreted(self) -> None:
         """A near-zero rho on a near-zero spread is not evidence of no effect."""

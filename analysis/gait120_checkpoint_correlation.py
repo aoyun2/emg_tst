@@ -29,9 +29,8 @@ Three views are reported:
 ``pooled``
     All checkpoint-window pairs together, which uses the full accuracy range but
     reuses each window once per checkpoint; its interval is reported from a
-    window-level cluster bootstrap rather than assuming independence.
+    participant-level cluster bootstrap rather than assuming independence.
 
-The drop-off is estimated by a two-segment fit of the per-checkpoint association
 against mean accuracy, alongside the simpler statement of which checkpoints had
 intervals excluding zero.
 """
@@ -391,64 +390,10 @@ def _pooled_result(rows: list[WindowRow], rng: np.random.Generator) -> dict[str,
         "cluster_bootstrap_95pct_ci": [float(lower), float(upper)],
         "note": (
             "Each window contributes once per checkpoint; the interval is a "
-            "window-level cluster bootstrap, not an independent-sample interval."
+            "participant-level cluster bootstrap, not an independent-sample interval."
         ),
     }
 
-
-def _dropoff(per_checkpoint: list[dict[str, Any]]) -> dict[str, Any]:
-    """Locate where the association changes, as a two-segment fit over accuracy."""
-    usable = [
-        row
-        for row in per_checkpoint
-        if row["usable_for_dropoff"]
-        and np.isfinite(row["partial_spearman_rho"])
-        and np.isfinite(row["mean_prediction_rmse_deg"])
-    ]
-    if len(usable) < 5:
-        return {"estimated": False, "reason": "fewer than five usable checkpoints"}
-
-    order = np.argsort([row["mean_prediction_rmse_deg"] for row in usable])
-    x = np.asarray([usable[i]["mean_prediction_rmse_deg"] for i in order], dtype=np.float64)
-    y = np.asarray([usable[i]["partial_spearman_rho"] for i in order], dtype=np.float64)
-
-    best: tuple[float, int] | None = None
-    # Leave at least two points on each side so both segments are identified.
-    for split in range(2, x.size - 1):
-        sse = 0.0
-        for lo, hi in ((0, split), (split, x.size)):
-            segment_x, segment_y = x[lo:hi], y[lo:hi]
-            design = np.column_stack([np.ones(segment_x.size), segment_x])
-            beta, _, _, _ = np.linalg.lstsq(design, segment_y, rcond=None)
-            sse += float(np.sum(np.square(segment_y - design @ beta)))
-        if best is None or sse < best[0]:
-            best = (sse, split)
-    assert best is not None
-    _, split = best
-
-    excluding = [row for row in usable if row["interval_excludes_zero"]]
-    return {
-        "estimated": True,
-        "breakpoint_mean_rmse_deg": float((x[split - 1] + x[split]) / 2.0),
-        "breakpoint_between_checkpoints": [
-            str(usable[int(order[split - 1])]["checkpoint"]),
-            str(usable[int(order[split])]["checkpoint"]),
-        ],
-        "low_error_segment_mean_rho": float(np.mean(y[:split])),
-        "high_error_segment_mean_rho": float(np.mean(y[split:])),
-        "checkpoints_with_interval_excluding_zero": [
-            row["checkpoint"] for row in excluding
-        ],
-        "lowest_rmse_with_interval_excluding_zero_deg": (
-            float(min(row["mean_prediction_rmse_deg"] for row in excluding))
-            if excluding
-            else None
-        ),
-        "note": (
-            "The breakpoint is a descriptive two-segment fit over the sampled "
-            "accuracy levels, not a tested changepoint with its own error rate."
-        ),
-    }
 
 
 def write_participant_primary(rows: list[WindowRow], path: Path) -> int:
@@ -654,7 +599,6 @@ def main() -> None:
         "per_checkpoint": per_checkpoint,
         "within_window": _within_window_result(rows),
         "pooled": _pooled_result(rows, rng),
-        "dropoff": _dropoff(per_checkpoint),
         # The study's primary question: does model accuracy track simulated
         # outcome, and where does that stop?
         "accuracy_level": accuracy_level_analysis(rows, rng),
@@ -684,13 +628,6 @@ def main() -> None:
             f"{within['mean_spearman_rho_fisher_back_transformed']:.3f} "
             f"[{low:.3f}, {high:.3f}], p = {within['p_value_two_sided']:.4g} "
             f"over {within['n_windows']} windows"
-        )
-    dropoff = result["dropoff"]
-    if dropoff.get("estimated"):
-        print(
-            f"drop-off near {dropoff['breakpoint_mean_rmse_deg']:.2f} deg "
-            f"(rho {dropoff['high_error_segment_mean_rho']:.3f} above it, "
-            f"{dropoff['low_error_segment_mean_rho']:.3f} below)"
         )
     print(f"\nWrote {out_dir / 'checkpoint_correlation.json'}")
 

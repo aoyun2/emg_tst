@@ -40,13 +40,13 @@ device or estimate clinical fall risk.
 | `mocap_phys_eval/run_gait120_residual_fusion.py` | Motion matching and model-driven paired MuJoCo rollouts |
 | `analysis/gait120_checkpoint_correlation.py` | Association along the training path and its drop-off |
 | `analysis/gait120_conventional_paired_statistics.py` | Participant-level inferential summaries |
-| `analysis/gait120_submission_figures.py` | Eight manuscript figures from archived results |
 | `docs/EXPERIMENT_PROTOCOL.md` | Human-readable analysis protocol |
 | `tests/` | Deterministic unit and repository-integrity checks |
 
-Generated runs, raw data, model banks, recordings, evidence archives, and
-manuscript files are intentionally excluded from Git. The journal supplement
-contains the derived records needed to verify the reported results.
+Generated runs, raw data, model banks, recordings, evidence archives, the
+manuscript and the scripts that typeset and check it are excluded from Git. The
+journal supplement contains the derived records needed to verify the reported
+results.
 
 ## Data
 
@@ -106,7 +106,6 @@ evidence supplement:
 ```bash
 python -m analysis.gait120_conventional_paired_statistics --help
 python -m analysis.gait120_checkpoint_correlation --help
-python -m analysis.gait120_submission_figures --help
 ```
 
 See [the protocol](docs/EXPERIMENT_PROTOCOL.md) for the cohort split, signal
@@ -123,3 +122,7 @@ python -m unittest discover -s tests -v
 Older Georgia Tech acquisition utilities remain because some shared data and
 coordinate helpers still depend on them. They are not the predictor evaluated
 in the Gait120 study.
+
+## License
+
+MIT; see `LICENSE`.
