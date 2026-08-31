@@ -1,17 +1,11 @@
 """Sensitivity of the reported association to two design choices.
 
 Early termination
-    A rollout stops when a condition falls, so its instability is integrated
-    over a shorter interval. That shortens the outcome for the windows that
-    destabilized, which is informative censoring. The association is refitted
-    with the affected windows excluded, and with the outcome expressed as a
-    rate per recorded second.
+    Refits the association with the windows whose rollouts ended early excluded,
+    and with the outcome expressed as a rate per recorded second.
 
 Controller gains
-    The gains were chosen on ten preflight windows scored on tracking and on
-    added instability, so the outcome measure informed the choice. The oracle
-    preflight is the zero-error case: if the override itself drove the result,
-    that case would not sit near zero.
+    Reports the oracle preflight, the zero-error case, at the selected gains.
 
     python -m analysis.gait120_sensitivity --physics-run-dir <panel> --out <json>
 """
@@ -76,8 +70,7 @@ def main() -> int:
         },
     }
 
-    # Equal weight per participant: the fifteen who contribute two windows
-    # would otherwise count twice at every checkpoint.
+    # Equal weight per participant.
     from collections import defaultdict
     by_subject = defaultdict(list)
     for r in rows:
@@ -99,8 +92,7 @@ def main() -> int:
         balanced, "one value per participant per checkpoint", args.seed
     )
 
-    # Excess instability as a rate per recorded second, which removes the
-    # shortening that early termination introduces.
+    # Excess instability per recorded second.
     rated = [
         replace(r, excess_instability_auc=r.excess_instability_auc / r.recorded_steps)
         for r in rows if r.recorded_steps > 0

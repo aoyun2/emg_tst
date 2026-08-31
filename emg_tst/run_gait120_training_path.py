@@ -1,17 +1,9 @@
 """Fit the residual-fusion training path and export per-checkpoint predictions.
 
-This replaces the earlier data-availability path, which refit the closed-form
-model on nested fractions of the calibration data.  That design produced almost
-no accuracy spread: a linear model fitted to 5% of 90 participants' level
-walking is already close to its converged error, so every checkpoint landed in
-the same narrow RMSE band and the correlation analysis had nothing to resolve.
+Descending from a zero initialization traverses the range between predicting the
+participant mean and the converged fit.
 
-Descending from a zero initialization instead traverses the full range between
-predicting the participant mean and the converged fit, which is the spread the
-checkpoint correlation analysis needs.
-
-Outputs are written in the layout ``prepare_gait120_physics_panel`` already
-reads::
+Outputs are written in the layout ``prepare_gait120_physics_panel`` reads::
 
     <run-dir>/checkpoints/<label>/test_predictions.npz
     <run-dir>/checkpoints/<label>/summary.json

@@ -87,9 +87,7 @@ def _download(record: dict[str, Any], downloads: Path) -> Path:
     part = final.with_suffix(final.suffix + ".part")
     have = part.stat().st_size if part.exists() else 0
 
-    # A part file larger than the published size cannot be a prefix of it, so an
-    # interrupted transfer resumed from a stale offset and double-wrote. There is
-    # nothing to salvage; start the file over.
+    # Part file exceeds the published size; restart it.
     if expected_size and have > expected_size:
         print(
             f"[gait120] {name}: partial file is {have - expected_size} bytes oversized, "
@@ -98,8 +96,7 @@ def _download(record: dict[str, Any], downloads: Path) -> Path:
         part.unlink()
         have = 0
 
-    # A part file that already holds the whole file needs verifying and renaming,
-    # not a range request: asking for bytes past the end returns HTTP 416.
+    # Part file is already complete; verify and rename it.
     if expected_size and have == expected_size:
         print(f"[gait120] {name}: transfer already complete, verifying")
     else:
@@ -111,16 +108,14 @@ def _download(record: dict[str, Any], downloads: Path) -> Path:
         except urllib.error.HTTPError as exc:
             if exc.code != 416:
                 raise
-            # The server considers the range empty, so treat what is on disk as
-            # the whole transfer and let the checks below accept or reject it.
+            # Empty range; treat the file on disk as the whole transfer.
             print(f"[gait120] {name}: server reports no bytes remaining, verifying")
             response = None
         if response is not None:
             with response:
                 resuming = response.status == 206
                 if have and not resuming:
-                    # Server ignored the range request, so start over rather than
-                    # appending fresh bytes onto a partial file.
+                    # Server ignored the range request; restart the transfer.
                     have = 0
                 mode = "ab" if resuming and have else "wb"
                 with part.open(mode) as stream:
@@ -160,8 +155,7 @@ def _extract(archive: Path, dest: Path) -> None:
     with zipfile.ZipFile(archive) as bundle:
         root = dest.resolve()
         for member in bundle.namelist():
-            # A string prefix test also accepts a sibling directory whose name
-            # starts with the destination's, so ask for containment directly.
+            # Containment test, not a string prefix test.
             if not (dest / member).resolve().is_relative_to(root):
                 raise RuntimeError(f"Refusing archive member outside dest: {member}")
         bundle.extractall(dest)

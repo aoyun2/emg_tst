@@ -93,9 +93,7 @@ def main() -> None:
         }
 
     physics = pd.read_csv(evidence / "analysis" / "participant_primary.csv")
-    # The panel holds more windows than participants, and several participants
-    # contribute two. Averaging within participant first keeps the test at the
-    # level the difference is defined on.
+    # Averages within participant before the test.
     _subject = next(c for c in physics.columns if "subject" in c.lower())
     _per_window = (
         physics["no_emg_excess_auc"].to_numpy(dtype=float)

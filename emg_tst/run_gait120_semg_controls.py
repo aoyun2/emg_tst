@@ -1,36 +1,21 @@
 """Negative controls for the sEMG ablation.
 
-The ablation compares residual fusion against the same fitted kinematic stage
-with the correction switched off.  That comparison shows the correction helps,
-but on its own it cannot separate two explanations: the sEMG carries information
-about the knee that the kinematic history does not, or the residual stage is
-simply extra fitted capacity that would absorb some training error regardless of
-what was fed into it.
-
-These controls decide between them.  Each one re-runs the whole confirmation
-fit with the sEMG replaced by a surrogate that keeps the signal's statistics but
-destroys its correspondence with the target:
+Each control re-runs the whole confirmation fit with the sEMG replaced by a
+surrogate that keeps some property of the recording while breaking its
+correspondence with the knee:
 
 ``circular_shift``
     Each participant-trial's sEMG block is rotated against its own kinematics.
-    Channel amplitudes, spectra, cross-channel structure, and per-participant
-    scaling are all preserved exactly; only the alignment to the knee angle is
-    broken.
+    Channel amplitudes, spectra, and cross-channel structure are preserved.
 
 ``participant_swap``
-    Each participant receives another participant's sEMG.  This keeps real
-    walking sEMG opposite real walking kinematics but removes the within-person
-    correspondence that residual fusion relies on.
+    Each participant receives another participant's sEMG.
 
 ``phase_randomized``
-    Each channel is replaced by a surrogate with an identical power spectrum and
-    randomized Fourier phases, which preserves the autocorrelation of the
-    envelope but nothing about its timing relative to the knee.
-
-If the reported improvement reflects real neuromuscular information, the real
-condition should clear the gate and every surrogate should sit near zero.  A
-surrogate that also improves RMSE would mean the gain came from the added
-regression stage rather than from sEMG.
+    One random phase per frequency is applied to all twelve channels, so each
+    channel keeps its power spectrum and the channels keep their phase
+    relationships to each other, while their timing against the knee is
+    destroyed.
 """
 
 from __future__ import annotations
@@ -77,8 +62,7 @@ def _circular_shift(emg: np.ndarray, examples: gait.ExampleSet, rng) -> np.ndarr
         n = int(rows.size)
         if n < 4:
             continue
-        # Shift by a large fraction of the block so no window keeps its own
-        # sEMG, and jitter it so the offset is not identical everywhere.
+        # Shift by a large fraction of the block, with jitter.
         shift = int(n // 2 + rng.integers(-(n // 8), n // 8 + 1))
         shift = int(np.clip(shift, 1, n - 1))
         out[rows] = np.roll(emg[rows], shift, axis=0)

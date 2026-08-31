@@ -74,8 +74,7 @@ def _workspace_payload(mat_bytes: bytes, short_workspace: np.ndarray) -> np.ndar
     header = bytearray(mat_bytes[:128])
     if len(header) != 128:
         raise ValueError("MATLAB file header is truncated")
-    # The reconstructed stream contains one ordinary matrix rather than a
-    # subsystem at a later file offset.
+    # One ordinary matrix, not a subsystem at a later offset.
     header[116:124] = bytes(8)
     stream = io.BytesIO(bytes(header) + wrapper[8 : 16 + matrix_bytes])
     loaded = scipy.io.loadmat(stream, squeeze_me=False, struct_as_record=False)
@@ -174,8 +173,7 @@ class _MatlabTableStore:
         for name_index, property_type, value_index in self._property_triples(
             property_metadata, property_type_id
         ):
-            # All Gait120 table fields are stored as ordinary values. Refuse to
-            # guess if a future release changes the encoding.
+            # Gait120 table fields are ordinary values; reject any other encoding.
             if int(property_type) != 1:
                 raise ValueError("Unsupported non-value MATLAB table property")
             name = self.names[int(name_index) - 1]
@@ -297,9 +295,8 @@ def load_level_walking_subject(
                 time_col = columns.index("time")
                 if not np.isclose(motion_parts[-1][-1, time_col], motion[0, time_col], atol=1e-8):
                     raise ValueError("Consecutive Gait120 steps do not share their boundary time")
-                # Consecutive released steps repeat one synchronized boundary
-                # frame and the corresponding 20 native EMG samples. Remove
-                # that duplicate observation; no values are interpolated.
+                # Consecutive steps repeat one boundary frame and its 20 EMG
+                # samples; drop the duplicate.
                 motion = motion[1:]
                 emg = emg[EMG_SAMPLES_PER_FRAME:]
             motion_parts.append(motion)
@@ -345,11 +342,9 @@ def _causal_emg_envelope(raw_emg: np.ndarray) -> np.ndarray:
     raw = np.asarray(raw_emg, dtype=np.float64)
     if raw.ndim != 2 or raw.shape[1] != len(EMG_CHANNELS):
         raise ValueError(f"Expected raw sEMG [samples,{len(EMG_CHANNELS)}], got {raw.shape}")
-    # The release uses a second-order 20--500 Hz Butterworth bandpass followed
-    # by rectification and a 250-sample RMS. Its provided implementation uses
-    # filtfilt and centered movmean, which include future samples. The causal
-    # version below retains the specified filter/window but permits a genuine
-    # ahead-of-time forecast.
+    # The release applies its 20--500 Hz bandpass and 250-sample RMS with
+    # filtfilt and a centered movmean, which read future samples. This applies
+    # the same filter and window causally.
     sos = scipy.signal.butter(
         2, (20.0, 500.0), btype="bandpass", fs=float(EMG_HZ), output="sos"
     )

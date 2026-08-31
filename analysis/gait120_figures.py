@@ -1,21 +1,12 @@
 """Generate the manuscript figures from the completed run.
 
-Every mark is drawn from a run artifact. Figures are written as PDF so they stay
-vector in the typeset article; the rendered rollout frames are the only raster
-content and are embedded at their native resolution.
+Every mark is drawn from a run artifact. Figures are written as PDF; the
+rendered rollout frames are the only raster content.
 
-Two categorical hues carry every comparison, validated against the six colour
-checks (lightness band, chroma floor, adjacent-pair CVD separation,
-normal-vision floor, contrast). The original draft's three-hue palette failed
-three of them: its blue and green read as gray, its orange and green separated
-by only dE 5.0 under red-green colour vision deficiency, and its blue and green
-by 13.3 for normal vision.
-
-Colour means one thing across the whole set: ink for a recorded quantity, the
-blue ramp for a model prediction ordered by accuracy, gray for an unmodified
-reference, and rust for the substituted condition and for the reported result.
-Titles, labels, and annotations are ink, never a series colour, so colour is
-never doing a label's job.
+Two categorical hues carry every comparison. Colour is consistent across the
+set: ink for a recorded quantity, the blue ramp for a model prediction ordered
+by accuracy, gray for an unmodified reference, and rust for the substituted
+condition and the reported result. Titles, labels, and annotations are ink.
 
     python -m analysis.gait120_figures --runs-dir <runs> --out-dir <figures>
 """
@@ -35,17 +26,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
 
-# Two categorical hues, cool and warm, validated together: adjacent-pair CVD
-# separation dE 18.1 and normal-vision 24.5, both well clear of their floors.
-# Two is enough because no panel shows more than two series at once, and a pair
-# stays legible at the muted chroma a journal page wants; a third hue could not
-# be desaturated this far without the blue-green pair failing the normal-vision
-# floor.
+# Two categorical hues, cool and warm.
 BLUE, RUST = "#22598F", "#A9541F"
 
-# Accuracy level is ordinal, not categorical, so it takes a single-hue ramp
-# light-to-dark rather than three unrelated hues. Adjacent steps differ by dL
-# 0.146 and 0.125, and the lightest holds 2.35:1 against the page.
+# Single-hue ramp, light to dark, for accuracy level.
 RAMP = ["#8CAAC9", "#4E7FAC", "#22598F"]
 
 INK, MUTED, GRID = "#22201e", "#6b6862", "#e2e4e6"
@@ -198,8 +182,7 @@ def fig_overview(runs, out):
     ax = axes[4]
     half = frames.shape[2] // 2
     scene = frames[2 * len(frames) // 3][40:, half:]
-    # Crop to the walker rather than stretching the whole scene: at thumbnail size
-    # the floor grid carries nothing and the collapse is what needs to be legible.
+    # Crop to the walker.
     warm = scene[..., 0].astype(int) > scene[..., 2].astype(int) + 40
     ys, xs = np.where(warm)
     pad = 26
@@ -317,9 +300,7 @@ def fig_prediction_accuracy(data: dict[str, Any], out: Path) -> Path:
     clean(ax); panel(ax, "B")
 
     ax = axes[2]
-    # A box beside the points, rather than a violin: the kernel width of a violin
-    # is a smoothing choice the reader cannot see, and the quartiles are what the
-    # text actually cites.
+    # Box beside the points.
     bp = ax.boxplot([improvement], widths=0.30, showfliers=False,
                     medianprops={"color": INK, "linewidth": 1.0},
                     boxprops={"color": MUTED, "linewidth": 0.7},
@@ -598,10 +579,8 @@ def fig_simulation(runs, out):
 
     picks = [0, len(frames) // 3, 2 * len(frames) // 3, len(frames) - 1]
 
-    # Each rendered frame is two side-by-side panels, reference then overridden,
-    # with a label bar across the top. Splitting them into their own rows shows
-    # the same instant in both conditions and removes the letterbox, which
-    # otherwise leaves most of the figure empty.
+    # Each frame is two side-by-side panels, reference then overridden, under a
+    # label bar. Split them into separate rows.
     half = frames.shape[2] // 2
     top = 26
     left = [frames[i][top:, :half] for i in picks]
