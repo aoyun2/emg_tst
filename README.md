@@ -44,10 +44,9 @@ device or estimate clinical fall risk.
 | `tests/` | Deterministic unit and repository-integrity checks |
 
 Generated runs, raw data, model banks, recordings, evidence archives, the
-manuscript and the scripts that typeset and check it are intentionally excluded
-from Git. What is tracked is the code that produces the experiment's numbers.
-The journal supplement contains the derived records needed to verify the
-reported results.
+manuscript and the scripts that typeset and check it are excluded from Git. The
+journal supplement contains the derived records needed to verify the reported
+results.
 
 ## Data
 

@@ -53,10 +53,8 @@ Thumbs.db
 .idea/
 .vscode/
 
-# The manuscript, its Springer Nature class files, and everything that builds
-# or checks the submission documents. These stay on the author's machine: the
-# repository carries the code that produces the experiment's numbers, not the
-# paper that reports them.
+# Manuscript, Springer Nature class files, and the scripts that build and check
+# the submission documents
 manuscript/
 analysis/build_manuscript.py
 analysis/verify_submission.py
