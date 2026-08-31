@@ -1,22 +1,12 @@
-"""Check whether the result depends on the knee predicting its own future.
+"""Refit the model with the kinematic stage reading only the surrounding body.
 
 The reported kinematic stage forecasts knee angle from 60 frames of knee-angle
-history.  The obvious objection is that this is autoregression on the target:
-a knee angle 100 ms ahead is close to where the knee is now, so a low RMSE might
-reflect trajectory smoothness rather than anything reconstructed from the body.
-For a transfemoral application the objection sharpens, because the quantity of
-interest is whether the knee can be rebuilt from what remains around it.
+history. This refits it reading thigh pitch and full thigh orientation, with no
+channel measuring the knee, and compares held-out accuracy.
 
-This check answers that directly.  It refits the same model with the kinematic
-stage reading only the surrounding body -- thigh pitch and full thigh
-orientation, with nothing measuring the knee -- and compares held-out accuracy.
 Everything else is held fixed: same windows, same 100 ms horizon, same
 participant-balanced ridge pair, same penalties, same trials 1-3 fit and trial 5
 test.
-
-If the two inputs perform comparably, the knee channel is a convenient carrier of
-information that is present in the surrounding kinematics anyway, and the
-reported result does not rest on the knee predicting itself.
 """
 
 from __future__ import annotations
@@ -82,8 +72,7 @@ def build_examples(
         knee = np.asarray(data["knee_flexion_deg"], dtype=np.float32).reshape(-1)
         kinematic = _kinematic_channels(data, kinematic_input)
 
-        # Scaling values come from the calibration trials only, as in the
-        # confirmation run; later trials never inform their own normalisation.
+        # Scaling from the calibration trials only.
         calibration = np.flatnonzero(np.isin(trial, gait.TRAIN_TRIALS))
         if calibration.size < 1:
             raise RuntimeError(f"S{number:03d} has no calibration rows")
@@ -256,8 +245,7 @@ def main() -> None:
     )
     verdict = {
         "kinematic_penalty_for_dropping_knee_deg": float(penalty),
-        # If removing every knee-derived input costs little, the reported result
-        # is not resting on the knee predicting its own future.
+        # Cost of removing every knee-derived input.
         "result_depends_on_knee_autoregression": bool(penalty > 0.5),
         "note": (
             "Penalty is the held-out RMSE cost of a kinematic stage that observes "

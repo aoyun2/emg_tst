@@ -1,38 +1,23 @@
-"""Match-adjusted RMSE / excess-instability association along the training path.
+"""RMSE and excess-instability association along the training path.
 
-The confirmation experiment reports one association, measured at one accuracy
-level, from a model that converges to roughly 4.7 degrees.  A null there is
-ambiguous: it is consistent with prediction error genuinely not driving
-simulated instability, but it is equally consistent with a converged model whose
-windows are all so similar in accuracy that no association could be resolved.
-
-Replaying the fixed physics panel at every checkpoint of the training path
-separates those explanations.  Each checkpoint is a different accuracy level
-evaluated on the *same* windows and the *same* matched reference motions, so the
-association can be traced from a barely-trained model down to the converged one
-and the accuracy at which it disappears can be located.
+The fixed physics panel is replayed at every checkpoint, so each accuracy level
+is evaluated on the same windows and the same matched reference motions.
 
 Three views are reported:
 
 ``per_checkpoint``
     Partial Spearman between window prediction RMSE and excess instability,
-    controlling for match quality, computed across windows within one
-    checkpoint.  This is the confirmation analysis repeated at each accuracy
-    level, and each row carries the RMSE spread that was available to it.
+    controlling for match quality, across windows within one checkpoint. Each
+    row carries the RMSE spread available to it.
 
 ``within_window``
     For each window, the Spearman correlation across checkpoints between its own
-    RMSE and its own excess instability, combined over windows with a
-    Fisher-z one-sample test.  Every window is its own control here, so matched
-    reference motion, snippet, and initial state all cancel.
+    RMSE and its own excess instability, combined over windows with a Fisher-z
+    one-sample test.
 
 ``pooled``
-    All checkpoint-window pairs together, which uses the full accuracy range but
-    reuses each window once per checkpoint; its interval is reported from a
-    participant-level cluster bootstrap rather than assuming independence.
-
-against mean accuracy, alongside the simpler statement of which checkpoints had
-intervals excluding zero.
+    All checkpoint-window pairs together, with a participant-level cluster
+    bootstrap interval.
 """
 
 from __future__ import annotations
@@ -56,8 +41,7 @@ BOOTSTRAP_DRAWS = 10_000
 PERMUTATION_DRAWS = 20_000
 SEED = 20260827
 
-# A checkpoint needs enough windows for a partial correlation with two controls
-# to mean anything; below this it is reported but not used for the drop-off fit.
+# Minimum windows for a partial correlation with two controls.
 MIN_USABLE_WINDOWS = 20
 
 
@@ -73,19 +57,12 @@ class WindowRow:
     fused_auc: float
     match_knee_rmse_deg: float
     match_thigh_rms_deg: float
-    # The without-sEMG condition is only simulated at the primary checkpoint,
-    # which is where the paired physics ablation is defined; elsewhere these are
-    # None.
+    # Simulated only at the primary checkpoint; None elsewhere.
     has_no_emg: bool = False
     no_emg_auc: float = float("nan")
     no_emg_excess_auc: float = float("nan")
     no_emg_prediction_rmse_deg: float = float("nan")
-    # A rollout stops as soon as any condition falls, so its instability trace is
-    # shorter and its integrated area smaller. Both conditions stop together, so
-    # the paired difference stays like-for-like, but the magnitude is attenuated
-    # for exactly the windows that destabilised -- which are concentrated at the
-    # least accurate checkpoints. Carrying duration lets that be measured instead
-    # of silently shrinking the association where it should be largest.
+    # Rollout duration, carried so the outcome can be normalised by it.
     recorded_steps: int = 0
     expected_steps: int = 0
     dt: float = float("nan")
@@ -213,8 +190,7 @@ def _bootstrap_ci(
     subjects: np.ndarray | None = None,
 ) -> tuple[float, float]:
     n = int(predictor.size)
-    # Windows are nested within participants, so a draw takes whole
-    # participants. Drawing windows would count twice those who contribute two.
+    # Draws whole participants.
     groups: list[np.ndarray] | None = None
     if subjects is not None:
         unique = np.unique(np.asarray(subjects))
@@ -260,9 +236,7 @@ def _checkpoint_result(
     predictor, outcome, controls = predictor[finite], outcome[finite], controls[finite]
     n = int(predictor.size)
 
-    # Duration-normalised outcome: excess instability per simulated second rather
-    # than integrated over however long the rollout survived. If the association
-    # holds under both, truncation is not driving it.
+    # Excess instability per simulated second.
     steps = np.asarray([r.recorded_steps for r in rows], dtype=np.float64)[finite]
     expected = np.asarray([r.expected_steps for r in rows], dtype=np.float64)[finite]
     truncated = (expected > 0) & (steps < expected)
@@ -292,18 +266,14 @@ def _checkpoint_result(
         "checkpoint": label,
         "n_windows": n,
         "mean_prediction_rmse_deg": float(np.mean(predictor)) if n else float("nan"),
-        # The spread available to this checkpoint's correlation.  A near-zero
-        # rho where the spread is also near zero is uninformative, not evidence
-        # of no association.
+        # Predictor spread at this checkpoint.
         "prediction_rmse_sd_deg": float(np.std(predictor, ddof=1)) if n > 1 else float("nan"),
         "prediction_rmse_iqr_deg": (
             float(np.subtract(*np.percentile(predictor, [75, 25]))) if n else float("nan")
         ),
         "mean_excess_instability_auc": float(np.mean(outcome)) if n else float("nan"),
         "excess_instability_sd": float(np.std(outcome, ddof=1)) if n > 1 else float("nan"),
-        # Truncation diagnostics. A checkpoint whose rollouts end early has its
-        # excess-instability magnitude attenuated, so a weak association here
-        # should be read against how often that happened.
+        # Truncation diagnostics.
         "truncated_rollouts": int(np.sum(truncated)),
         "truncated_fraction": float(np.mean(truncated)) if n else float("nan"),
         "mean_recorded_steps": float(np.mean(steps)) if n else float("nan"),
@@ -348,9 +318,7 @@ def _within_window_result(rows: list[WindowRow]) -> dict[str, Any]:
         return {"n_windows": len(per_window), "insufficient": True}
 
     rho = np.asarray([row["spearman_rho"] for row in per_window], dtype=np.float64)
-    # Several participants contribute two windows, so the windows are averaged
-    # within participant before combining. Testing all of them together would
-    # count those participants twice.
+    # Averages windows within participant before combining.
     subject_of = {row.query_id: row.subject for row in rows}
     by_subject: dict[str, list[float]] = {}
     for entry in per_window:
@@ -360,7 +328,7 @@ def _within_window_result(rows: list[WindowRow]) -> dict[str, Any]:
     subject_rho = np.asarray(
         [float(np.mean(v)) for _, v in sorted(by_subject.items())], dtype=np.float64
     )
-    # Fisher-z stabilizes the variance of a correlation before averaging.
+    # Fisher-z transform before averaging.
     z = np.arctanh(np.clip(subject_rho, -0.999999, 0.999999))
     test = stats.ttest_1samp(z, 0.0)
     mean_z = float(np.mean(z))
@@ -394,8 +362,7 @@ def _pooled_result(rows: list[WindowRow], rng: np.random.Generator) -> dict[str,
         ]
     )
     finite = np.isfinite(predictor) & np.isfinite(outcome) & np.all(np.isfinite(controls), axis=1)
-    # The bootstrap clusters on the participant; the reported window count is
-    # still the number of windows, which is not the number of clusters.
+    # Window count, not cluster count.
     windows = np.asarray([r.query_id for r in rows])[finite]
     queries = np.asarray([r.subject for r in rows])[finite]
     predictor, outcome, controls = predictor[finite], outcome[finite], controls[finite]
@@ -533,10 +500,7 @@ def accuracy_level_analysis(
     below = stats.spearmanr(x[x < point], y[x < point])
     above = stats.spearmanr(x[x >= point], y[x >= point])
 
-    # The same windows recur at every checkpoint, so a draw has to select whole
-    # participants once and carry them across all of them. Resampling inside
-    # each checkpoint separately would treat one window's observations as
-    # independent of one another and understate the spread of the curve.
+    # Draws whole participants and carries them across every checkpoint.
     windows_by_subject: dict[str, list[str]] = {}
     for row in by_checkpoint[labels[0]]:
         windows_by_subject.setdefault(row.subject, []).append(row.query_id)
@@ -644,8 +608,7 @@ def main() -> None:
         "per_checkpoint": per_checkpoint,
         "within_window": _within_window_result(rows),
         "pooled": _pooled_result(rows, rng),
-        # The study's primary question: does model accuracy track simulated
-        # outcome, and where does that stop?
+        # Accuracy-level analysis.
         "accuracy_level": accuracy_level_analysis(rows, rng),
     }
 

@@ -1,13 +1,11 @@
-"""Record what code produced the reported physics run, and how it differs from
-the code as published.
+"""Record what code produced the reported physics run.
 
 The run protocol stores a hash for each physics source file as it stood when the
-rollouts were produced. The published repository moves on, so this compares the
-two, names any file that differs, and records the commit the published code sits
-at. A difference is not a defect provided it is stated; an unstated one is.
+rollouts were produced. This compares those against the published files, names
+any that differ, and records the commit the published code sits at.
 
-It also records the controller constants and the versions of the packages the
-simulation ran under, neither of which the run protocol captures.
+It also records the controller constants and the package versions of the
+environment the simulation ran under.
 
     python -m analysis.make_provenance --runs-dir <runs> --out <json>
 """

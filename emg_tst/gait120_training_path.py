@@ -1,26 +1,14 @@
 """Gradient-descent training path for the residual-fusion predictor.
 
 The confirmation experiment fits the residual-fusion model in closed form, which
-gives a single converged model and no training trajectory to sample.  Two
-questions in the study need a trajectory rather than a point:
+gives a single converged model and no trajectory to sample. This module fits the
+same model class by full-batch gradient descent on the same participant-balanced
+ridge objective, from a zero coefficient vector.
 
-* whether the association between prediction RMSE and simulated excess
-  instability holds at every accuracy level or disappears below some error, and
-* whether the converged model leaves enough RMSE spread for that association to
-  be measurable at all.
-
-This module fits the *same* model class by full-batch gradient descent on the
-*same* participant-balanced ridge objective, starting from a zero coefficient
-vector.  At step zero each stage predicts the participant-balanced target mean,
-so the path begins near the intrinsic spread of the knee angle (tens of degrees)
-and descends to the closed-form solution.  Checkpoints sampled along that path
-give a wide, ordered accuracy ladder that the physics panel can be replayed
-against.
-
-The fixed point of the descent is the closed-form solution used by the
-confirmation run, so the final checkpoint reproduces the reported model rather
-than approximating it.  ``tests/test_gait120_training_path.py`` asserts that
-directly.
+At step zero the kinematic stage predicts the participant-balanced target mean
+and the residual correction is zero. Checkpoints are sampled along the descent;
+the closed-form solution is appended as a separate terminal checkpoint, and the
+relative gap between it and the last descent iterate is recorded.
 """
 
 from __future__ import annotations
@@ -35,22 +23,14 @@ import emg_tst.run_gait120_residual_fusion as fusion
 
 VERSION = "GAIT120_RESIDUAL_FUSION_GRADIENT_TRAINING_PATH_V1"
 
-# Full-batch descent on a quadratic is stable for any step size below 2/L, where
-# L is the largest curvature of the objective.  The step size here is far below
-# that bound, and the reason is sampling resolution rather than stability: near
-# the stability limit the first one or two steps collapse most of the error, so
-# the high-error part of the path -- exactly the part the drop-off analysis needs
-# -- is crossed between two recorded points and cannot be sampled.  A small step
-# stretches that region across enough steps to place checkpoints in it.
+# Step size as a fraction of the stability bound 2/L, where L is the largest
+# curvature of the objective.
 STEP_SIZE_SAFETY = 0.005
 
 MAX_STEPS = 400_000
 
-# Descent stops when the gradient has shrunk this far relative to its starting
-# magnitude.  Gradient norm measures distance from optimality; the size of the
-# last coefficient update does not, because on an ill-conditioned problem
-# gradient descent creeps along low-curvature directions with tiny steps while
-# still far from the solution.
+# Descent stops when the gradient norm falls to this fraction of its starting
+# value.
 CONVERGENCE_TOLERANCE = 1.0e-8
 
 # Number of sampled checkpoints, including the untrained and converged ends.
@@ -281,9 +261,7 @@ def fit_training_path(
     residual_stage = build_stage(
         train_e, train.subject_number, alpha=residual_alpha, y_centered=y_centered
     )
-    # Z_k is weighted-centered, so the residual stage's own intercept is exactly
-    # zero at every step and the fused prediction needs no intercept term of its
-    # own.  Assert it rather than assume it.
+    # Z_k is weighted-centered, so the residual intercept is zero at every step.
     residual_intercept = _weighted_mean(y - kinematic_intercept, weights)
     if abs(residual_intercept) > 1.0e-8:
         raise RuntimeError(
@@ -316,9 +294,7 @@ def fit_training_path(
         rmse.append(error)
     converged_step = int(steps[-1])
 
-    # The closed-form solution is appended as the terminal rung.  Plain descent
-    # approaches it asymptotically, and the ladder must end on the exact model
-    # the confirmation run reports rather than near it.
+    # Appends the closed-form solution as the terminal rung.
     exact_kin = closed_form_coefficient(kinematic_stage, kinematic_stage.rhs)
     exact_res = closed_form_coefficient(
         residual_stage, residual_stage.rhs - cross @ exact_kin
@@ -347,8 +323,7 @@ def fit_training_path(
 
     terminal_index = int(provisional.steps.size) - 1
     wanted_steps = {int(provisional.steps[i]) for i in picks.tolist() if i != terminal_index}
-    # Always keep the last descent iterate so the gap diagnostic below is defined
-    # even when no checkpoint happened to land there.
+    # Keep the last iterate so the gap diagnostic below is defined.
     wanted_steps.add(converged_step)
     captured: dict[int, tuple[np.ndarray, np.ndarray]] = {}
     for step, _error, w_kin, w_res in _descend(
@@ -375,9 +350,8 @@ def fit_training_path(
             res_rows.append(w_res)
         intercepts.append(float(exact_intercept))
 
-    # How close plain descent came on its own, reported as a diagnostic: a large
-    # value means the last descent rung sits well short of the terminal rung and
-    # the ladder has a gap at its converged end.
+    # Relative gap between the last descent iterate and the closed-form
+    # solution.
     gap = float(
         np.linalg.norm(captured[converged_step][0] - exact_kin)
         / (np.linalg.norm(exact_kin) + 1.0e-12)
