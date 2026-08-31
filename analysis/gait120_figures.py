@@ -17,7 +17,7 @@ reference, and rust for the substituted condition and for the reported result.
 Titles, labels, and annotations are ink, never a series colour, so colour is
 never doing a label's job.
 
-    python -m analysis.gait120_figures --runs-dir <runs> --out-dir manuscript/figures
+    python -m analysis.gait120_figures --runs-dir <runs> --out-dir <figures>
 """
 
 from __future__ import annotations

@@ -43,9 +43,11 @@ device or estimate clinical fall risk.
 | `docs/EXPERIMENT_PROTOCOL.md` | Human-readable analysis protocol |
 | `tests/` | Deterministic unit and repository-integrity checks |
 
-Generated runs, raw data, model banks, recordings, evidence archives, and
-manuscript files are intentionally excluded from Git. The journal supplement
-contains the derived records needed to verify the reported results.
+Generated runs, raw data, model banks, recordings, evidence archives, the
+manuscript and the scripts that typeset and check it are intentionally excluded
+from Git. What is tracked is the code that produces the experiment's numbers.
+The journal supplement contains the derived records needed to verify the
+reported results.
 
 ## Data
 
@@ -121,3 +123,7 @@ python -m unittest discover -s tests -v
 Older Georgia Tech acquisition utilities remain because some shared data and
 coordinate helpers still depend on them. They are not the predictor evaluated
 in the Gait120 study.
+
+## License
+
+MIT; see `LICENSE`.

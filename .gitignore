@@ -53,26 +53,19 @@ Thumbs.db
 .idea/
 .vscode/
 
-# Manuscript build products (regenerate with analysis/build_manuscript.py,
-# analysis/gait120_figures.py and the manuscript/make_*.py scripts)
-manuscript/main.pdf
-manuscript/*.zip
-manuscript/*.docx
+# The manuscript, its Springer Nature class files, and everything that builds
+# or checks the submission documents. These stay on the author's machine: the
+# repository carries the code that produces the experiment's numbers, not the
+# paper that reports them.
+manuscript/
+analysis/build_manuscript.py
+analysis/verify_submission.py
+analysis/verify_tables.py
+analysis/verify_references.py
+analysis/verify_archive.py
+tests/test_build_manuscript.py
 
-# Generated artifacts, not sources. The paper itself, its figures and the
-# packaged bundles are produced by the generators below and are not tracked.
-manuscript/main.tex
-manuscript/figures/
-manuscript/*.pdf
-manuscript/*.zip
-manuscript/*.docx
-manuscript/*.aux
-manuscript/*.log
-manuscript/*.bbl
-manuscript/*.blg
-manuscript/*.out
-
-# The generators themselves are tracked. They are the machinery that turns the
-# experiment into the reported tables, figures, statistics and archive, so
-# losing them would lose the record of how the results were produced. Machine
-# paths come from EMG_TST_RUNS and EMG_TST_ARTIFACTS, not from these files.
+# LaTeX and packaging build products, wherever they land
+*.pdf
+*.zip
+*.docx
