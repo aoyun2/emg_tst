@@ -478,7 +478,7 @@ def fig_per_checkpoint(data: dict[str, Any], out: Path) -> Path:
                 markersize=3.4, linewidth=1.0, capsize=2.5, alpha=0.9)
     ax.axhline(0, color=INK, linewidth=0.8)
     ax.set_xlabel("model accuracy: mean window RMSE (deg)")
-    ax.set_ylabel("match-adjusted partial $\\rho$\n(across windows)")
+    ax.set_ylabel("partial $\\rho$\n(across windows)")
     clean(ax, grid="both"); panel(ax, "A", x=-0.20)
 
     ax = axes[1]
