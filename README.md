@@ -116,18 +116,6 @@ prediction arrays and rollout recordings that the archive does not carry.
 See [the protocol](docs/EXPERIMENT_PROTOCOL.md) for the cohort split, signal
 windows, model comparison, simulation mapping, and outcome definitions.
 
-## Tests
-
-The deterministic tests do not download either dataset:
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-Older Georgia Tech acquisition utilities remain because some shared data and
-coordinate helpers still depend on them. They are not the predictor evaluated
-in the Gait120 study.
-
 ## License
 
 MIT; see `LICENSE`.
